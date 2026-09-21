@@ -2,6 +2,7 @@
 
 #trunkline
 .claude
-.pipeline
+.pipeline/workdir
 .trunkline
+.pipeline/README.md
 AGENTS.md
