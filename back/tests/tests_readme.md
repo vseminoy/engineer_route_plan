@@ -9,6 +9,7 @@
 - [`api` — GET /health](#api--get-health)
 - [`api` — заглушка /api/v1/{path}](#api--заглушка-apiv1path)
 - [Стенд Docker Compose — smoke](#стенд-docker-compose--smoke)
+- [`Makefile` — команды проекта](#makefile--команды-проекта)
 - [`<integration suite>` — контрактные тесты](#integration-suite--контрактные-тесты)
 
 ---
@@ -126,6 +127,33 @@
 | `smoke_body_limit_via_proxy` | `POST /api/v1/data/upload` с телом больше `MAX_REQUEST_BODY_BYTES` | `413` от nginx, запрос не доходит до backend (в `docker compose logs backend` нет записи о нём) |
 | `smoke_backend_logs_are_json` | `docker compose logs --no-log-prefix backend` | каждая строка — один JSON-объект; у записи `http_request_finished` есть `request_id` |
 | `smoke_spa_fallback` | `curl -i http://localhost:8080/plan/1` (клиентский маршрут React) | `200`, отдаётся `index.html` |
+
+## `Makefile` — команды проекта
+
+> Ручные сценарии из корня репозитория, не часть `pytest`: цели только вызывают готовые
+> команды, собственной логики, которую стоило бы покрыть юнит-тестом, у них нет. Ничего
+> не мокается; цели стенда работают с настоящим Docker Compose. Проверяется GNU Make 3.81
+> (системный на macOS) — возможностей 4.x Makefile не использует.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `make_default_prints_help` | `make` без аргументов | код `0`; список всех целей с описаниями, сгруппированный на «стенд» и «разработка»; у `reset` пометка, что он удаляет данные БД и граф OSRM |
+| `make_install_then_check_passes` | чистый клон: `make install && make check` | код `0`; создан `back/.venv`, отработали `lint`, `typecheck`, `test-unit`, `check-comments` |
+| `make_install_rejects_old_python` | нет `back/.venv`; `make install PYTHON=/usr/bin/python3` (Python 3.9) | код `≠ 0`, venv не создан, подсказка `PYTHON=python3.11` |
+| `make_install_rejects_old_venv` | `back/.venv` создан на Python 3.9; `make install` | код `≠ 0`, подсказка удалить `back/.venv` и повторить с `PYTHON=` |
+| `make_check_stops_on_first_failure` | в `back/src` временно добавлен неиспользуемый импорт; `make check` | код `≠ 0`, в выводе ошибка `ruff`; цель не сообщает об успехе |
+| `make_check_comments_clean` | `make check-comments` на текущем коде | код `0`, находок нет — отсутствие совпадений у `grep` не считается ошибкой |
+| `make_check_comments_finds_reference` | в комментарий в `back/src` временно добавлены ссылка на `.md`-файл и номер требования; `make check-comments` | код `≠ 0`, выведены файл и строка каждой находки |
+| `make_quality_targets_wrap_profile_commands` | `make -n lint typecheck test test-unit test-integration` | в `back/` через `$(PY) -m` выполняются `ruff check .`, `mypy src`, `pytest -q`, `pytest -m 'not integration' -q`, `pytest -m integration -q` — те же команды, что проверяет гейт перед коммитом |
+| `make_tools_from_venv_overridable` | `make -n lint` и `make -n lint PY=/usr/bin/python3` | по умолчанию инструменты берутся из `back/.venv/bin`, с `PY=...` — через указанный интерпретатор |
+| `make_gen_api_is_reproducible` | `make gen-api` на неизменённой `back/openapi/openapi.yaml`, затем `git diff --exit-code back/src/api/schemas/generated` | код `0` у обеих команд, diff пуст |
+| `make_up_then_smoke_passes` | нет `.env`: `make up && make smoke` | `.env` создан из `.env.example` (существующий `make up` не трогает), образы пересобраны, стенд поднят; `smoke` печатает `200` для `/health` и `501` для `/api/v1/regions` через фронтенд-прокси на `FRONTEND_PORT` из `.env`, код `0` |
+| `make_smoke_reads_port_from_env` | в `.env` `FRONTEND_PORT="8090"`, ниже повторно `FRONTEND_PORT=8091`; затем `FRONTEND_PORT=8090;id`; `make -n smoke` | в первом случае URL на `:8091` (последнее определение); во втором значение не принято, URL на `:8080` — в команду попадает только число |
+| `make_smoke_fails_when_stand_is_down` | `make down && make smoke` | код `≠ 0`, из вывода понятно, какая проверка не прошла |
+| `make_logs_single_service` | `make logs s=backend` | потоковый вывод (`-f`) только сервиса `backend`; без `s=` — всех сервисов |
+| `make_reset_asks_confirmation` | `make reset`, ответ `n` (или пустой ввод) | код `≠ 0`, «Отменено», стенд и volume'ы не тронуты |
+| `make_reset_removes_volumes` | `make reset CONFIRM=yes`, затем `docker volume ls` | без вопроса; стенд остановлен, volume'ов стенда (данные БД, граф OSRM) больше нет |
+| `make_run_uses_free_port` | `make -n run`; `make -n run RUN_PORT=9000` | uvicorn на `--port 8002` (не на порту backend стенда), с `RUN_PORT` — на указанном |
 
 ## `<integration suite>` — контрактные тесты
 

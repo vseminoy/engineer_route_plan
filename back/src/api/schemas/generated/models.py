@@ -3,16 +3,13 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class Status(Enum):
-    """
-    Статус процесса; поле присутствует со значением "ok" в любом полученном ответе
-    """
-
+class Status(StrEnum):
     ok = "ok"
 
 
@@ -20,10 +17,12 @@ class HealthStatus(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    status: Status = Field(
-        ...,
-        description='Статус процесса; поле присутствует со значением "ok" в любом полученном ответе',
-    )
-    version: str = Field(
-        ..., description="Версия приложения из метаданных пакета (совпадает с info.version)"
-    )
+    status: Annotated[
+        Status,
+        Field(
+            description='Статус процесса; поле присутствует со значением "ok" в любом полученном ответе'
+        ),
+    ]
+    version: Annotated[
+        str, Field(description="Версия приложения из метаданных пакета (совпадает с info.version)")
+    ]

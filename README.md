@@ -4,11 +4,35 @@
 
 Полный комплект технической документации (бизнес-требования, ТЗ, спецификации бэкенда/фронтенда, словарь данных, алгоритм) — [`docs/bft/`](docs/bft/00_index.md).
 
-## Запуск стенда (Docker Compose)
+## Быстрый старт
+
+Нужны Docker с Compose, GNU Make, `curl` и Python 3.11+. Команды выполняются из корня репозитория; `make` без аргументов печатает список всех целей.
 
 ```bash
-cp .env.example .env
-docker compose up -d
+make up       # создать .env из .env.example (если его нет) и поднять стенд
+make smoke    # проверить стенд: /health → 200, /api/v1/regions → 501
+make logs s=backend
+make down     # остановить; make reset — ещё и удалить данные БД и граф OSRM (спросит подтверждение)
+```
+
+Разработка backend:
+
+```bash
+make install  # back/.venv с dev-зависимостями; на macOS системный python3 — 3.9: make install PYTHON=python3.11
+make check    # lint + typecheck + unit-тесты + проверка комментариев
+make gen-api  # перегенерировать Pydantic-схемы после правки back/openapi/openapi.yaml
+make run      # backend на :8002 с автоперезагрузкой; сначала cp back/.env.example back/.env
+```
+
+Инструменты берутся из `back/.venv`; другое окружение — `make check PY=/path/to/python`. Фронтенд в режиме разработки проксирует `/api` на `:8001` (backend стенда); на `make run` — `VITE_BACKEND_ORIGIN=http://localhost:8002`.
+
+## Запуск стенда (Docker Compose)
+
+Без Make:
+
+```bash
+test -f .env || cp .env.example .env
+docker compose up -d --build
 ```
 
 - Интерфейс и API — http://localhost:8080 (`FRONTEND_PORT`): nginx отдаёт фронтенд и проксирует `/api` и `/health` в backend. Стенд слушает только `127.0.0.1`; открыть его в локальную сеть — `FRONTEND_BIND=0.0.0.0` в `.env` (API без аутентификации: любой в сети сможет менять данные стенда).
@@ -18,6 +42,8 @@ docker compose up -d
 - `docker compose down` останавливает стенд, `docker compose down -v` — ещё и удаляет данные БД и граф.
 
 ### Smoke-проверка
+
+Коды ответов проверяет `make smoke`; вручную, с телом, заголовками и логами:
 
 ```bash
 curl -i http://localhost:8080/health           # 200 {"status": "ok", ...}

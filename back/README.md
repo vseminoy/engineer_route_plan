@@ -4,27 +4,27 @@ FastAPI-сервис планирования маршрутов выездны�
 
 ## Установка и запуск
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-
-cp .env.example .env   # заполнить DATABASE_URL/OSRM_URL реальными значениями
-uvicorn src.main:app --port 8001 --no-access-log
-```
-
-`--no-access-log` обязателен: HTTP-запросы логирует собственная middleware приложения одной структурной записью, а не встроенный access-лог uvicorn.
-
-Весь стенд (БД, OSRM, backend, фронтенд) поднимается через Docker Compose — см. [корневой README](../README.md#запуск-стенда-docker-compose).
-
-## Тесты
+Команды — из корня репозитория (полный список — `make`):
 
 ```bash
-pytest -q                    # unit
-pytest -q -m integration     # контрактные и интеграционные тесты (поднятое приложение, БД/OSRM не нужны для текущего набора)
-mypy src
-ruff check .
+make install                   # back/.venv на Python 3.11+ и dev-зависимости
+cp back/.env.example back/.env # заполнить DATABASE_URL/OSRM_URL
+make run                       # uvicorn --reload на :8002 (RUN_PORT), LOG_FORMAT=console
 ```
+
+`make run` запускает uvicorn с `--no-access-log`: HTTP-запросы логирует собственная middleware приложения одной структурной записью, а не встроенный access-лог uvicorn. При ручном запуске флаг тоже обязателен.
+
+Весь стенд (БД, OSRM, backend, фронтенд) поднимается через Docker Compose — `make up`, см. [корневой README](../README.md#быстрый-старт).
+
+## Тесты и проверки
+
+```bash
+make check             # ruff check + mypy + unit-тесты + проверка комментариев — то же, что гейт перед коммитом
+make test-integration  # контрактные и интеграционные тесты (поднятое приложение, БД/OSRM не нужны для текущего набора)
+make test              # все тесты
+```
+
+Описание тестов по слоям — [`tests/tests_readme.md`](tests/tests_readme.md).
 
 ## Устройство
 
@@ -33,4 +33,4 @@ ruff check .
 - `src/api/deps.py` — `Depends`-фабрики инфраструктуры: пул соединений БД, HTTP-клиент к OSRM.
 - `src/app.py` — сборка приложения: настройка логирования, `lifespan` (создание/закрытие пула и клиента), регистрация роутеров, логирующая middleware (по записи `http_request_finished` на запрос; успешная проба `/health` — на уровне `debug`).
 - `src/api/routes/not_implemented.py` — заглушка: любой запрос под `/api/v1`, не совпавший с реализованной операцией, получает `501` без тела; регистрируется последней и в контракт не входит.
-- `src/api/routes/` — рукописные роутеры; `src/api/schemas/generated/` — Pydantic-схемы, сгенерированные из `openapi/openapi.yaml` (`datamodel-codegen`), не редактируются руками.
+- `src/api/routes/` — рукописные роутеры; `src/api/schemas/generated/` — Pydantic-схемы, сгенерированные из `openapi/openapi.yaml` командой `make gen-api`, не редактируются руками.
