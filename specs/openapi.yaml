@@ -16,10 +16,15 @@ paths:
       responses:
         "200":
           description: Процесс работает и отвечает на запросы
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
 components:
   schemas:
     HealthStatus:

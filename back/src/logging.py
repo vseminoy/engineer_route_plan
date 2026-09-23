@@ -20,6 +20,11 @@ def run_id_context(run_id: str) -> Iterator[None]:
         yield
 
 
+class _DropAsgiException(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage().strip() != "Exception in ASGI application"
+
+
 def configure_logging(settings: Settings) -> None:
     """Wires structlog on top of stdlib `logging`, once, at app startup.
     Source: https://www.structlog.org/en/stable/standard-library.html
@@ -67,6 +72,13 @@ def configure_logging(settings: Settings) -> None:
         uvicorn_logger = logging.getLogger(name)
         uvicorn_logger.handlers.clear()
         uvicorn_logger.propagate = True
+    # The app's `Exception` handler already logs `unhandled_error` with the stack;
+    # uvicorn logs the same exception again when Starlette re-raises it.
+    uvicorn_error = logging.getLogger("uvicorn.error")
+    uvicorn_error.filters = [
+        f for f in uvicorn_error.filters if not isinstance(f, _DropAsgiException)
+    ]
+    uvicorn_error.addFilter(_DropAsgiException())
 
     # uvicorn enables its access log whenever `uvicorn.access` has a handler anywhere
     # up the hierarchy, `--no-access-log` notwithstanding, so it is cut off from the

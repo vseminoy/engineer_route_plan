@@ -1,0 +1,126 @@
+openapi: 3.1.0
+info:
+  title: Engineer Route Plan API — общие компоненты
+  version: 0.1.0
+  description: >-
+    Компоненты, общие для всех операций: схема ошибки входных данных, ответы
+    ошибок и заголовок X-Request-ID. Путей в этом файле нет — операции
+    ссылаются на компоненты из openapi.yaml.
+paths: {}
+components:
+  headers:
+    X-Request-ID:
+      description: >-
+        Идентификатор запроса. Есть у каждого ответа приложения, включая ответы
+        ошибок и 500; ответы, которые отдаёт не приложение (отказ HTTP-сервера на
+        испорченном запросе, ошибки обратного прокси), его не несут и могут
+        отличаться от контракта. Если клиент прислал заголовок X-Request-ID из латинских букв,
+        цифр, «_» и «-» длиной до 64 символов, возвращается он же, иначе сервер
+        выдаёт новый. По нему в логах находятся все записи этого запроса;
+        клиент может показать его пользователю для обращения в поддержку.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{1,64}$"
+
+  schemas:
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [name, message]
+      properties:
+        name:
+          type: string
+          description: >-
+            Имя входного параметра так, как оно названо в контракте: поле тела,
+            query-, path-параметр или поле формы, без префиксов body/query.
+            Вложенность — через точку, индекс массива — в квадратных скобках
+            (engineers[2].skills).
+        message:
+          type: string
+          description: Что не так со значением параметра — текст для пользователя на русском языке.
+
+    ValidationError:
+      description: >-
+        Тело ответа 400. Ровно одно из двух полей: message — ошибка запроса в
+        целом, которую нельзя привязать к одному параметру; fields — ошибки
+        конкретных входных параметров, клиент показывает каждую у своего поля.
+        Тексты — для пользователя, на русском, без технических деталей.
+      oneOf:
+        - $ref: "#/components/schemas/RequestMessage"
+        - $ref: "#/components/schemas/FieldErrors"
+
+    RequestMessage:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: Что не так с запросом в целом — текст для пользователя на русском языке.
+
+    FieldErrors:
+      type: object
+      additionalProperties: false
+      required: [fields]
+      properties:
+        fields:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/FieldError"
+          description: Ошибки входных параметров, по одной записи на ошибку.
+
+  responses:
+    BadRequest:
+      description: >-
+        Некорректные входные данные: параметр не проходит ограничения контракта
+        или запрос не проходит бизнес-проверку. Единственный код ошибки с телом.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationError"
+    NotFound:
+      description: >-
+        Ресурс, названный в пути запроса, не найден. Тела нет; какой именно
+        ресурс — сказано в описании этого ответа у операции.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"
+    Conflict:
+      description: >-
+        Запрос противоречит текущему состоянию ресурса. Тела нет; какое именно
+        состояние — сказано в описании этого ответа у операции.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"
+    PayloadTooLarge:
+      description: >-
+        Тело запроса больше допустимого предела. Тела ответа нет. Предел один
+        на всё API и назван в байтах в описании операции загрузки файла; запрос
+        отклоняется, не дочитывая тело до конца.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"
+    InternalError:
+      description: >-
+        Непредусмотренная ошибка сервера. Тела нет. Повтор запроса, скорее
+        всего, не поможет; по X-Request-ID ошибка находится в логах.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"
+    NotImplemented:
+      description: >-
+        Операция ещё не реализована на демо-стенде. Тела нет.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"
+    ServiceUnavailable:
+      description: >-
+        Недоступна зависимость сервера (база данных или сервис маршрутов OSRM).
+        Тела нет. Запрос можно повторить позже.
+      headers:
+        X-Request-ID:
+          $ref: "#/components/headers/X-Request-ID"

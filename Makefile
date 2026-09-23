@@ -21,7 +21,7 @@ FRONTEND_PORT ?= $(shell sed -n 's/^FRONTEND_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\
 SMOKE_URL ?= http://localhost:$(or $(FRONTEND_PORT),8080)
 
 # Directories whose comments must not reference internal documents or requirement ids.
-COMMENT_DIRS ?= back/src back/openapi
+COMMENT_DIRS ?= back/src specs
 
 PY311_CHECK := import sys; sys.exit(sys.version_info < (3, 11))
 
@@ -106,9 +106,12 @@ check-comments: ## Комментарии без ссылок на внутре�
 check: lint typecheck test-unit check-comments ## lint + typecheck + test-unit + check-comments
 
 # The output is byte-stable only for the generator version pinned in back/pyproject.toml.
-gen-api: ## Перегенерировать Pydantic-схемы по openapi/openapi.yaml
-	cd back && $(PY) -m datamodel_code_generator \
-		--input openapi/openapi.yaml --input-file-type openapi \
-		--output-model-type pydantic_v2.BaseModel --field-constraints --use-annotated \
-		--target-python-version 3.11 --disable-timestamp --formatters ruff-format ruff-check \
-		--output src/api/schemas/generated/models.py
+# One run per spec file: a run emits only the schemas its input references, so the
+# shared error schemas in common.yaml would be missing from the openapi.yaml run.
+GEN_API = $(PY) -m datamodel_code_generator --input-file-type openapi \
+	--output-model-type pydantic_v2.BaseModel --field-constraints --use-annotated \
+	--target-python-version 3.11 --disable-timestamp --formatters ruff-format ruff-check
+
+gen-api: ## Перегенерировать Pydantic-схемы по specs/openapi.yaml и specs/common.yaml
+	cd back && $(GEN_API) --input ../specs/openapi.yaml --output src/api/schemas/generated/models.py
+	cd back && $(GEN_API) --input ../specs/common.yaml --output src/api/schemas/generated/common.py

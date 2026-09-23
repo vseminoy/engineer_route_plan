@@ -125,3 +125,22 @@ def test_configure_logging_keeps_uvicorn_access_log_off(
     # uvicorn switches its access log on by exactly this check.
     assert access_logger.hasHandlers() is False
     assert capsys.readouterr().err == ""
+
+
+def test_configure_logging_drops_uvicorn_duplicate_of_unhandled_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _apply_uvicorn_default_logging()
+
+    configure_logging(_json_settings())
+    configure_logging(_json_settings())  # a second app in the process adds no second filter
+    error_logger = logging.getLogger("uvicorn.error")
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        error_logger.exception("Exception in ASGI application\n")
+    error_logger.error("Some other uvicorn error")
+
+    lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert [line["event"] for line in lines] == ["Some other uvicorn error"]
+    assert len(error_logger.filters) == 1

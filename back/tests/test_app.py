@@ -1,10 +1,13 @@
 import json
 
 import pytest
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src import app as app_module
 from src.config import Settings
+from src.errors import AppError
 
 
 class _FakePool:
@@ -23,7 +26,9 @@ def _fake_settings() -> Settings:
     return Settings(database_url="postgresql://test/test", osrm_url="http://osrm.test")
 
 
-def test_lifespan_creates_and_opens_db_pool_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lifespan_creates_and_opens_db_pool_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fake_pool = _FakePool()
     monkeypatch.setattr(app_module, "create_db_pool", lambda settings: fake_pool)
     app = app_module.create_app(settings=_fake_settings())
@@ -139,9 +144,8 @@ def test_successful_health_probe_is_not_logged_at_info(
 def test_http_request_finished_is_logged_on_unhandled_exception(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # No exception handler is registered yet (`10-errors.md` adds one in a later
-    # changeset), so an unhandled exception must still reach the access log —
-    # otherwise a 5xx request disappears from observability entirely.
+    # The `500` is built by the `Exception` handler outside the request
+    # middleware; the request must still reach the access log.
     app = app_module.create_app(settings=_fake_settings())
 
     @app.get("/boom")
@@ -160,3 +164,10 @@ def test_http_request_finished_is_logged_on_unhandled_exception(
     assert len(finished) == 1
     assert finished[0]["status"] == 500
     assert finished[0]["path"] == "/boom"
+
+
+def test_create_app_registers_error_handlers() -> None:
+    handlers = app_module.create_app(settings=_fake_settings()).exception_handlers
+
+    for exc_class in (AppError, RequestValidationError, StarletteHTTPException, Exception):
+        assert exc_class in handlers

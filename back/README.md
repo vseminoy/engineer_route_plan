@@ -1,6 +1,6 @@
 # Backend
 
-FastAPI-сервис планирования маршрутов выездных инженеров. Контракт API — [`openapi/openapi.yaml`](openapi/openapi.yaml), сценарии вызовов — [`src/api/routes/sequence_diagrams.md`](src/api/routes/sequence_diagrams.md).
+FastAPI-сервис планирования маршрутов выездных инженеров. Контракт API — [`specs/openapi.yaml`](../specs/openapi.yaml) и общие компоненты [`specs/common.yaml`](../specs/common.yaml) в корне репозитория (один контракт для backend и фронтенда), сценарии вызовов — [`src/api/routes/sequence_diagrams.md`](src/api/routes/sequence_diagrams.md).
 
 ## Установка и запуск
 
@@ -28,9 +28,12 @@ make test              # все тесты
 
 ## Устройство
 
-- `src/config.py` — настройки (`pydantic-settings`), читаются из переменных окружения/`.env`.
+- `src/config.py` — настройки (`pydantic-settings`), читаются из переменных окружения/`.env`; `MAX_REQUEST_BODY_BYTES` — предел тела запроса в байтах, по умолчанию 10 МБ.
 - `src/logging.py` — структурированное логирование (`structlog`): JSON или человекочитаемый вывод по `LOG_FORMAT`, идентификатор запроса и идентификатор длительной операции (`run_id`) как поля записи, а не текст. Строки самого uvicorn выходят в том же формате; его access-лог выключен.
 - `src/api/deps.py` — `Depends`-фабрики инфраструктуры: пул соединений БД, HTTP-клиент к OSRM.
-- `src/app.py` — сборка приложения: настройка логирования, `lifespan` (создание/закрытие пула и клиента), регистрация роутеров, логирующая middleware (по записи `http_request_finished` на запрос; успешная проба `/health` — на уровне `debug`).
+- `src/app.py` — сборка приложения: настройка логирования, `lifespan` (создание/закрытие пула и клиента), регистрация роутеров и обработчиков ошибок, логирующая middleware (по записи `http_request_finished` на запрос; успешная проба `/health` — на уровне `debug`; запрос, не дошедший ни до одного роута, — с `path="<unmatched>"`).
+- `src/errors.py` — доменные исключения без знания об HTTP: `InvalidInput` (с `message` или `fields`), `NotFound`, `Conflict`, `DependencyUnavailable`; у каждого `reason` для лога и бизнес-параметры `params`. Доменные ошибки операций — их наследники.
+- `src/api/errors.py` — единственное место, где собирается ответ ошибки. Тело есть только у `400` (`{"message": ...}` или `{"fields": [{"name", "message"}]}`, тексты на русском, не больше 20 полей); `404`, `405`, `409`, `413`, `500`, `501`, `503` — без тела, текст для пользователя строит фронтенд по операции и коду. Ошибка валидации запроса — `400`, а не `422`, запись `request_validation_failed` с именами полей без значений; непредусмотренное исключение — `500` и запись `unhandled_error` со стеком. Бизнес-ошибку логирует маршрут (`<операция>_failed`), ошибку БД или OSRM — место её возникновения; обработчик их повторно не пишет. Все ветки — в [диаграмме](src/api/routes/sequence_diagrams.md#ошибки-любой-операции--единый-обработчик).
+- `src/api/body_limit.py` — ASGI-middleware предела тела: `413` без тела и с `Connection: close` сразу по `Content-Length` или при чтении тела без него; тело не буферизуется.
 - `src/api/routes/not_implemented.py` — заглушка: любой запрос под `/api/v1`, не совпавший с реализованной операцией, получает `501` без тела; регистрируется последней и в контракт не входит.
-- `src/api/routes/` — рукописные роутеры; `src/api/schemas/generated/` — Pydantic-схемы, сгенерированные из `openapi/openapi.yaml` командой `make gen-api`, не редактируются руками.
+- `src/api/routes/` — рукописные роутеры; `src/api/schemas/generated/` — Pydantic-схемы, сгенерированные командой `make gen-api` (`models.py` — из `specs/openapi.yaml`, `common.py` — из `specs/common.yaml`, по запуску генератора на файл), не редактируются руками.

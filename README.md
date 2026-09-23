@@ -20,7 +20,7 @@ make down     # остановить; make reset — ещё и удалить д
 ```bash
 make install  # back/.venv с dev-зависимостями; на macOS системный python3 — 3.9: make install PYTHON=python3.11
 make check    # lint + typecheck + unit-тесты + проверка комментариев
-make gen-api  # перегенерировать Pydantic-схемы после правки back/openapi/openapi.yaml
+make gen-api  # перегенерировать Pydantic-схемы после правки specs/openapi.yaml или specs/common.yaml
 make run      # backend на :8002 с автоперезагрузкой; сначала cp back/.env.example back/.env
 ```
 
