@@ -1,0 +1,106 @@
+# Demo stand: `cp .env.example .env && docker compose up`.
+# UI and API are served at http://localhost:${FRONTEND_PORT}.
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: downloads the region extract and builds the MLD graph into the volume.
+  # Skips the work when the volume already holds a graph built from the same URL; an
+  # interrupted download of the same URL is resumed rather than restarted.
+  osrm-prepare:
+    image: ghcr.io/project-osrm/osrm-backend:v6.0.0
+    environment:
+      OSRM_PBF_URL: ${OSRM_PBF_URL:?set in .env}
+    volumes:
+      - osrm-data:/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        cd /data
+        if [ -f ready ] && [ "$$(cat ready)" = "$$OSRM_PBF_URL" ]; then
+          echo "osrm-prepare: graph is up to date"
+          exit 0
+        fi
+        rm -f ready region.osrm*
+        if [ "$$(cat region.url 2>/dev/null || true)" != "$$OSRM_PBF_URL" ]; then
+          rm -f region.osm.pbf region.osm.pbf.part
+          echo "$$OSRM_PBF_URL" > region.url
+        fi
+        if [ ! -f region.osm.pbf ]; then
+          echo "osrm-prepare: downloading $$OSRM_PBF_URL"
+          wget -c -O region.osm.pbf.part "$$OSRM_PBF_URL"
+          mv region.osm.pbf.part region.osm.pbf
+        fi
+        echo "osrm-prepare: extracting"
+        osrm-extract -p /opt/car.lua region.osm.pbf
+        echo "osrm-prepare: partitioning"
+        osrm-partition region.osrm
+        echo "osrm-prepare: customizing"
+        osrm-customize region.osrm
+        echo "$$OSRM_PBF_URL" > ready
+        rm -f region.osm.pbf region.url
+        echo "osrm-prepare: done"
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v6.0.0
+    command: ["osrm-routed", "--algorithm", "mld", "/data/region.osrm"]
+    volumes:
+      - osrm-data:/data
+    depends_on:
+      # `restart`: a rebuilt graph is only picked up by a restarted osrm-routed.
+      osrm-prepare:
+        condition: service_completed_successfully
+        restart: true
+
+  # Starts without waiting for OSRM: the graph may take a long time to build, and
+  # the backend opens its OSRM client lazily.
+  backend:
+    build: ./back
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      OSRM_URL: http://osrm:5000
+      APP_MODE: ${APP_MODE:-demo}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: json
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:?set in .env}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8001}:8001"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    build: ./front
+    environment:
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:?set in .env}
+    ports:
+      # Loopback by default: the API has no authentication, so exposing the stand to
+      # the network is an explicit choice via FRONTEND_BIND.
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      # `restart`: nginx resolves `backend` once at startup.
+      backend:
+        condition: service_healthy
+        restart: true
+
+volumes:
+  db-data:
+  osrm-data:

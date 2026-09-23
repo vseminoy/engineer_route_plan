@@ -14,7 +14,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: process.env.VITE_BACKEND_ORIGIN ?? 'http://localhost:8000',
+        target: process.env.VITE_BACKEND_ORIGIN ?? 'http://localhost:8001',
         changeOrigin: true
       }
     }

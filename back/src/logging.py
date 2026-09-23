@@ -61,6 +61,21 @@ def configure_logging(settings: Settings) -> None:
     root.handlers = [handler]
     root.setLevel(settings.log_level)
 
+    # uvicorn installs its own plain-text handlers with `propagate=False`; handing
+    # its loggers to the root keeps every line of the process in one format.
+    for name in ("uvicorn", "uvicorn.error"):
+        uvicorn_logger = logging.getLogger(name)
+        uvicorn_logger.handlers.clear()
+        uvicorn_logger.propagate = True
+
+    # uvicorn enables its access log whenever `uvicorn.access` has a handler anywhere
+    # up the hierarchy, `--no-access-log` notwithstanding, so it is cut off from the
+    # root. The request middleware logs the route template instead of the raw URL.
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.handlers.clear()
+    access_logger.propagate = False
+    access_logger.disabled = True
+
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     return structlog.get_logger(name)

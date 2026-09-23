@@ -64,6 +64,12 @@ def test_create_app_registers_health_route() -> None:
     assert "/health" in app.openapi()["paths"]
 
 
+def test_create_app_registers_not_implemented_stub_last() -> None:
+    app = app_module.create_app(settings=_fake_settings())
+
+    assert getattr(app.routes[-1], "path", None) == "/api/v1/{path:path}"
+
+
 def test_request_id_header_generated_when_absent() -> None:
     app = app_module.create_app(settings=_fake_settings())
 
@@ -94,13 +100,14 @@ def test_request_id_header_rejects_invalid_value() -> None:
 
 
 def test_http_request_finished_is_logged(capsys: pytest.CaptureFixture[str]) -> None:
-    # `capture_logs()` can't be used here: entering `TestClient` runs `lifespan`,
-    # which calls `configure_logging` — that replaces structlog's global config
-    # (not just its processors, unlike `capture_logs`'s own swap) partway through
-    # the `with`, so the request's own log never reaches the capture. Reading the
-    # real (JSON) stderr output side-steps the conflict and matches what the app
-    # actually emits.
-    app = app_module.create_app(settings=_fake_settings())
+    # Reads the real (JSON) stderr rather than `capture_logs()`: `create_app` calls
+    # `configure_logging`, which replaces structlog's global config, and what the
+    # app actually emits is what the check is about. DEBUG: a successful health
+    # probe is logged at that level.
+    settings = Settings(
+        database_url="postgresql://test/test", osrm_url="http://osrm.test", log_level="DEBUG"
+    )
+    app = app_module.create_app(settings=settings)
 
     with TestClient(app) as client:
         client.get("/health")
@@ -114,6 +121,19 @@ def test_http_request_finished_is_logged(capsys: pytest.CaptureFixture[str]) -> 
     assert finished[0]["path"] == "/health"
     assert finished[0]["status"] == 200
     assert isinstance(finished[0]["duration_ms"], int)
+
+
+def test_successful_health_probe_is_not_logged_at_info(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app = app_module.create_app(settings=_fake_settings())
+
+    with TestClient(app) as client:
+        client.get("/health")
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    events = [json.loads(line) for line in lines]
+    assert not [e for e in events if e["event"] == "http_request_finished"]
 
 
 def test_http_request_finished_is_logged_on_unhandled_exception(

@@ -5,6 +5,9 @@ front/node_modules
 front/dist
 front/.vite
 
+#stand
+/.env
+
 #backend
 back/.venv
 __pycache__/

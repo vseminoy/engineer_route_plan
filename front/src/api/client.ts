@@ -20,7 +20,9 @@ async function parseErrorBody(res: Response): Promise<ApiErrorBody> {
   } catch {
     // fall through to the generic body below
   }
-  return { error_code: 'UNKNOWN', message: res.statusText || 'Request failed' };
+  const message =
+    res.status === 501 ? 'Эта функция ещё не реализована' : res.statusText || 'Request failed';
+  return { error_code: 'UNKNOWN', message };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

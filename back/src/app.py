@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, Response
 
 from src.api.deps import create_db_pool, create_osrm_client
 from src.api.routes.health import router as health_router
+from src.api.routes.not_implemented import add_not_implemented_stub
 from src.config import Settings, get_settings
 from src.logging import configure_logging, get_logger
 
@@ -20,6 +21,9 @@ _REQUEST_ID_HEADER = "X-Request-ID"
 # else is replaced rather than echoed — an unvalidated header value would go
 # straight into a response header and every log line of the request.
 _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Polled by the container healthcheck every few seconds: a successful probe is
+# logged at debug so it does not drown out real traffic at the default level.
+_PROBE_PATHS = frozenset({"/health"})
 
 
 def _route_path(request: Request) -> str:
@@ -32,10 +36,12 @@ def _route_path(request: Request) -> str:
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
 
+    # Configured when the app is built, not in `lifespan`: uvicorn imports the app
+    # before logging its own startup lines, so those come out in the same format.
+    configure_logging(app_settings)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        configure_logging(app_settings)
-
         db_pool = create_db_pool(app_settings)
         await db_pool.open(wait=False)
         app.state.db_pool = db_pool
@@ -83,10 +89,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             raise
 
-        access_logger.info(
+        path = _route_path(request)
+        log = (
+            access_logger.debug
+            if path in _PROBE_PATHS and response.status_code < 400
+            else access_logger.info
+        )
+        log(
             "http_request_finished",
             method=request.method,
-            path=_route_path(request),
+            path=path,
             status=response.status_code,
             duration_ms=round((time.monotonic() - started_at) * 1000),
         )
@@ -94,4 +106,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     app.include_router(health_router)
+    add_not_implemented_stub(app)
     return app
