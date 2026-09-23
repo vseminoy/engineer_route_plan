@@ -2,4 +2,35 @@ openapi: 3.1.0
 info:
   title: Engineer Route Plan API
   version: 0.1.0
-paths: {}
+paths:
+  /health:
+    get:
+      operationId: get_health
+      summary: Liveness-проверка процесса backend
+      description: >-
+        Возвращает 200, если процесс FastAPI запущен и отвечает на запросы.
+        Проверяет только сам процесс (liveness) — доступность PostgreSQL и
+        OSRM эндпоинт не опрашивает; их наличие для демо-стенда проверяется
+        отдельно на уровне Docker Compose (healthcheck каждого сервиса).
+        Без аутентификации, как и весь backend.
+      responses:
+        "200":
+          description: Процесс работает и отвечает на запросы
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      additionalProperties: false
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          description: Статус процесса; поле присутствует со значением "ok" в любом полученном ответе
+        version:
+          type: string
+          description: Версия приложения из метаданных пакета (совпадает с info.version)

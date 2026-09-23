@@ -1,0 +1,571 @@
+/* Design tokens match the approved mockup (Claude Artifact
+   JRzzrv6QUwgp5XCHpkBfAR) — see docs/bft/04_tor_frontend.md / 06_spec_frontend.md
+   for the requirements these implement. */
+:root {
+  --color-bg: #eef1f5;
+  --color-surface: #ffffff;
+  --color-map-surface: #e9edf2;
+  --color-border: rgba(18, 21, 26, 0.08);
+  --color-text-primary: #12151a;
+  --color-text-secondary: #5b6270;
+  --color-text-muted: #8a8f98;
+  --color-accent: #2a78d6;
+  --color-danger: #d03b3b;
+  --color-danger-bg: #fceeec;
+  --color-danger-text: #b23a2b;
+  --color-success-bg: #e6f4e6;
+  --color-success-text: #006300;
+  --color-changed-bg: #fcefd6;
+  --color-changed-text: #8a5a00;
+  --color-panel-width: 380px;
+  --breakpoint-tablet: 1024px;
+  --breakpoint-mobile: 768px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: 'Golos Text', system-ui, -apple-system, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* ---- Plan screen shell ---- */
+
+.plan-screen {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.plan-screen__header {
+  height: 64px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.plan-screen__body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.plan-screen__map-column {
+  flex: 1;
+  padding: 20px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.plan-screen__map-surface {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--color-map-surface);
+  border: 1px solid var(--color-border);
+}
+
+.side-panel {
+  width: var(--color-panel-width);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+}
+
+.side-panel__tabs {
+  display: flex;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.side-panel__tab {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 12px 4px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-muted);
+  white-space: normal;
+  line-height: 1.2;
+}
+
+.side-panel__tab--active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+.side-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ---- Tablet: narrower panel, still side-by-side (04_tor_frontend.md §5) ---- */
+@media (max-width: 1023px) and (min-width: 768px) {
+  .side-panel {
+    width: 300px;
+  }
+}
+
+/* ---- Mobile ≤767px: map full-bleed, panel becomes a bottom sheet whose
+   tab bar sits at the BOTTOM edge, acting as bottom navigation — same
+   markup as desktop, just re-flowed (04_tor_frontend.md §5). ---- */
+@media (max-width: 767px) {
+  .plan-screen__body {
+    position: relative;
+  }
+
+  .plan-screen__map-column {
+    padding: 0;
+    position: absolute;
+    inset: 0;
+  }
+
+  .plan-screen__map-surface {
+    border-radius: 0;
+    border: none;
+  }
+
+  .side-panel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-height: 70vh;
+    border-left: none;
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -8px 28px rgba(18, 21, 26, 0.15);
+    flex-direction: column-reverse; /* tab bar renders last in markup, ends up pinned to the bottom */
+    z-index: 20;
+  }
+
+  .side-panel__tabs {
+    border-bottom: none;
+    border-top: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+
+  .side-panel__tab {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .side-panel__body {
+    max-height: calc(70vh - 56px);
+  }
+
+  .plan-screen__header {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(6px);
+  }
+}
+
+/* ---- Engineer card ---- */
+
+.engineer-card {
+  border: 1.5px solid var(--color-border);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  background: var(--color-surface);
+}
+
+.engineer-card--selected {
+  border-color: var(--engineer-color, var(--color-accent));
+  background: color-mix(in srgb, var(--engineer-color, var(--color-accent)) 8%, white);
+}
+
+.engineer-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.engineer-card__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.engineer-card__name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.engineer-card__meta {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.skill-icons {
+  display: flex;
+  gap: 4px;
+}
+
+.skill-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #f4f6f8;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.engineer-timeline {
+  position: relative;
+  height: 20px;
+  background: #f4f6f8;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.engineer-timeline__ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.stop-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  min-height: 44px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.stop-row:hover {
+  background: #f4f6f8;
+}
+
+.stop-row__main {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.stop-row__eta {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.stop-row__window {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  padding-left: 2px;
+}
+
+.diff-tag {
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.diff-tag--new {
+  color: var(--color-success-text);
+  background: var(--color-success-bg);
+}
+
+.diff-tag--changed {
+  color: var(--color-changed-text);
+  background: var(--color-changed-bg);
+}
+
+/* ---- Unassigned card ---- */
+
+.unassigned-card {
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 14px;
+  min-height: 44px;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--color-surface);
+}
+
+.unassigned-card:hover {
+  border-color: rgba(18, 21, 26, 0.2);
+}
+
+.urgent-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-danger-text);
+  background: var(--color-danger-bg);
+  border-radius: 6px;
+  padding: 2px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+}
+
+/* ---- Metrics ---- */
+
+.metric-card {
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.metric-card__value {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.metric-delta {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.metric-delta--good {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.metric-delta--bad {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.bar-row__label {
+  width: 92px;
+  flex-shrink: 0;
+}
+
+.bar-row__track {
+  flex: 1;
+  height: 6px;
+  background: #f4f6f8;
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+
+.bar-row__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 3px;
+}
+
+.bar-row__value {
+  width: 48px;
+  text-align: right;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Replan form ---- */
+
+.replan-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 6px;
+  min-height: 44px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.replan-radio:hover {
+  background: #f4f6f8;
+}
+
+.replan-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #f4f6f8;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.replan-fields input,
+.replan-fields select {
+  font-size: 14px;
+  padding: 8px 10px;
+  min-height: 44px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 1px solid rgba(18, 21, 26, 0.14);
+  background: var(--color-surface);
+}
+
+.btn-primary {
+  background: var(--color-accent);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 44px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* ---- Diff banner ---- */
+
+.diff-banner {
+  flex-shrink: 0;
+  background: #eaf2fc;
+  border: 1px solid #bbd6f2;
+  border-radius: 12px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---- Ticket modal ---- */
+
+.ticket-modal__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(18, 21, 26, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.ticket-modal__card {
+  width: 480px;
+  max-width: calc(100vw - 32px);
+  max-height: 720px;
+  overflow-y: auto;
+  background: var(--color-surface);
+  border-radius: 16px;
+  padding: 28px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 24px 60px rgba(18, 21, 26, 0.35);
+}
+
+@media (max-width: 767px) {
+  .ticket-modal__overlay {
+    background: var(--color-surface);
+    align-items: stretch;
+  }
+
+  .ticket-modal__card {
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    height: 100%;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
+
+/* ---- Loading / errors ---- */
+
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(238, 241, 245, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  z-index: 200;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.error-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-text-primary);
+  color: #fff;
+  padding: 12px 18px;
+  border-radius: 10px;
+  font-size: 14px;
+  z-index: 300;
+  max-width: min(480px, calc(100vw - 32px));
+}

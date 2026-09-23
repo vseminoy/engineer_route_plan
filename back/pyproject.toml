@@ -2,15 +2,36 @@
 name = "engineer-route-plan-backend"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.4,<3",
+    "httpx>=0.27,<1",
+    "psycopg[binary,pool]>=3.2,<4",
+    "structlog>=25.5,<27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<1",
+    "schemathesis>=3.34,<4",
+    "ruff>=0.6,<1",
+    "mypy>=1.11,<2",
+    "datamodel-code-generator>=0.25,<1",
+]
 
 [tool.pytest.ini_options]
 markers = [
     "integration: tests requiring external services (PostgreSQL, OSRM)",
 ]
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
 
 [tool.mypy]
 python_version = "3.11"
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
