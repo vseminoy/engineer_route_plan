@@ -19,7 +19,14 @@ from src.api.schemas.generated.common import (
     RequestMessage,
     ValidationError,
 )
-from src.errors import AppError, Conflict, DependencyUnavailable, InvalidInput, NotFound
+from src.errors import (
+    AppError,
+    Conflict,
+    DatabaseFailure,
+    DependencyUnavailable,
+    InvalidInput,
+    NotFound,
+)
 from src.logging import get_logger
 
 logger = get_logger(__name__)
@@ -32,6 +39,7 @@ _STATUS_BY_ERROR: tuple[tuple[type[AppError], int], ...] = (
     (NotFound, 404),
     (Conflict, 409),
     (DependencyUnavailable, 503),
+    (DatabaseFailure, 500),
 )
 
 # `loc` of a Pydantic error starts with where the value came from; the contract

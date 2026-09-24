@@ -20,8 +20,8 @@ FRONTEND_PORT ?= $(shell sed -n 's/^FRONTEND_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\
 # Override for a stand bound to another address (FRONTEND_BIND).
 SMOKE_URL ?= http://localhost:$(or $(FRONTEND_PORT),8080)
 
-# Directories whose comments must not reference internal documents or requirement ids.
-COMMENT_DIRS ?= back/src specs
+# Code and specs whose comments must not reference internal documents or requirement ids.
+COMMENT_DIRS ?= back/src back/alembic/env.py back/alembic/versions specs
 
 PY311_CHECK := import sys; sys.exit(sys.version_info < (3, 11))
 
@@ -98,7 +98,7 @@ test-integration: ## Тесты с PostgreSQL и OSRM
 # grep exits 1 when nothing is found — the only passing outcome; 0 (found) and
 # 2 (grep error) both fail the target. Binary files and bytecode are skipped.
 check-comments: ## Комментарии без ссылок на внутренние документы и номера требований
-	@grep -rnIE --exclude-dir=__pycache__ '\.md\b|§|AGENTS|\b(BR|FR|NFR)-[0-9]+' $(COMMENT_DIRS); \
+	@grep -rnIE --exclude-dir=__pycache__ --exclude-dir='*.egg-info' '\.md\b|§|AGENTS|\b(BR|FR|NFR)-[0-9]+' $(COMMENT_DIRS); \
 		status=$$?; \
 		if [ $$status -eq 0 ]; then echo "check-comments: уберите ссылки выше"; fi; \
 		test $$status -eq 1

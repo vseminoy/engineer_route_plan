@@ -12,7 +12,14 @@ from pydantic_core import PydanticCustomError
 from src.api.schemas.generated.common import ValidationError
 from src.app import create_app
 from src.config import Settings
-from src.errors import AppError, Conflict, DependencyUnavailable, InvalidInput, NotFound
+from src.errors import (
+    AppError,
+    Conflict,
+    DatabaseFailure,
+    DependencyUnavailable,
+    InvalidInput,
+    NotFound,
+)
 from src.logging import get_logger
 
 log = get_logger("test")
@@ -71,6 +78,7 @@ _ERRORS: dict[str, AppError] = {
     "plan_not_found": PlanNotFound(reason="plan_not_found"),
     "conflict": Conflict(reason="x"),
     "dependency": DependencyUnavailable(reason="x"),
+    "db_failure": DatabaseFailure(reason="db_query_failed"),
     "bare": AppError(reason="x"),
 }
 
@@ -175,7 +183,13 @@ def test_invalid_input_fields_returns_400_with_fields() -> None:
 
 @pytest.mark.parametrize(
     ("kind", "status"),
-    [("not_found", 404), ("conflict", 409), ("dependency", 503), ("plan_not_found", 404)],
+    [
+        ("not_found", 404),
+        ("conflict", 409),
+        ("dependency", 503),
+        ("db_failure", 500),
+        ("plan_not_found", 404),
+    ],
 )
 def test_bodyless_error_codes(kind: str, status: int) -> None:
     with _client() as client:
@@ -196,9 +210,12 @@ def test_unmapped_app_error_returns_500(capsys: pytest.CaptureFixture[str]) -> N
     assert [e for e in _events(capsys) if e["event"] == "unhandled_error"]
 
 
-def test_app_error_is_not_logged_by_handler(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("kind", ["not_found", "db_failure"])
+def test_app_error_is_not_logged_by_handler(
+    capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
     with _client() as client:
-        client.get("/t/raise/not_found")
+        client.get(f"/t/raise/{kind}")
 
     names = {e["event"] for e in _events(capsys)}
     assert "unhandled_error" not in names

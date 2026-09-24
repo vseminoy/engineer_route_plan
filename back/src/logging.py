@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 import structlog
 
-from src.config import Settings
+from src.config import LoggingSettings
 
 
 def new_run_id() -> str:
@@ -25,7 +25,7 @@ class _DropAsgiException(logging.Filter):
         return record.getMessage().strip() != "Exception in ASGI application"
 
 
-def configure_logging(settings: Settings) -> None:
+def configure_logging(settings: LoggingSettings) -> None:
     """Wires structlog on top of stdlib `logging`, once, at app startup.
     Source: https://www.structlog.org/en/stable/standard-library.html
     (ProcessorFormatter + foreign_pre_chain recipe).

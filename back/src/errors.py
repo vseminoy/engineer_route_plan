@@ -47,3 +47,9 @@ class Conflict(AppError):
 
 class DependencyUnavailable(AppError):
     """The database or an external service failed; the request may be retried."""
+
+
+class DatabaseFailure(AppError):
+    """The database rejected a query in a way a retry would not fix (a constraint,
+    malformed data, an error in the SQL). The driver's details are logged where the
+    error happened and never reach the response."""

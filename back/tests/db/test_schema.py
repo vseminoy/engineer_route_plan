@@ -1,0 +1,584 @@
+from collections.abc import Iterator
+from datetime import datetime
+from typing import Any
+
+import psycopg
+import pytest
+from alembic import command
+from psycopg import errors
+from sqlalchemy.exc import ProgrammingError
+
+from tests.db.conftest import RO_PASSWORD, RW_PASSWORD, Database, alembic_config, applied_revisions
+
+pytestmark = pytest.mark.integration
+
+TABLES = ["regions", "engineers", "tickets", "plans", "assignments", "replan_events"]
+POINT = "ST_SetSRID(ST_MakePoint(37.62, 55.75), 4326)"
+
+
+def _tables(db: Database) -> set[str]:
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT table_name FROM information_schema.tables"
+            " WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _roles(db: Database) -> set[str]:
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT rolname FROM pg_roles WHERE rolname IN ('app_rw', 'app_ro') AND rolcanlogin"
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
+@pytest.fixture
+def rw(migrated_db: Database) -> Iterator[psycopg.Connection]:
+    """A connection as `app_rw` inside one transaction, rolled back after the test."""
+    conn = migrated_db.connect("app_rw", RW_PASSWORD)
+    try:
+        yield conn
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def _violation(conn: psycopg.Connection, sql: str, params: Any = None) -> psycopg.Error:
+    """Runs `sql` in a savepoint and returns the error it must raise."""
+    with pytest.raises(psycopg.Error) as raised, conn.transaction():
+        conn.execute(sql, params)
+    return raised.value
+
+
+def _region(conn: psycopg.Connection, code: str = "east") -> int:
+    row = conn.execute(
+        f"INSERT INTO regions (code, name, office_address, office_geom) "
+        f"VALUES (%s, 'Восток', 'адрес офиса', {POINT}) RETURNING id",
+        (code,),
+    ).fetchone()
+    assert row
+    return int(row[0])
+
+
+ENGINEER_SQL = (
+    "INSERT INTO engineers (region_id, name, start_geom, shift_start, shift_end,"
+    " vehicle_type, skills)"
+    f" VALUES (%(region_id)s, 'Бригада 1', {POINT}, %(shift_start)s, %(shift_end)s,"
+    " %(vehicle_type)s, %(skills)s) RETURNING id"
+)
+
+
+def _engineer_params(region_id: int, **overrides: Any) -> dict[str, Any]:
+    return {
+        "region_id": region_id,
+        "shift_start": "09:00",
+        "shift_end": "18:00",
+        "vehicle_type": "car",
+        "skills": ["local_work"],
+        **overrides,
+    }
+
+
+def _engineer(conn: psycopg.Connection, region_id: int, **overrides: Any) -> int:
+    row = conn.execute(ENGINEER_SQL, _engineer_params(region_id, **overrides)).fetchone()
+    assert row
+    return int(row[0])
+
+
+TICKET_SQL = (
+    "INSERT INTO tickets (region_id, external_id, required_skill, required_vehicle, priority,"
+    " address, geom, window_start, window_end, duration_min, status, received_at)"
+    " VALUES (%(region_id)s, 'T-1', %(required_skill)s, %(required_vehicle)s, %(priority)s,"
+    " 'адрес', " + POINT + ", %(window_start)s, %(window_end)s, %(duration_min)s,"
+    " %(status)s, %(received_at)s) RETURNING id"
+)
+
+
+def _ticket_params(region_id: int, **overrides: Any) -> dict[str, Any]:
+    return {
+        "region_id": region_id,
+        "required_skill": "local_work",
+        "required_vehicle": None,
+        "priority": 3,
+        "window_start": datetime(2026, 9, 23, 10, 0),
+        "window_end": datetime(2026, 9, 23, 12, 0),
+        "duration_min": 30,
+        "status": "sent",
+        "received_at": datetime(2026, 9, 22, 18, 0),
+        **overrides,
+    }
+
+
+def _ticket(conn: psycopg.Connection, region_id: int, **overrides: Any) -> int:
+    row = conn.execute(TICKET_SQL, _ticket_params(region_id, **overrides)).fetchone()
+    assert row
+    return int(row[0])
+
+
+def _plan(conn: psycopg.Connection, region_id: int) -> int:
+    row = conn.execute(
+        "INSERT INTO plans (region_id, plan_date, algorithm, created_at)"
+        " VALUES (%s, '2026-09-23', 'or_tools', '2026-09-22 20:00') RETURNING id",
+        (region_id,),
+    ).fetchone()
+    assert row
+    return int(row[0])
+
+
+ASSIGNMENT_SQL = (
+    "INSERT INTO assignments (plan_id, ticket_id, engineer_id, sequence_no, planned_arrival,"
+    " travel_time_min, travel_distance_m, unassigned_reason, explanation)"
+    " VALUES (%(plan_id)s, %(ticket_id)s, %(engineer_id)s, %(sequence_no)s,"
+    " %(planned_arrival)s, %(travel_time_min)s, %(travel_distance_m)s, %(unassigned_reason)s,"
+    " 'объяснение')"
+)
+
+
+def _assigned(plan_id: int, ticket_id: int, engineer_id: int, **overrides: Any) -> dict[str, Any]:
+    return {
+        "plan_id": plan_id,
+        "ticket_id": ticket_id,
+        "engineer_id": engineer_id,
+        "sequence_no": 1,
+        "planned_arrival": datetime(2026, 9, 23, 10, 30),
+        "travel_time_min": 15,
+        "travel_distance_m": 5400,
+        "unassigned_reason": None,
+        **overrides,
+    }
+
+
+def _unassigned(plan_id: int, ticket_id: int, **overrides: Any) -> dict[str, Any]:
+    return {
+        "plan_id": plan_id,
+        "ticket_id": ticket_id,
+        "engineer_id": None,
+        "sequence_no": None,
+        "planned_arrival": None,
+        "travel_time_min": None,
+        "travel_distance_m": None,
+        "unassigned_reason": "no_skill",
+        **overrides,
+    }
+
+
+# --- revision lifecycle -------------------------------------------------------------
+
+
+def test_upgrade_creates_schema(empty_db: Database) -> None:
+    command.upgrade(alembic_config(), "head")
+
+    assert set(TABLES) <= _tables(empty_db)
+    assert applied_revisions(empty_db) == [("5d23f2956ce7",)]
+    assert _roles(empty_db) == {"app_rw", "app_ro"}
+
+
+def test_downgrade_then_upgrade(migrated_db: Database) -> None:
+    command.downgrade(alembic_config(), "base")
+
+    assert not set(TABLES) & _tables(migrated_db)
+    assert _roles(migrated_db) == set()
+    with migrated_db.connect() as conn:
+        postgis = conn.execute("SELECT 1 FROM pg_extension WHERE extname = 'postgis'").fetchone()
+    assert postgis == (1,)
+
+    command.upgrade(alembic_config(), "head")
+    assert set(TABLES) <= _tables(migrated_db)
+
+
+def test_upgrade_requires_role_passwords(
+    empty_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("APP_RW_PASSWORD")
+
+    with pytest.raises(RuntimeError, match="APP_RW_PASSWORD"):
+        command.upgrade(alembic_config(), "head")
+
+    assert not set(TABLES) & _tables(empty_db)
+    assert applied_revisions(empty_db) == []
+
+
+def test_failed_ddl_rolls_back_whole_revision(empty_db: Database) -> None:
+    with empty_db.connect() as conn:
+        conn.execute("CREATE TABLE plans (id int)")
+        conn.commit()
+    try:
+        with pytest.raises(ProgrammingError) as raised:
+            command.upgrade(alembic_config(), "head")
+
+        assert isinstance(raised.value.orig, errors.DuplicateTable)
+        assert set(TABLES) & _tables(empty_db) == {"plans"}
+        assert applied_revisions(empty_db) == []
+        assert _roles(empty_db) == set()
+    finally:
+        with empty_db.connect() as conn:
+            conn.execute("DROP TABLE plans")
+            conn.commit()
+
+
+def test_role_password_is_not_sql(empty_db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    password = "rw'pa ss; DROP TABLE x"
+    monkeypatch.setenv("APP_RW_PASSWORD", password)
+
+    try:
+        command.upgrade(alembic_config(), "head")
+
+        with empty_db.connect("app_rw", password) as conn:
+            assert conn.execute("SELECT current_user").fetchone() == ("app_rw",)
+    finally:
+        command.downgrade(alembic_config(), "base")
+
+
+def test_existing_role_is_reset(empty_db: Database) -> None:
+    with empty_db.connect() as conn:
+        conn.execute("CREATE ROLE app_rw LOGIN CREATEROLE CREATEDB PASSWORD 'old'")
+        conn.commit()
+
+    command.upgrade(alembic_config(), "head")
+
+    with empty_db.connect() as conn:
+        row = conn.execute(
+            "SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls"
+            " FROM pg_roles WHERE rolname = 'app_rw'"
+        ).fetchone()
+    assert row == (False, False, False, False, False)
+    with empty_db.connect("app_rw", RW_PASSWORD) as conn:
+        assert conn.execute("SELECT current_user").fetchone() == ("app_rw",)
+
+
+# --- roles ----------------------------------------------------------------------------
+
+
+def test_app_rw_changes_data(rw: psycopg.Connection) -> None:
+    region_id = _region(rw)
+    rw.execute("UPDATE regions SET name = 'Восток-2' WHERE id = %s", (region_id,))
+    assert rw.execute("SELECT name FROM regions WHERE id = %s", (region_id,)).fetchone() == (
+        "Восток-2",
+    )
+    rw.execute("DELETE FROM regions WHERE id = %s", (region_id,))
+    assert rw.execute("SELECT count(*) FROM regions WHERE id = %s", (region_id,)).fetchone() == (
+        0,
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    ["CREATE TABLE x (id int)", "ALTER TABLE tickets ADD COLUMN y int", "DROP TABLE plans"],
+)
+def test_app_rw_cannot_change_schema(rw: psycopg.Connection, sql: str) -> None:
+    assert isinstance(_violation(rw, sql), errors.InsufficientPrivilege)
+
+
+def test_app_ro_is_read_only(migrated_db: Database) -> None:
+    with migrated_db.connect("app_ro", RO_PASSWORD) as conn:
+        for table in TABLES:
+            conn.execute(f"SELECT count(*) FROM {table}")
+        error = _violation(
+            conn,
+            f"INSERT INTO regions (code, name, office_address, office_geom)"
+            f" VALUES ('x', 'x', 'x', {POINT})",
+        )
+    assert isinstance(error, errors.InsufficientPrivilege)
+
+
+# --- time -------------------------------------------------------------------------------
+
+
+def test_timestamps_are_naive_without_default(migrated_db: Database) -> None:
+    with migrated_db.connect() as conn:
+        rows = conn.execute(
+            "SELECT table_name, column_name, data_type, column_default, datetime_precision"
+            " FROM information_schema.columns"
+            " WHERE table_schema = 'public' AND data_type LIKE 'timestamp%%'"
+        ).fetchall()
+        zoned = conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns"
+            " WHERE table_schema = 'public' AND data_type LIKE '%%with time zone'"
+        ).fetchall()
+    columns = {(r[0], r[1]) for r in rows}
+    assert columns == {
+        ("tickets", "window_start"),
+        ("tickets", "window_end"),
+        ("tickets", "received_at"),
+        ("plans", "created_at"),
+        ("assignments", "planned_arrival"),
+        ("replan_events", "triggered_at"),
+    }
+    assert {r[2] for r in rows} == {"timestamp without time zone"}
+    assert all(r[3] is None for r in rows)
+    assert {r[4] for r in rows} == {0}
+    assert zoned == []
+
+
+def test_timestamp_keeps_whole_seconds(rw: psycopg.Connection) -> None:
+    ticket_id = _ticket(rw, _region(rw), received_at=datetime(2026, 9, 22, 18, 0, 5, 700000))
+
+    row = rw.execute("SELECT received_at FROM tickets WHERE id = %s", (ticket_id,)).fetchone()
+
+    assert row == (datetime(2026, 9, 22, 18, 0, 6),)
+
+
+def test_naive_time_roundtrips_unchanged(rw: psycopg.Connection) -> None:
+    rw.execute("SET TIME ZONE 'America/New_York'")
+    ticket_id = _ticket(
+        rw,
+        _region(rw),
+        window_start=datetime(2026, 9, 23, 13, 20),
+        window_end=datetime(2026, 9, 23, 15, 0),
+    )
+    rw.execute("SET TIME ZONE 'UTC'")
+
+    row = rw.execute("SELECT window_start FROM tickets WHERE id = %s", (ticket_id,)).fetchone()
+
+    assert row == (datetime(2026, 9, 23, 13, 20),)
+    assert row[0].tzinfo is None
+
+
+# --- engineers --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("skills", [["emergency"], ["local_work", "connection", "emergency"]])
+def test_engineer_skills_valid(rw: psycopg.Connection, skills: list[str]) -> None:
+    _engineer(rw, _region(rw), skills=skills)
+
+
+@pytest.mark.parametrize(
+    "skills",
+    [
+        [],
+        ["local_work", "connection", "emergency", "local_work"],
+        ["cooking"],
+        ["local_work", None],
+        [["local_work"], ["connection"]],
+    ],
+    ids=["empty", "four", "unknown", "null", "two_dimensional"],
+)
+def test_engineer_skills_rejected(rw: psycopg.Connection, skills: list[Any]) -> None:
+    error = _engineer_violation(rw, skills=skills)
+    assert isinstance(error, errors.CheckViolation)
+    assert error.diag.constraint_name == "ck_engineers__skills"
+
+
+def _engineer_violation(rw: psycopg.Connection, **overrides: Any) -> psycopg.Error:
+    return _violation(rw, ENGINEER_SQL, _engineer_params(_region(rw), **overrides))
+
+
+def test_engineer_shift_order(rw: psycopg.Connection) -> None:
+    error = _engineer_violation(rw, shift_start="18:00", shift_end="09:00")
+    assert error.diag.constraint_name == "ck_engineers__shift_order"
+
+
+def test_engineer_vehicle_type(rw: psycopg.Connection) -> None:
+    error = _engineer_violation(rw, vehicle_type="truck")
+    assert error.diag.constraint_name == "ck_engineers__vehicle_type"
+
+
+# --- tickets ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "start",
+    [datetime(2026, 9, 23, 12, 0), datetime(2026, 9, 23, 13, 0)],
+    ids=["equal", "later"],
+)
+def test_ticket_window_order(rw: psycopg.Connection, start: datetime) -> None:
+    params = _ticket_params(_region(rw), window_start=start, window_end=datetime(2026, 9, 23, 12))
+    error = _violation(rw, TICKET_SQL, params)
+    assert error.diag.constraint_name == "ck_tickets__window_order"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "constraint"),
+    [
+        ("required_skill", "cooking", "ck_tickets__required_skill"),
+        ("required_vehicle", "truck", "ck_tickets__required_vehicle"),
+        ("priority", 0, "ck_tickets__priority_rank"),
+        ("status", "lost", "ck_tickets__status"),
+        ("duration_min", 0, "ck_tickets__duration_positive"),
+    ],
+)
+def test_ticket_closed_sets(
+    rw: psycopg.Connection, field: str, value: object, constraint: str
+) -> None:
+    error = _violation(rw, TICKET_SQL, _ticket_params(_region(rw), **{field: value}))
+    assert isinstance(error, errors.CheckViolation)
+    assert error.diag.constraint_name == constraint
+
+
+@pytest.mark.parametrize("rank", [1, 2, 3, 7])
+def test_ticket_priority_rank(rw: psycopg.Connection, rank: int) -> None:
+    _ticket(rw, _region(rw), priority=rank)
+
+
+def test_ticket_vehicle_may_be_absent(rw: psycopg.Connection) -> None:
+    _ticket(rw, _region(rw), required_vehicle=None)
+
+
+def test_ticket_requires_location(rw: psycopg.Connection) -> None:
+    sql = TICKET_SQL.replace(POINT, "NULL")
+    error = _violation(rw, sql, _ticket_params(_region(rw)))
+    assert isinstance(error, errors.NotNullViolation)
+    assert error.diag.column_name == "geom"
+
+
+# --- assignments ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def plan_rows(rw: psycopg.Connection) -> dict[str, int]:
+    region_id = _region(rw)
+    return {
+        "plan": _plan(rw, region_id),
+        "other_plan": _plan(rw, region_id),
+        "ticket": _ticket(rw, region_id),
+        "ticket2": _ticket(rw, region_id),
+        "engineer": _engineer(rw, region_id),
+    }
+
+
+def test_assignment_shapes_valid(rw: psycopg.Connection, plan_rows: dict[str, int]) -> None:
+    rw.execute(ASSIGNMENT_SQL, _assigned(plan_rows["plan"], plan_rows["ticket"], plan_rows["engineer"]))
+    rw.execute(ASSIGNMENT_SQL, _unassigned(plan_rows["plan"], plan_rows["ticket2"]))
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["assigned_without_travel", "assigned_with_reason", "unassigned_with_engineer", "neither"],
+)
+def test_assignment_shapes_rejected(
+    rw: psycopg.Connection, plan_rows: dict[str, int], shape: str
+) -> None:
+    plan, ticket, engineer = plan_rows["plan"], plan_rows["ticket"], plan_rows["engineer"]
+    params = {
+        "assigned_without_travel": _assigned(plan, ticket, engineer, travel_time_min=None),
+        "assigned_with_reason": _assigned(plan, ticket, engineer, unassigned_reason="no_skill"),
+        "unassigned_with_engineer": _unassigned(plan, ticket, engineer_id=engineer),
+        "neither": _unassigned(plan, ticket, unassigned_reason=None),
+    }[shape]
+    error = _violation(rw, ASSIGNMENT_SQL, params)
+    assert isinstance(error, errors.CheckViolation)
+    assert error.diag.constraint_name == "ck_assignments__assigned_or_reason"
+
+
+def test_assignment_ticket_once_per_plan(
+    rw: psycopg.Connection, plan_rows: dict[str, int]
+) -> None:
+    rw.execute(ASSIGNMENT_SQL, _unassigned(plan_rows["plan"], plan_rows["ticket"]))
+
+    error = _violation(rw, ASSIGNMENT_SQL, _unassigned(plan_rows["plan"], plan_rows["ticket"]))
+
+    assert isinstance(error, errors.UniqueViolation)
+    assert error.diag.constraint_name == "ux_assignments__plan_id_ticket_id"
+    rw.execute(ASSIGNMENT_SQL, _unassigned(plan_rows["other_plan"], plan_rows["ticket"]))
+
+
+def test_assignment_sequence_unique_per_engineer(
+    rw: psycopg.Connection, plan_rows: dict[str, int]
+) -> None:
+    plan, engineer = plan_rows["plan"], plan_rows["engineer"]
+    rw.execute(ASSIGNMENT_SQL, _assigned(plan, plan_rows["ticket"], engineer))
+
+    duplicate = _violation(rw, ASSIGNMENT_SQL, _assigned(plan, plan_rows["ticket2"], engineer))
+    zero = _violation(
+        rw, ASSIGNMENT_SQL, _assigned(plan, plan_rows["ticket2"], engineer, sequence_no=0)
+    )
+
+    assert isinstance(duplicate, errors.UniqueViolation)
+    assert duplicate.diag.constraint_name == "ux_assignments__plan_id_engineer_id_sequence_no"
+    assert zero.diag.constraint_name == "ck_assignments__sequence_no_positive"
+
+
+def test_assignment_arrival_whole_minute(
+    rw: psycopg.Connection, plan_rows: dict[str, int]
+) -> None:
+    params = _assigned(
+        plan_rows["plan"],
+        plan_rows["ticket"],
+        plan_rows["engineer"],
+        planned_arrival=datetime(2026, 9, 23, 10, 30, 15),
+    )
+    error = _violation(rw, ASSIGNMENT_SQL, params)
+    assert error.diag.constraint_name == "ck_assignments__planned_arrival_whole_minute"
+
+
+def test_assignment_reason_set(rw: psycopg.Connection, plan_rows: dict[str, int]) -> None:
+    params = _unassigned(plan_rows["plan"], plan_rows["ticket"], unassigned_reason="busy")
+    error = _violation(rw, ASSIGNMENT_SQL, params)
+    assert error.diag.constraint_name == "ck_assignments__unassigned_reason"
+
+
+# --- replan events, keys, documentation -------------------------------------------------
+
+
+def test_replan_event_types(rw: psycopg.Connection) -> None:
+    plan_id = _plan(rw, _region(rw))
+    sql = (
+        "INSERT INTO replan_events (plan_id, event_type, payload, triggered_at)"
+        " VALUES (%s, %s, '{}', '2026-09-23 13:20')"
+    )
+    for event_type in ("new_urgent_ticket", "new_ticket", "ticket_cancelled", "engineer_unavailable"):
+        rw.execute(sql, (plan_id, event_type))
+
+    error = _violation(rw, sql, (plan_id, "reorder"))
+
+    assert error.diag.constraint_name == "ck_replan_events__event_type"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        (
+            f"INSERT INTO engineers (region_id, name, start_geom, shift_start, shift_end,"
+            f" vehicle_type, skills) VALUES (999999, 'x', {POINT}, '09:00', '18:00', 'car',"
+            f" ARRAY['local_work'])"
+        ),
+        (
+            "INSERT INTO plans (region_id, plan_date, algorithm, parent_plan_id, created_at)"
+            " VALUES ((SELECT min(id) FROM regions), '2026-09-23', 'or_tools', 999999,"
+            " '2026-09-22 20:00')"
+        ),
+        (
+            "INSERT INTO assignments (plan_id, ticket_id, unassigned_reason, explanation)"
+            " VALUES ((SELECT min(id) FROM plans), 999999, 'no_skill', 'x')"
+        ),
+    ],
+    ids=["engineer_region", "plan_parent", "assignment_ticket"],
+)
+def test_foreign_keys_enforced(rw: psycopg.Connection, sql: str) -> None:
+    _plan(rw, _region(rw))
+    assert isinstance(_violation(rw, sql), errors.ForeignKeyViolation)
+
+
+def test_every_foreign_key_is_indexed(migrated_db: Database) -> None:
+    with migrated_db.connect() as conn:
+        unindexed = conn.execute(
+            """
+            SELECT c.conrelid::regclass::text, a.attname
+            FROM pg_constraint c
+            JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+            WHERE c.contype = 'f'
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_index i
+                  WHERE i.indrelid = c.conrelid AND i.indkey[0] = c.conkey[1]
+              )
+            """
+        ).fetchall()
+    assert unindexed == []
+
+
+def test_every_table_and_column_is_commented(migrated_db: Database) -> None:
+    with migrated_db.connect() as conn:
+        tables = conn.execute(
+            "SELECT relname FROM pg_class WHERE relname = ANY(%s)"
+            " AND obj_description(oid, 'pg_class') IS NULL",
+            (TABLES,),
+        ).fetchall()
+        columns = conn.execute(
+            "SELECT c.relname, a.attname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid"
+            " WHERE c.relname = ANY(%s) AND a.attnum > 0 AND NOT a.attisdropped"
+            " AND a.attname <> 'id' AND col_description(c.oid, a.attnum) IS NULL",
+            (TABLES,),
+        ).fetchall()
+    assert tables == []
+    assert columns == []

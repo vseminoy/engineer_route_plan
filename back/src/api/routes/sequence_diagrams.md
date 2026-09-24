@@ -101,7 +101,7 @@ sequenceDiagram
         else параметры не проходят ограничения контракта
             API->>H: RequestValidationError
             H->>H: лог request_validation_failed (путь-шаблон, имена первых 20 полей без значений, errors_total)
-            H-->>ReqMW: 400 {fields: [{name, message}]} (не больше 20; тексты по type ошибки, на русском)
+            H-->>ReqMW: 400 {fields: [{name, message}]} (не больше 20, тексты по type ошибки, на русском)
         else
             API->>Svc: вызов операции
             alt бизнес-проверка не пройдена

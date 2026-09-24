@@ -8,6 +8,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?set in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       POSTGRES_DB: ${POSTGRES_DB:?set in .env}
+      TZ: ${TZ:-Europe/Moscow}
+    ports:
+      # Loopback only: for a database client on this machine, not for the network.
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
     healthcheck:
@@ -65,22 +69,45 @@ services:
         condition: service_completed_successfully
         restart: true
 
+  # One-shot: brings the schema to the latest revision, then exits. It alone holds the
+  # schema owner's credentials and the role passwords, which the migration sets on the
+  # `app_rw` and `app_ro` roles it creates.
+  migrate:
+    build: ./back
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      MIGRATION_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      APP_RW_PASSWORD: ${APP_RW_PASSWORD:?set in .env}
+      APP_RO_PASSWORD: ${APP_RO_PASSWORD:?set in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: json
+      TZ: ${TZ:-Europe/Moscow}
+    depends_on:
+      db:
+        condition: service_healthy
+
   # Starts without waiting for OSRM: the graph may take a long time to build, and
-  # the backend opens its OSRM client lazily.
+  # the backend opens its OSRM client lazily. Connects as `app_rw`, which may change
+  # data but not the schema.
   backend:
     build: ./back
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql://app_rw:${APP_RW_PASSWORD:?set in .env}@db:5432/${POSTGRES_DB}
       OSRM_URL: http://osrm:5000
       APP_MODE: ${APP_MODE:-demo}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: json
       MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:?set in .env}
+      # Local time of the region: the app stores and serves naive local datetimes, so
+      # the process clock must be in the region's zone, not UTC.
+      TZ: ${TZ:-Europe/Moscow}
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8001}:8001"
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=2)"]
       interval: 5s

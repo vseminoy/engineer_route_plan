@@ -8,6 +8,19 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 
+class LocalDateTime(RootModel[str]):
+    root: Annotated[
+        str,
+        Field(
+            description="Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.",
+            examples=["2026-09-23T13:20:00"],
+            max_length=19,
+            min_length=19,
+            pattern="^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$",
+        ),
+    ]
+
+
 class FieldError(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
