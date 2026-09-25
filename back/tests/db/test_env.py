@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from tests.db.conftest import BACK_DIR, RO_PASSWORD, RW_PASSWORD, Database, applied_revisions
+from tests.conftest import BACK_DIR, RO_PASSWORD, RW_PASSWORD, Database, applied_revisions
 
 pytestmark = pytest.mark.integration
 

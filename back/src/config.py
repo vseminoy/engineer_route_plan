@@ -18,6 +18,11 @@ class Settings(LoggingSettings):
     app_mode: Literal["demo", "full"] = "demo"
     # Largest accepted request body, bytes; the upload of a data file is the biggest request.
     max_request_body_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    # Fallback geocoder for addresses missing from the geocache; empty switches it off.
+    nominatim_url: str = ""
+    nominatim_user_agent: str = "engineer-route-plan/0.1"
+    # Cache misses of one load sent to Nominatim; the rest stay without a point.
+    nominatim_max_lookups: int = Field(default=50, ge=0)
 
 
 class MigrationSettings(LoggingSettings):

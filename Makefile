@@ -21,12 +21,12 @@ FRONTEND_PORT ?= $(shell sed -n 's/^FRONTEND_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\
 SMOKE_URL ?= http://localhost:$(or $(FRONTEND_PORT),8080)
 
 # Code and specs whose comments must not reference internal documents or requirement ids.
-COMMENT_DIRS ?= back/src back/alembic/env.py back/alembic/versions specs
+COMMENT_DIRS ?= back/src back/alembic/env.py back/alembic/versions back/queries back/scripts specs
 
 PY311_CHECK := import sys; sys.exit(sys.version_info < (3, 11))
 
 .PHONY: help up down ps logs reset smoke \
-	install run lint fmt typecheck test test-unit test-integration check-comments check gen-api
+	install run lint fmt typecheck test test-unit test-integration check-comments check gen-api geocache
 
 help:
 	@awk 'BEGIN {FS = ":.*## "} \
@@ -115,3 +115,6 @@ GEN_API = $(PY) -m datamodel_code_generator --input-file-type openapi \
 gen-api: ## Перегенерировать Pydantic-схемы по specs/openapi.yaml и specs/common.yaml
 	cd back && $(GEN_API) --input ../specs/openapi.yaml --output src/api/schemas/generated/models.py
 	cd back && $(GEN_API) --input ../specs/common.yaml --output src/api/schemas/generated/common.py
+
+geocache: ## Догеокодировать адреса исходных наборов в back/data/geocache.csv (нужен интернет)
+	cd back && $(PY) -m scripts.build_geocache

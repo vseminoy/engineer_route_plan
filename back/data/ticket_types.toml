@@ -1,0 +1,93 @@
+# Ticket types of the input files mapped to what planning needs.
+#
+# A ticket's required skill comes from its HD type. Its kind of work (priority rank and
+# minutes on site) comes from the BK type, unless the HD entry names a work kind itself:
+# HD "Авария" is an emergency whatever the BK type says.
+# Priority rank: 1 is the most urgent. Minutes on site exclude the road.
+
+[work_types.emergency]
+priority = 1
+duration_min = 80
+
+[work_types.connection]
+priority = 2
+duration_min = 70
+
+[work_types.reorder]
+priority = 3
+duration_min = 20
+
+[work_types.local]
+priority = 3
+duration_min = 30
+
+[bk]
+"Подключение" = "connection"
+"Дозаказ" = "reorder"
+"Локальная заявка" = "local"
+"Глобальная проблема" = "local"
+
+[hd."Авария"]
+skill = "emergency"
+work_type = "emergency"
+
+[hd."Заявка на подключение"]
+skill = "connection"
+
+[hd."Конвергенция абонента"]
+skill = "connection"
+
+[hd."Заказ подключения/Дозаказ оборудования"]
+skill = "connection"
+
+[hd."Дозаказ оборудования"]
+skill = "connection"
+
+[hd."Переключение на Гбит/с"]
+skill = "local_work"
+
+[hd."Роутер. Замена техническим специалистом"]
+skill = "local_work"
+
+[hd."TVE/ENT. Замена приставки техником"]
+skill = "local_work"
+
+[hd."ТВ. Замена приставки техником"]
+skill = "local_work"
+
+[hd."Работа с кабелем"]
+skill = "local_work"
+
+[hd."Нет линка"]
+skill = "local_work"
+
+[hd."Низкая скорость"]
+skill = "local_work"
+
+[hd."Рост ошибок на порту"]
+skill = "local_work"
+
+[hd."Разрывы"]
+skill = "local_work"
+
+[hd."Мониторинг"]
+skill = "local_work"
+
+[hd."Информация"]
+skill = "local_work"
+
+[hd."IP-адрес 169..."]
+skill = "local_work"
+
+[hd."TVE/ENT. Другие ошибки"]
+skill = "local_work"
+
+# "Статус BK" values of the input files.
+[statuses]
+"Не отправлена" = "not_sent"
+"Отправлена" = "sent"
+"В пути" = "en_route"
+"В работе" = "in_progress"
+"Выполнена" = "completed"
+"Отменена" = "cancelled"
+"Просрочена" = "overdue"

@@ -8,7 +8,7 @@ from alembic import command
 from alembic.config import Config
 from testcontainers.community.postgres import PostgresContainer
 
-BACK_DIR = Path(__file__).resolve().parents[2]
+BACK_DIR = Path(__file__).resolve().parents[1]
 IMAGE = "postgis/postgis:16-3.4"
 RW_PASSWORD = "rw-test"
 RO_PASSWORD = "ro-test"

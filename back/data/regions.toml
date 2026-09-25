@@ -1,0 +1,44 @@
+# Regions: independent planning scenarios, one input file each.
+#
+# `center` is the fallback office point, [lat, lon]; `engineers` is how many demo
+# brigades the generator creates for the region.
+
+[regions.east]
+name = "Восток"
+center = [55.7250, 37.7450]
+engineers = 13
+
+[regions.south_east]
+name = "Юго-Восток"
+center = [55.6150, 37.7050]
+engineers = 12
+
+[regions.south_center]
+name = "Югоцентр"
+center = [55.6950, 37.6100]
+engineers = 11
+
+# Shift kinds of the demo brigades, local time. `share` is the fraction of a region's
+# brigades on that shift, rounded down; the brigades left over work the full day.
+# Evening and full-day shifts end at 23:30: arriving at 22:00, the end of the last
+# window, leaves time for the longest work on site (80 minutes).
+[shifts.morning]
+start = "10:00"
+end = "18:00"
+share = 0.25
+
+[shifts.evening]
+start = "15:30"
+end = "23:30"
+share = 0.25
+
+[shifts.full_day]
+start = "10:00"
+end = "23:30"
+
+# Remote towns of the Moscow region: a brigade that serves tickets there starts the day
+# at the town's point, [lat, lon], instead of the office.
+[remote_towns]
+"Домодедово" = [55.4363, 37.7662]
+"Кашира" = [54.8337, 38.1510]
+"Ступино" = [54.8870, 38.0780]

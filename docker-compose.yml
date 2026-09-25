@@ -98,6 +98,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: json
       MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:?set in .env}
+      NOMINATIM_URL: ${NOMINATIM_URL-}
       # Local time of the region: the app stores and serves naive local datetimes, so
       # the process clock must be in the region's zone, not UTC.
       TZ: ${TZ:-Europe/Moscow}

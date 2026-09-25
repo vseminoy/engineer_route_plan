@@ -8,7 +8,7 @@ from alembic import command
 from psycopg import errors
 from sqlalchemy.exc import ProgrammingError
 
-from tests.db.conftest import RO_PASSWORD, RW_PASSWORD, Database, alembic_config, applied_revisions
+from tests.conftest import RO_PASSWORD, RW_PASSWORD, Database, alembic_config, applied_revisions
 
 pytestmark = pytest.mark.integration
 

@@ -8,6 +8,15 @@
 - [`alembic/versions/5d23f2956ce7_initial_schema.py` — схема БД](#alembicversions5d23f2956ce7_initial_schemapy--схема-бд)
 - [`alembic/env.py` — запуск миграций](#alembicenvpy--запуск-миграций)
 - [`src/repository/db.py` — обёртка запросов к БД](#srcrepositorydbpy--обёртка-запросов-к-бд)
+- [`src/repository/region_data.py` — замена данных региона](#srcrepositoryregion_datapy--замена-данных-региона)
+- [`src/service/ticket_file.py` — чтение файла заявок](#srcserviceticket_filepy--чтение-файла-заявок)
+- [`src/service/ticket_types.py` — таблица соответствия типов заявок](#srcserviceticket_typespy--таблица-соответствия-типов-заявок)
+- [`src/service/regions.py` — конфигурация регионов](#srcserviceregionspy--конфигурация-регионов)
+- [`src/service/engineers_generator.py` — генератор демо-бригад](#srcserviceengineers_generatorpy--генератор-демо-бригад)
+- [`src/service/geocoding.py` — координаты адресов](#srcservicegeocodingpy--координаты-адресов)
+- [`src/service/loader.py` — загрузка данных региона](#srcserviceloaderpy--загрузка-данных-региона)
+- [`src/clients/nominatim.py` — клиент Nominatim](#srcclientsnominatimpy--клиент-nominatim)
+- [`scripts/build_geocache.py` — сборка гео-кэша](#scriptsbuild_geocachepy--сборка-гео-кэша)
 - [`src/api/errors.py` — единый обработчик ошибок](#srcapierrorspy--единый-обработчик-ошибок)
 - [`src/api/body_limit.py` — предел размера тела запроса](#srcapibody_limitpy--предел-размера-тела-запроса)
 - [`src/api/deps.py` — Depends-фабрики БД/OSRM](#srcapidepspy--depends-фабрики-бдosrm)
@@ -152,6 +161,222 @@
 | `test_run_pool_timeout_is_dependency_unavailable` | функция поднимает `PoolTimeout` (нет свободного соединения) | `db_query_failed` с `sqlstate = None`; `DependencyUnavailable(reason="db_unavailable")` |
 | `test_run_other_db_error_is_database_failure` | функция поднимает `psycopg.errors.UniqueViolation` | `db_query_failed` с `sqlstate = "23505"`; поднято `DatabaseFailure(reason="db_query_failed")`, `__cause__` — исходная ошибка; повтор не поможет — на HTTP это `500` без тела, обработчик второй записи не пишет |
 | `test_run_logs_no_parameters` | функция вызвана с адресом заявки в параметрах и падает с `OperationalError` | в записи `db_query_failed` только `query`, `sqlstate` и уровень — ни значений параметров, ни текста SQL |
+
+## `src/repository/region_data.py` — замена данных региона
+
+Файл: `tests/repository/test_region_data.py`.
+
+> Мока нет: `@pytest.mark.integration`, контейнер PostGIS и ревизия, как в разделе схемы БД;
+> запросы из `queries/*.sql` вызываются через aiosql под ролью `app_rw`. Нарушение ограничения
+> проверяется по имени ограничения в исходной ошибке драйвера (`__cause__`).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_replace_inserts_region_engineers_tickets` | пустая БД; регион `east`, 2 бригады, 3 заявки | возвращён `id` региона; в БД 1 регион, 2 бригады и 3 заявки этого региона; точки, смены, навыки, окна и `received_at` прочитаны обратно без изменений (время — наивное, как передано) |
+| `test_replace_same_code_keeps_region_id` | регион `east` загружен дважды с разным названием и офисом | тот же `id`; название, адрес и точка офиса — из второй загрузки |
+| `test_replace_removes_previous_region_data` | у региона есть бригады, заявки, два плана (второй — потомок первого), строки плана и событие перепланирования; загрузка нового набора | прежних бригад, заявок, планов, строк планов и событий региона нет; в БД только новый набор |
+| `test_replace_keeps_other_regions` | загружены `east` и `south_east`, затем `east` загружен повторно | данные `south_east` не изменились |
+| `test_replace_duplicate_external_id_loads_both` | две заявки с одинаковым `external_id` | обе вставлены, у каждой свой `id` |
+| `test_replace_constraint_violation_rolls_back` | у региона уже есть данные; новый набор содержит бригаду с 4 навыками | поднято `DatabaseFailure(reason="db_query_failed")`, причина — нарушение `ck_engineers__skills`; запись `db_query_failed`; прежние данные региона на месте, новых нет |
+| `test_replace_overnight_shift_rolls_back` | бригада со сменой `22:00–06:00` | `DatabaseFailure`, нарушение `ck_engineers__shift_order`; прежние данные на месте |
+
+## `src/service/ticket_file.py` — чтение файла заявок
+
+Файл: `tests/service/test_ticket_file.py`.
+
+> Мок не нужен: чистые функции над байтами и строками. Таблица типов — из тестовой копии
+> конфигурации, а не из `data/`.
+
+### Кодировка
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_csv_utf8` | CSV в UTF-8 без BOM, строка с кириллицей и служебная строка | строки и адрес офиса разобраны, кириллица без искажений |
+| `test_csv_utf8_bom` | тот же CSV в UTF-8 с BOM | результат совпадает с `test_csv_utf8`; первая колонка называется `Заявка`, а не `﻿Заявка` |
+| `test_csv_cp1251` | тот же CSV в cp1251 без BOM | результат совпадает с `test_csv_utf8` |
+| `test_csv_cp1251_after_utf8_bom` | байты UTF-8 BOM, за ними CSV в cp1251 | BOM отброшен, файл прочитан как cp1251; результат совпадает с `test_csv_utf8` |
+| `test_csv_source_files_read` | исходные файлы `docs/synthetic_data/*.csv` как есть (cp1251) | 66, 83 и 56 заявок; адрес офиса найден в каждом |
+| `test_csv_undecodable_rejected` | байты, не являющиеся ни UTF-8, ни cp1251 (`0x98` вне UTF-8-последовательности) | `InvalidInput(reason="file_encoding_invalid")` с `message` о формате файла |
+| `test_json_utf8_with_and_without_bom` | JSON-массив тех же заявок в UTF-8 без BOM и с BOM | результат совпадает с `test_csv_utf8` |
+| `test_json_cp1251_rejected` | тот же JSON в cp1251 | `InvalidInput(reason="file_encoding_invalid")` |
+
+### Формат и служебные строки
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_csv_columns_by_header` | колонки в другом порядке и без необязательной колонки `Подключение` (как в файлах контрольного распределения) | поля разобраны по заголовку |
+| `test_csv_missing_required_column` | в заголовке нет `Адрес` | `InvalidInput(reason="file_format_invalid")`, `message` называет недостающую колонку |
+| `test_json_not_array_of_objects` | JSON — объект, число, массив строк | `InvalidInput(reason="file_format_invalid")` |
+| `test_json_invalid_syntax` | обрезанный JSON | `InvalidInput(reason="file_format_invalid")` |
+| `test_unparsable_file_is_format_error` | поле CSV длиннее предела библиотеки `csv` (200 000 символов); JSON из 200 000 `[`; JSON с числом из 5000 цифр | `InvalidInput(reason="file_format_invalid")`, а не необработанное исключение (`500`) |
+| `test_json_bad_value_in_known_column` | в JSON значение «Адрес» — вложенный объект | `InvalidInput(reason="file_format_invalid")`, `message` называет колонку |
+| `test_unknown_columns_dropped` | JSON с ключом из 1000 символов (вложенный объект) и `Бригада`; CSV с колонками `Подключение` и `Бригада` | в строке только колонки, которые использует загрузчик; неизвестный ключ с вложенным объектом не ошибка |
+| `test_too_many_columns` | заголовок CSV из 20 005 колонок и 1000 пустых строк | `InvalidInput(reason="file_format_invalid")` быстрее 100 мс |
+| `test_too_many_rows` | CSV и JSON из 10 001 строки; CSV из 10 000 строк | `InvalidInput(reason="too_many_rows")` для 10 001; 10 000 строк разобраны |
+| `test_blank_rows_skipped` | две пустые строки и строка из одних `;` между заявками | не заявки, `rows_skipped = 3`, в `rows_invalid` не попали |
+| `test_sentinel_row_gives_office_address` | служебная строка `Адрес Офиса` и, в другом файле, `Адрес офиса` | обе отброшены до проверки полей, в `rows_skipped`; адрес офиса — значение второго столбца |
+| `test_no_sentinel_row` | файл без служебной строки | адреса офиса нет (`None`), заявки разобраны |
+
+### Строка-заявка
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_row_parsed` | валидная строка подключения | заявка: номер, типы BK/HD как есть, навык `connection`, ранг 2, 70 мин, район, адрес, окно `2026-08-17 10:00–12:00` без часового пояса |
+| `test_row_single_digit_hour` | окно `17.08.2026 0:01` – `17.08.2026 23:59` | окно `00:01–23:59` |
+| `test_row_missing_required_field` | пусто одно из полей `Заявка`, `Тип заявки HD`, `Начало`, `Окончание`, `Адрес` (параметризовано) | строка невалидна: номер строки файла и причина `missing_field` с именем колонки |
+| `test_row_bad_datetime` | `2026-08-17 10:00`, `17.08.2026`, `32.08.2026 10:00` | невалидна, причина `bad_datetime` |
+| `test_row_window_not_ordered` | начало окна равно окончанию и позже окончания | невалидна, причина `window_order` |
+| `test_row_unknown_type` | `Тип заявки HD` нет в таблице соответствия | невалидна, причина `unknown_type` |
+| `test_row_status_from_column` | колонка `Статус BK` со значением каждого из семи статусов словаря данных | статус `not_sent` … `overdue` по таблице |
+| `test_row_status_default_sent` | колонки `Статус BK` нет | статус `sent` |
+| `test_row_unknown_status` | `Статус BK` = `Неизвестно` | невалидна, причина `unknown_status` |
+| `test_row_received_at_start_of_day` | окно `17.08.2026 20:00–22:00` | `received_at = 2026-08-17 00:00:00`, без часового пояса |
+| `test_field_too_long` | адрес из 317 символов; район из 201 символа | невалидна, причина `field_too_long` с именем колонки |
+| `test_invalid_row_does_not_stop_others` | 3 строки, вторая невалидна | 2 заявки, 1 невалидная строка с номером 3 (строка заголовка — 1) |
+
+## `src/service/ticket_types.py` — таблица соответствия типов заявок
+
+Файл: `tests/service/test_ticket_types.py`.
+
+> Мок не нужен: чтение конфигурации из временного файла и чистая функция классификации.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_emergency_by_hd_whatever_bk` | HD = `Авария` при BK = `Глобальная проблема`, `Подключение`, `Локальная заявка`, пустом BK (параметризовано) | навык `emergency`, ранг 1, 80 мин |
+| `test_global_problem_without_emergency` | BK = `Глобальная проблема`, HD = `Информация` | `local_work`, ранг 3, 30 мин |
+| `test_connection_and_reorder_priorities` | BK = `Подключение` и BK = `Дозаказ` с HD = `Заказ подключения/Дозаказ оборудования` | оба `connection`; ранг 2 и 70 мин у подключения, ранг 3 и 20 мин у дозаказа |
+| `test_tv_and_tve_are_separate_values` | HD = `ТВ. Замена приставки техником` и `TVE/ENT. Замена приставки техником` | обе строки таблицы найдены, `local_work` |
+| `test_every_source_type_mapped` | все пары BK/HD из исходных файлов `docs/synthetic_data` и `docs/control_distribution` | ни одной пары без соответствия |
+| `test_unknown_hd` | HD, которого нет в таблице | `None` |
+| `test_config_from_file` | конфигурация с новым типом работ и новым рангом 4 | новый тип классифицируется с рангом 4 без изменений кода |
+| `test_config_invalid_rejected` | в конфигурации навык не из трёх допустимых, ранг 0, длительность 0 (параметризовано) | ошибка при чтении конфигурации с именем ключа |
+
+## `src/service/regions.py` — конфигурация регионов
+
+Файл: `tests/service/test_regions.py`.
+
+> Мок не нужен: чтение конфигурации из временного файла.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_regions_config_shipped` | `data/regions.toml` из репозитория | три региона `east`, `south_east`, `south_center`: название, центр, число бригад 13, 12, 11, три вида смен |
+| `test_unknown_region_code` | код `north` | `InvalidInput(reason="unknown_region")` с полем `region` |
+| `test_overnight_shift_rejected` | смена `22:00–06:00` и смена с началом, равным концу | ошибка при чтении конфигурации |
+| `test_too_few_full_day_engineers_rejected` | 5 бригад при долях 25 % / 25 % (на весь день остаётся 3) | ошибка при чтении: бригад «весь день» меньше четырёх |
+
+## `src/service/engineers_generator.py` — генератор демо-бригад
+
+Файл: `tests/service/test_engineers_generator.py`.
+
+> Мок не нужен: генератор — чистая функция от конфигурации региона, точки офиса и районов
+> заявок.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_count_from_region_config` | регион с 13 бригадами | 13 бригад |
+| `test_skills_one_to_three` | каждый регион из конфигурации | у каждой бригады от 1 до 3 различных навыков из `local_work`, `connection`, `emergency` |
+| `test_all_skills_and_vehicles_present` | каждый регион | в наборе есть все три навыка и все четыре типа транспорта |
+| `test_shift_kinds_split` | 13 бригад, доли 25 % / 25 % | 3 утренние `10:00–18:00`, 3 вечерние `15:30–23:30`, 7 на весь день `10:00–23:30` |
+| `test_full_day_covers_skills_and_vehicles` | каждый регион | бригады «весь день» вместе имеют все три навыка и все четыре типа транспорта |
+| `test_shifts_within_one_day` | каждый регион | у каждой бригады начало смены раньше конца, конец не позже `23:59` |
+| `test_deterministic` | два вызова с одинаковым входом | одинаковые бригады: имена, навыки, транспорт, смены, точки |
+| `test_start_at_office` | районы заявок только московские | все бригады стартуют из точки офиса |
+| `test_remote_town_start` | среди районов заявок `Домодедово` и `Ступино` | по одной бригаде «весь день» стартует из точки каждого из этих городов, остальные — из офиса |
+| `test_names_without_personal_data` | каждый регион | имя бригады — «Бригада N», без фамилий |
+
+## `src/service/geocoding.py` — координаты адресов
+
+Файл: `tests/service/test_geocoding.py`.
+
+> Замена стабами: клиент Nominatim — фейк, который возвращает заданную точку или `None`,
+> поднимает `DependencyUnavailable` и запоминает запросы. Гео-кэш — в памяти, точки удалённых
+> городов — тестовые. Логи — JSON-строки stderr, как в разделе загрузчика.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_remote_town_from_config` | адрес в Домодедово (по району и по названию в адресе) | точка Домодедово из конфигурации регионов; клиент не вызван; не считается промахом кэша |
+| `test_query_from_address` | `Город Москва, пр-кт.Волгоградский, д. 128 к 5, кв. 12`; `д 83с 4`; `д. 24/30 стр. 1`; `Бирюлевская ул. д. 44` | первый запрос: `Волгоградский проспект 128к5, Москва`, `… 83с4`, `… 24/30с1`, `Бирюлевская улица 44, Москва`; квартира отброшена |
+| `test_query_variants` | `ул.2-я Синичкина, д. 9 к 1` | запросы по очереди: название до типа, тип до названия, `2-я улица Синичкина 9к1`, дом без корпуса `9` |
+| `test_apartment_anywhere_dropped` | квартира и подъезд в конце, в середине, «квартира 12 (домофон 12К)», слитно «д.5кв.12» | первый запрос `Подольская улица 5, Москва`; ни в одном запросе нет номера квартиры и подъезда |
+| `test_query_linear_time` | адрес из 100 000 пробелов, из 50 000 слов, из 30 000 повторов «д1» | каждый разобран быстрее 0,5 с (квадратичный разбор такой строки занимает минуты) |
+| `test_hyphenated_word_is_not_apartment` | «Под-ский пр-кт., д. 7»; «кв-л 137а» | улица и квартал остаются в запросе |
+| `test_cache_hit_no_request` | все адреса есть в кэше | точки из кэша; клиент не вызван; записи `geocode_cache_miss` нет |
+| `test_cache_key_normalized` | адрес отличается от записи кэша регистром и лишними пробелами | найден в кэше |
+| `test_miss_goes_to_nominatim` | 2 адреса из 5 не в кэше | клиент вызван для этих 2 (первый вариант запроса найден); запись `geocode_cache_miss` с `misses = 2`, `lookups_skipped = 0` и без адресов |
+| `test_lookups_capped` | 5 промахов при пределе 2 | запросы только по первым 2 адресам; `geocode_cache_miss` с `misses = 5`, `lookups_skipped = 3` |
+| `test_miss_not_found` | клиент вернул `None` на все варианты запроса | адрес без точки, остальные с точками |
+| `test_repeated_miss_requested_once` | один и тот же адрес-промах у трёх заявок | один вызов клиента |
+| `test_nominatim_disabled` | клиента нет (адрес Nominatim не задан), 2 промаха | адреса-промахи без точки; сетевых вызовов нет |
+| `test_nominatim_unavailable` | клиент поднимает `DependencyUnavailable` | то же исключение пробрасывается |
+| `test_geocache_covers_every_source_address` | гео-кэш `data/geocache.csv` и точки удалённых городов из репозитория; все адреса и адреса офиса из `docs/synthetic_data` и `docs/control_distribution`; клиента нет | у каждого адреса есть точка; сети нет |
+
+## `src/service/loader.py` — загрузка данных региона
+
+Файл: `tests/service/test_loader.py`.
+
+> Замена стабами: репозиторий (`replace_region_data` — фейк, который запоминает переданные
+> регион, бригады и заявки или поднимает заданное исключение), фабрика соединений — фейк,
+> который считает взятые соединения, клиент Nominatim — фейк, как
+> в предыдущем разделе. Гео-кэш и конфигурации — тестовые файлы; разбор файла, генератор
+> бригад и геокодирование — настоящие. Логи — разбором JSON-строк stderr (`capsys`,
+> `tests/log_records.py`): логгеры модулей кэшируют конфигурацию при первом использовании, и
+> `capture_logs()` не видит логгер, уже использованный другим тестом.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_load_csv` | CSV региона `east`: 3 заявки, 2 пустые строки, служебная строка, 1 невалидная строка | в репозиторий переданы регион `east` с офисом из служебной строки, бригады генератора и 3 заявки; итог: `rows_total = 7`, `rows_skipped = 3`, `rows_invalid = 1` с номером строки и причиной; запись `data_load_finished` с `source = csv`, `region`, `rows_total`, `rows_skipped`, `rows_invalid`, `invalid_by_reason = {"bad_datetime": 1}`, `engineers`, `tickets`, `duration_ms` |
+| `test_load_json` | тот же набор в JSON | тот же итог, `source = json` |
+| `test_load_demo` | демо-набор `south_east` | заявки из `data/demo/south_east.csv`: 83 заявки, `rows_invalid = 0`, `source = demo` |
+| `test_load_demo_offline` | демо-набор каждого региона, гео-кэш из репозитория, клиента Nominatim нет | все заявки загружены, `rows_invalid = 0`; сетевых вызовов нет |
+| `test_office_without_sentinel_is_region_center` | файл без служебной строки | офис — центр региона из конфигурации, адрес офиса — название региона |
+| `test_office_not_geocoded_is_region_center` | адрес офиса не найден | точка офиса — центр региона |
+| `test_ticket_without_point_is_invalid` | адрес заявки не найден ни в кэше, ни клиентом | заявка не передана в репозиторий; `rows_invalid` содержит её строку с причиной `address_not_found`; в `data_load_finished` `invalid_by_reason = {"bad_datetime": 1, "address_not_found": 1}` |
+| `test_no_valid_tickets` | все строки невалидны или файл содержит только служебную строку | `InvalidInput(reason="no_valid_tickets")` с `message`; репозиторий не вызван; запись `data_load_failed` с `reason`, `rows_total`, `rows_invalid`, `duration_ms` |
+| `test_encoding_error_logged` | неподдерживаемая кодировка | `InvalidInput(reason="file_encoding_invalid")`; запись `data_load_failed` с `reason`, `source`, `region`; репозиторий не вызван |
+| `test_geocoder_unavailable` | клиент Nominatim поднимает `DependencyUnavailable` | то же исключение, `reason = "geocoder_unavailable"`; репозиторий не вызван; запись `data_load_failed` |
+| `test_repository_failure` | репозиторий поднимает `DependencyUnavailable` и `DatabaseFailure` (параметризовано) | исключение пробрасывается без изменений; запись `data_load_failed` с его `reason` |
+| `test_connection_taken_only_to_write` | успешная загрузка; загрузка, прерванная недоступным Nominatim | соединение взято один раз — на запись; при отказе геокодера не взято ни одного |
+| `test_client_error_logged_as_warning` | неподдерживаемая кодировка; отказ БД | `data_load_failed` на уровне `warning` и `error` соответственно |
+| `test_unknown_region_logged` | код региона `north` | `InvalidInput(reason="unknown_region")`; репозиторий не вызван; `data_load_failed` с `reason`, `region = north`, уровень `warning` |
+| `test_too_many_rows` | CSV из 10 001 заявки | `InvalidInput(reason="too_many_rows")`; репозиторий не вызван |
+| `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; записи `db_query_failed` (`query = replace_region_data`) и `data_load_failed` уровня `error` |
+| `test_unknown_region_code_bounded_in_log` | код региона из 5000 символов с переводом строки | в записи `data_load_failed` поле `region` — 50 символов |
+| `test_logs_no_addresses` | загрузка с промахами кэша и невалидными строками | ни в одной записи лога нет адресов и текста строк файла — только счётчики и коды причин |
+
+## `src/clients/nominatim.py` — клиент Nominatim
+
+Файл: `tests/clients/test_nominatim.py`.
+
+> Замена стабами: HTTP — `httpx.MockTransport` с заданными ответами; время — фейковые часы и
+> `sleep`, которые запоминают паузы. Реальных сетевых вызовов нет.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_search_found` | ответ `200` с одним результатом `lat`/`lon` строками | `Point(lat, lon)` как числа; запрос `GET /search` с `format=jsonv2`, `countrycodes=ru`, `limit=1`, заголовком `User-Agent` из настроек; запись `nominatim_request_finished` уровня `debug` с `status = 200`, `found = true`, `duration_ms` |
+| `test_search_not_found` | ответ `200 []` | `None`; `nominatim_request_finished` с `found = false` |
+| `test_rate_limit` | три запроса подряд | между началом соседних запросов не меньше 1 с (по фейковым часам) |
+| `test_rate_limit_concurrent` | три запроса одновременно (`asyncio.gather`) | между началом соседних запросов не меньше 1 с |
+| `test_server_error` | ответ `503` | `DependencyUnavailable(reason="geocoder_unavailable")`; запись `nominatim_request_failed` с `status = 503`, `duration_ms` |
+| `test_rate_limited_or_forbidden` | ответ `429` и `403` | `DependencyUnavailable`; `nominatim_request_failed` с кодом |
+| `test_timeout_and_network_error` | транспорт поднимает `httpx.ConnectTimeout` и `httpx.ConnectError` | `DependencyUnavailable`; `nominatim_request_failed` без `status` |
+| `test_malformed_response` | `200` с телом не JSON и JSON без `lat` | `DependencyUnavailable`; `nominatim_request_failed` |
+| `test_logs_no_address` | любой запрос | адреса нет ни в одной записи лога |
+
+## `scripts/build_geocache.py` — сборка гео-кэша
+
+Файл: `tests/scripts/test_build_geocache.py`.
+
+> Замена стабами: HTTP — `httpx.MockTransport`, `sleep` — фейк. Исходные наборы и файл кэша —
+> временные файлы.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_remote_town_not_stored` | адреса с районом `Домодедово` в исходном наборе и старая запись такого адреса в кэше | запросов по ним нет; в кэш не записаны, старая запись удалена |
+| `test_next_variant_on_not_found` | первый вариант запроса не найден, второй найден | точка второго варианта записана |
+| `test_refused_stops_requests` | первый же запрос получает `429` | больше запросов нет; оба адреса в списке ненайденных |
+| `test_existing_entries_not_requested` | половина адресов уже в кэше | запросы только для отсутствующих; имеющиеся записи сохранены без изменений |
+| `test_not_found_listed_and_exit_code` | один адрес не найден, один — ошибка сети | найденные записаны; оба ненайденных выведены списком и в кэш не записаны; код выхода не `0` |
+| `test_all_found_exit_zero` | все адреса найдены | код выхода `0` |
 
 ## `src/api/errors.py` — единый обработчик ошибок
 

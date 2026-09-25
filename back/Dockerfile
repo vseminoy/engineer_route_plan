@@ -17,6 +17,8 @@ RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml
 COPY src ./src
 COPY alembic.ini ./
 COPY alembic ./alembic
+COPY queries ./queries
+COPY data ./data
 RUN pip install --no-deps -e . \
     && useradd --system --no-create-home app
 
