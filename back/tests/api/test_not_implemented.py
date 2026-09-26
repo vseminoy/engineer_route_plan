@@ -1,12 +1,16 @@
 import json
+from pathlib import Path
 
 import pytest
+import yaml
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
-from src.api.routes.not_implemented import add_not_implemented_stub
+from src.api.routes.not_implemented import STUB_PATH, add_not_implemented_stub
 from src.app import create_app
 from src.config import Settings
+
+SPEC_PATH = Path(__file__).resolve().parents[3] / "specs" / "openapi.yaml"
 
 
 def _client() -> TestClient:
@@ -21,7 +25,7 @@ def _client() -> TestClient:
 
 def test_unimplemented_path_returns_501_without_body() -> None:
     with _client() as client:
-        response = client.get("/api/v1/regions")
+        response = client.get("/api/v1/plan/1")
 
     assert response.status_code == 501
     assert response.content == b""
@@ -103,15 +107,19 @@ def test_stub_is_absent_from_openapi_schema() -> None:
         osrm_url_bike="http://osrm.test",
     )
     paths = create_app(settings=settings).openapi()["paths"]
+    spec = yaml.safe_load(SPEC_PATH.read_text(encoding="utf-8"))
 
-    assert not [path for path in paths if path.startswith("/api/v1")]
+    assert STUB_PATH not in paths
+    assert {p for p in paths if p.startswith("/api/v1")} == {
+        p for p in spec["paths"] if p.startswith("/api/v1")
+    }
 
 
 def test_stub_request_is_logged_with_request_id(capsys: pytest.CaptureFixture[str]) -> None:
     # Reads the real JSON stderr: `create_app` reconfigures structlog, which
     # `capture_logs()` would not survive.
     with _client() as client:
-        response = client.get("/api/v1/regions")
+        response = client.get("/api/v1/plan/1")
 
     lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
     finished = [e for e in map(json.loads, lines) if e["event"] == "http_request_finished"]

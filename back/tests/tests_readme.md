@@ -6,15 +6,18 @@
 - [`src/logging.py` — логирование с run_id](#srcloggingpy--логирование-с-run_id)
 - [`src/errors.py` — доменные исключения](#srcerrorspy--доменные-исключения)
 - [`alembic/versions/5d23f2956ce7_initial_schema.py` — схема БД](#alembicversions5d23f2956ce7_initial_schemapy--схема-бд)
+- [`alembic/versions/cb3db41d521a_tickets_type_hd_not_null.py` — тип заявки HD обязателен](#alembicversionscb3db41d521a_tickets_type_hd_not_nullpy--тип-заявки-hd-обязателен)
 - [`alembic/env.py` — запуск миграций](#alembicenvpy--запуск-миграций)
 - [`src/repository/db.py` — обёртка запросов к БД](#srcrepositorydbpy--обёртка-запросов-к-бд)
 - [`src/repository/region_data.py` — замена данных региона](#srcrepositoryregion_datapy--замена-данных-региона)
+- [`src/repository/region_lists.py` — чтение бригад и заявок региона](#srcrepositoryregion_listspy--чтение-бригад-и-заявок-региона)
 - [`src/service/ticket_file.py` — чтение файла заявок](#srcserviceticket_filepy--чтение-файла-заявок)
 - [`src/service/ticket_types.py` — таблица соответствия типов заявок](#srcserviceticket_typespy--таблица-соответствия-типов-заявок)
 - [`src/service/regions.py` — конфигурация регионов](#srcserviceregionspy--конфигурация-регионов)
 - [`src/service/engineers_generator.py` — генератор демо-бригад](#srcserviceengineers_generatorpy--генератор-демо-бригад)
 - [`src/service/geocoding.py` — координаты адресов](#srcservicegeocodingpy--координаты-адресов)
 - [`src/service/loader.py` — загрузка данных региона](#srcserviceloaderpy--загрузка-данных-региона)
+- [`src/service/region_lists.py` — регионы, бригады и заявки региона](#srcserviceregion_listspy--регионы-бригады-и-заявки-региона)
 - [`src/clients/nominatim.py` — клиент Nominatim](#srcclientsnominatimpy--клиент-nominatim)
 - [`src/clients/osrm.py` — клиент OSRM](#srcclientsosrmpy--клиент-osrm)
 - [`scripts/build_geocache.py` — сборка гео-кэша](#scriptsbuild_geocachepy--сборка-гео-кэша)
@@ -23,8 +26,12 @@
 - [`src/api/deps.py` — Depends-фабрики БД/OSRM](#srcapidepspy--depends-фабрики-бдosrm)
 - [`src/app.py` — app factory и lifespan](#srcapppy--app-factory-и-lifespan)
 - [`api` — GET /health](#api--get-health)
+- [`api` — GET /api/v1/regions](#api--get-apiv1regions)
+- [`api` — GET /api/v1/engineers](#api--get-apiv1engineers)
+- [`api` — GET /api/v1/tickets](#api--get-apiv1tickets)
+- [`api` — POST /api/v1/data/upload, POST /api/v1/data/demo](#api--post-apiv1dataupload-post-apiv1datademo)
 - [`api` — заглушка /api/v1/{path}](#api--заглушка-apiv1path)
-- [`src/api/schemas/generated/common.py` — LocalDateTime](#srcapischemasgeneratedcommonpy--localdatetime)
+- [`src/api/schemas/generated/common.py` — LocalDateTime, LocalTime](#srcapischemasgeneratedcommonpy--localdatetime-localtime)
 - [Стенд Docker Compose — smoke](#стенд-docker-compose--smoke)
 - [`Makefile` — команды проекта](#makefile--команды-проекта)
 - [`<integration suite>` — контрактные тесты](#integration-suite--контрактные-тесты)
@@ -41,7 +48,7 @@
 | `test_settings_rejects_unknown_app_mode` | `APP_MODE=production` (не `demo`/`full`) | `pydantic.ValidationError` |
 | `test_settings_missing_required_var` | `DATABASE_URL` не задан | `pydantic.ValidationError` |
 | `test_settings_rejects_unknown_log_format` | `LOG_FORMAT=xml` (не `json`/`console`) | `pydantic.ValidationError` |
-| `test_settings_max_request_body_bytes_default` | `MAX_REQUEST_BODY_BYTES` не задан | `max_request_body_bytes == 10485760` (10 МБ) |
+| `test_settings_max_request_body_bytes_default` | `MAX_REQUEST_BODY_BYTES` не задан | `max_request_body_bytes == 1048576` (1 МБ) |
 | `test_migration_settings_reads_from_env` | заданы `MIGRATION_DATABASE_URL`, `LOG_LEVEL`, `LOG_FORMAT` | `MigrationSettings()` собирает поля с этими значениями; `DATABASE_URL` и `OSRM_URL_*` ему не нужны |
 | `test_migration_settings_missing_url` | `MIGRATION_DATABASE_URL` не задан | `pydantic.ValidationError` |
 | `test_migration_settings_ignore_env_file` | в текущем каталоге `.env` с `MIGRATION_DATABASE_URL`, в окружении его нет | `pydantic.ValidationError`: адрес владельца схемы берётся только из окружения процесса миграции, не из `.env` приложения |
@@ -107,7 +114,7 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_upgrade_creates_schema` | `upgrade head` на пустой БД | таблицы `regions`, `engineers`, `tickets`, `plans`, `assignments`, `replan_events`; `alembic_version` = `5d23f2956ce7`; роли `app_rw` и `app_ro` существуют и могут входить |
+| `test_upgrade_creates_schema` | `upgrade head` на пустой БД | таблицы `regions`, `engineers`, `tickets`, `plans`, `assignments`, `replan_events`; `alembic_version` = последняя ревизия `cb3db41d521a`; роли `app_rw` и `app_ro` существуют и могут входить |
 | `test_downgrade_then_upgrade` | `downgrade base`, затем снова `upgrade head` | после отката шести таблиц и ролей нет, расширение `postgis` осталось; повторный накат проходит без ошибок |
 | `test_upgrade_requires_role_passwords` | `APP_RW_PASSWORD` не задан; `upgrade head` | `RuntimeError` с именем переменной; таблиц и `alembic_version` в БД нет — транзакция ревизии откатилась целиком |
 | `test_failed_ddl_rolls_back_whole_revision` | перед накатом в БД создана таблица `plans` (владельцем схемы); `upgrade head` | ошибка `DuplicateTable`; в БД нет ни одной из остальных пяти таблиц, ролей `app_rw`/`app_ro` и записи в `alembic_version` — ревизия откатилась целиком, схема осталась на прежней ревизии |
@@ -139,6 +146,20 @@
 | `test_every_foreign_key_is_indexed` | каталог: колонки всех внешних ключей | каждая — первая колонка какого-либо индекса или уникального ограничения |
 | `test_every_table_and_column_is_commented` | каталог: `obj_description` таблиц и `col_description` колонок, кроме `id` | ни одного пустого комментария |
 
+## `alembic/versions/cb3db41d521a_tickets_type_hd_not_null.py` — тип заявки HD обязателен
+
+Файл: `tests/db/test_schema.py`.
+
+> Мока нет: `@pytest.mark.integration`, контейнер PostGIS, окружение и роли — как в разделе
+> схемы БД. Состояние до ревизии — `upgrade 5d23f2956ce7`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_ticket_type_hd_required` | под `app_rw` вставка заявки с `type_hd = NULL` | `NotNullViolation`, колонка `type_hd` (`e.diag.column_name`) |
+| `test_type_hd_upgrade_keeps_tickets` | на ревизии `5d23f2956ce7` есть заявка с `type_hd`; `upgrade head` | заявка на месте без изменений; комментарий колонки говорит, что тип обязателен |
+| `test_type_hd_upgrade_fails_on_null` | на ревизии `5d23f2956ce7` владельцем схемы вставлена заявка с `type_hd = NULL`; `upgrade head` | `NotNullViolation`; `alembic_version` = `5d23f2956ce7`, заявка не изменена — пустой тип не заполняется выдуманным значением |
+| `test_type_hd_downgrade` | `downgrade 5d23f2956ce7`, вставка заявки с `type_hd = NULL`, удаление её, `upgrade head` | после отката `NULL` принимается, прежний комментарий колонки; повторный накат проходит |
+
 ## `alembic/env.py` — запуск миграций
 
 > Мока нет: `@pytest.mark.integration`, контейнер PostGIS как в предыдущем разделе.
@@ -149,7 +170,7 @@
 |---|---|---|
 | `test_env_uses_migration_url` | в окружении `MIGRATION_DATABASE_URL` на контейнер, `DATABASE_URL` нет, `sqlalchemy.url` в `alembic.ini` пуст | код `0`, ревизия применена |
 | `test_env_accepts_plain_postgresql_url` | `MIGRATION_DATABASE_URL` в виде `postgresql://…` (как на стенде, без имени драйвера) | код `0`: драйвер `psycopg` подставляет сам `env.py` |
-| `test_env_logs_are_json` | `LOG_FORMAT=json`; `upgrade head` на пустой БД | каждая строка вывода — один JSON-объект; есть запись о применении ревизии `5d23f2956ce7`; паролей ролей и адреса БД с паролем в выводе нет |
+| `test_env_logs_are_json` | `LOG_FORMAT=json`; `upgrade head` на пустой БД | каждая строка вывода — один JSON-объект; есть записи о применении ревизий `5d23f2956ce7` и `cb3db41d521a`; паролей ролей и адреса БД с паролем в выводе нет |
 | `test_env_failure_exits_nonzero` | `MIGRATION_DATABASE_URL` на порт, где никто не слушает | код `≠ 0`, последняя запись вывода — JSON уровня `error` об ошибке подключения; паролей ролей и владельца в выводе нет — параметры упавших операторов в текст ошибки не попадают |
 | `test_env_refuses_offline_mode` | `alembic upgrade head --sql` | код `≠ 0`; последняя запись — JSON `migration_failed` с причиной «offline mode is not supported»: пароли ролей не попадают в сгенерированный SQL |
 
@@ -179,13 +200,33 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_replace_inserts_region_engineers_tickets` | пустая БД; регион `east`, 2 бригады, 3 заявки | возвращён `id` региона; в БД 1 регион, 2 бригады и 3 заявки этого региона; точки, смены, навыки, окна и `received_at` прочитаны обратно без изменений (время — наивное, как передано) |
+| `test_replace_inserts_region_engineers_tickets` | пустая БД; регион `east`, 2 бригады, 3 заявки | возвращены `id` региона и `engineers_kept = false`; в БД 1 регион, 2 бригады и 3 заявки этого региона; точки, смены, навыки, окна и `received_at` прочитаны обратно без изменений (время — наивное, как передано) |
 | `test_replace_same_code_keeps_region_id` | регион `east` загружен дважды с разным названием и офисом | тот же `id`; название, адрес и точка офиса — из второй загрузки |
-| `test_replace_removes_previous_region_data` | у региона есть бригады, заявки, два плана (второй — потомок первого), строки плана и событие перепланирования; загрузка нового набора | прежних бригад, заявок, планов, строк планов и событий региона нет; в БД только новый набор |
+| `test_replace_removes_previous_region_data` | у региона есть бригады, заявки, два плана (второй — потомок первого), строки плана и событие перепланирования; загрузка нового набора с другим составом бригад (другие названия) | прежних бригад, заявок, планов, строк планов и событий региона нет; бригады и заявки — из нового набора |
+| `test_replace_same_roster_keeps_engineers` | у региона есть 2 бригады, заявки и план с назначением бригаде; повторная загрузка с теми же бригадами (названия, навыки, транспорт, смены), другими точками старта и новыми заявками | `engineers_kept = true`; `id` бригад прежние; точки старта — из второй загрузки; остальные поля бригад прежние; заявки — из второй загрузки; планов, строк планов и событий региона нет |
+| `test_replace_changed_roster_recreates_engineers` | у региона 2 бригады; повторная загрузка с 3 бригадами | `engineers_kept = false`; у региона 3 бригады из второй загрузки; прежних `id` бригад нет |
+| `test_replace_skills_order_keeps_engineers` | повторная загрузка той же бригады с навыками в другом порядке | `engineers_kept = true`, `id` бригады прежний: порядок навыков на сравнение состава не влияет |
+| `test_replace_changed_brigade_recreates_engineers` (параметризован: навыки, транспорт, начало смены, конец смены второй бригады) | у региона 2 бригады; повторная загрузка с теми же названиями, у второй бригады изменено одно поле | `engineers_kept = false`, бригады созданы заново: прежних `id` нет — состав сравнивается по всем полям генератора, а не только по названиям |
 | `test_replace_keeps_other_regions` | загружены `east` и `south_east`, затем `east` загружен повторно | данные `south_east` не изменились |
 | `test_replace_duplicate_external_id_loads_both` | две заявки с одинаковым `external_id` | обе вставлены, у каждой свой `id` |
 | `test_replace_constraint_violation_rolls_back` | у региона уже есть данные; новый набор содержит бригаду с 4 навыками | поднято `DatabaseFailure(reason="db_query_failed")`, причина — нарушение `ck_engineers__skills`; запись `db_query_failed`; прежние данные региона на месте, новых нет |
 | `test_replace_overnight_shift_rolls_back` | бригада со сменой `22:00–06:00` | `DatabaseFailure`, нарушение `ck_engineers__shift_order`; прежние данные на месте |
+
+## `src/repository/region_lists.py` — чтение бригад и заявок региона
+
+Файл: `tests/repository/test_region_lists.py`.
+
+> Мока нет: `@pytest.mark.integration`, контейнер PostGIS и ревизия, как в разделе схемы БД;
+> данные регионов записываются `replace_region_data`, чтение — запросами из `queries/*.sql`
+> через aiosql под ролью `app_rw`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_get_region_id` | загружен регион `east`; коды `east` и `south_east` (не загружен) | для `east` — его `id`; для `south_east` — `None` |
+| `test_list_engineers_of_region` | загружены `east` (2 бригады) и `south_east` (1 бригада) | для `east` — ровно его 2 бригады по возрастанию `id`; у бригады `start` — `Point` с переданными широтой и долготой (не переставлены), навыки — кортеж `Skill`, транспорт — `VehicleType`, смены — `time`, как переданы |
+| `test_list_tickets_of_region` | загружены `east` (3 заявки) и `south_east` (1 заявка) | для `east` — ровно его 3 заявки по возрастанию `id`; `location` — `Point` с переданными координатами; окна и `received_at` — наивные `datetime`, равные переданным; `type_bk`, `district`, `required_vehicle`, не заданные у заявки, — `None` |
+| `test_lists_of_region_without_rows` | `id`, под которым в БД нет ни бригад, ни заявок | оба списка пустые |
+| `test_lists_db_unavailable` | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` с именем запроса |
 
 ## `src/service/ticket_file.py` — чтение файла заявок
 
@@ -214,14 +255,16 @@
 | `test_csv_columns_by_header` | колонки в другом порядке и без необязательной колонки `Подключение` (как в файлах контрольного распределения) | поля разобраны по заголовку |
 | `test_csv_missing_required_column` | в заголовке нет `Адрес` | `InvalidInput(reason="file_format_invalid")`, `message` называет недостающую колонку |
 | `test_json_not_array_of_objects` | JSON — объект, число, массив строк | `InvalidInput(reason="file_format_invalid")` |
-| `test_json_invalid_syntax` | обрезанный JSON | `InvalidInput(reason="file_format_invalid")` |
+| `test_json_invalid_syntax` | обрезанный JSON; пустой файл | `InvalidInput(reason="file_format_invalid")` |
+| `test_json_malformed_array` | данные после `]`; элементы без запятой; висящая запятая; `[,]` | `InvalidInput(reason="file_format_invalid")` |
+| `test_json_whitespace_around_elements` | пробелы, переводы строк и табуляция вокруг скобок, запятых и элементов; пустой массив в пробелах | разобраны оба элемента: заявка и пустой объект (пропущен как пустая строка); пустой массив — ноль строк |
 | `test_unparsable_file_is_format_error` | поле CSV длиннее предела библиотеки `csv` (200 000 символов); JSON из 200 000 `[`; JSON с числом из 5000 цифр | `InvalidInput(reason="file_format_invalid")`, а не необработанное исключение (`500`) |
 | `test_json_bad_value_in_known_column` | в JSON значение «Адрес» — вложенный объект | `InvalidInput(reason="file_format_invalid")`, `message` называет колонку |
 | `test_unknown_columns_dropped` | JSON с ключом из 1000 символов (вложенный объект) и `Бригада`; CSV с колонками `Подключение` и `Бригада` | в строке только колонки, которые использует загрузчик; неизвестный ключ с вложенным объектом не ошибка |
 | `test_too_many_columns` | заголовок CSV из 20 005 колонок и 1000 пустых строк | `InvalidInput(reason="file_format_invalid")` быстрее 100 мс |
 | `test_too_many_rows` | CSV и JSON из 501 заявки; CSV из 500 заявок, пустой строки, строки из одних разделителей и строки адреса офиса | `InvalidInput(reason="too_many_rows")` для 501; 500 заявок — файл принят, после отбрасывания служебных строк остаются 500 заявок |
 | `test_blank_rows_are_counted_not_kept` | CSV из заявки и 200 000 пустых строк | одна заявка, `skipped = 200 000`; пик памяти разбора меньше 20 МБ — пустые строки только считаются (сохранённая строка стоила бы ~400 байт, всего ~80 МБ) |
-| `test_blank_rows_skipped` | две пустые строки и строка из одних `;` между заявками | не заявки, `rows_skipped = 3`, в `rows_invalid` не попали |
+| `test_blank_rows_skipped` | между заявками — две пустые строки, строка из одних `;`, строка из пробелов и табуляции, строка, где заполнена только неизвестная колонка | не заявки, `rows_skipped = 5`, в `rows_invalid` не попали |
 | `test_sentinel_row_gives_office_address` | служебная строка `Адрес Офиса` и, в другом файле, `Адрес офиса` | обе отброшены до проверки полей, в `rows_skipped`; адрес офиса — значение второго столбца |
 | `test_no_sentinel_row` | файл без служебной строки | адреса офиса нет (`None`), заявки разобраны |
 
@@ -333,7 +376,7 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_load_csv` | CSV региона `east`: 3 заявки, 2 пустые строки, служебная строка, 1 невалидная строка | в репозиторий переданы регион `east` с офисом из служебной строки, бригады генератора и 3 заявки; итог: `rows_total = 7`, `rows_skipped = 3`, `rows_invalid = 1` с номером строки и причиной; запись `data_load_finished` с `source = csv`, `region`, `rows_total`, `rows_skipped`, `rows_invalid`, `invalid_by_reason = {"bad_datetime": 1}`, `engineers`, `tickets`, `duration_ms` |
+| `test_load_csv` | CSV региона `east`: 3 заявки, 2 пустые строки, служебная строка, 1 невалидная строка | в репозиторий переданы регион `east` с офисом из служебной строки, бригады генератора и 3 заявки; итог: `rows_total = 7`, `rows_skipped = 3`, `rows_invalid = 1` с номером строки и причиной; запись `data_load_finished` с `source = csv`, `region`, `rows_total`, `rows_skipped`, `rows_invalid`, `invalid_by_reason = {"bad_datetime": 1}`, `engineers`, `engineers_kept` (как вернул репозиторий), `tickets`, `duration_ms`, `wait_ms` не больше `duration_ms` |
 | `test_load_json` | тот же набор в JSON | тот же итог, `source = json` |
 | `test_load_demo` | демо-набор `south_east` | заявки из `data/demo/south_east.csv`: 83 заявки, `rows_invalid = 0`, `source = demo` |
 | `test_load_demo_offline` | демо-набор каждого региона, гео-кэш из репозитория, клиента Nominatim нет | все заявки загружены, `rows_invalid = 0`; сетевых вызовов нет |
@@ -351,6 +394,27 @@
 | `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; записи `db_query_failed` (`query = replace_region_data`) и `data_load_failed` уровня `error` |
 | `test_unknown_region_code_bounded_in_log` | код региона из 5000 символов с переводом строки | в записи `data_load_failed` поле `region` — 50 символов |
 | `test_logs_no_addresses` | загрузка с промахами кэша и невалидными строками | ни в одной записи лога нет адресов и текста строк файла — только счётчики и коды причин |
+| `test_files_read_one_at_a_time` | три загрузки запущены одновременно; разбор файла в подклассе загрузчика занимает время в своём потоке | все три завершились; одновременно разбирался не больше одного файла |
+| `test_writes_one_at_a_time` | три загрузки запущены одновременно; фейковый репозиторий отдаёт управление event loop внутри записи | все три записаны; одновременно шла не больше одной записи — загрузки занимают не больше одного соединения пула; последняя в очереди загрузка пишет в `data_load_finished` `wait_ms` не меньше 15 мс (ждала две записи по 20 мс) |
+
+## `src/service/region_lists.py` — регионы, бригады и заявки региона
+
+Файл: `tests/service/test_region_lists.py`.
+
+> Замена стабами: репозиторий (`get_region_id`, `list_engineers`, `list_tickets` — фейки,
+> которые возвращают заданное значение, поднимают заданное исключение и запоминают вызовы),
+> фабрика соединений — фейк, который считает взятые соединения. Конфигурация регионов —
+> `data/regions.toml` из репозитория.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_regions_in_config_order` | конфигурация с регионами `east`, `south_east`, `south_center` | пары (код, название) в порядке конфигурации; соединение не взято |
+| `test_engineers_of_loaded_region` | `get_region_id` вернул `7`, `list_engineers` — 2 бригады | эти 2 бригады без изменений; `list_engineers` вызван с `region_id = 7` |
+| `test_tickets_of_loaded_region` | `get_region_id` вернул `7`, `list_tickets` — 3 заявки | эти 3 заявки без изменений; `list_tickets` вызван с `region_id = 7` |
+| `test_region_not_loaded_is_empty` | регион из конфигурации, `get_region_id` вернул `None` | пустой список бригад и заявок; `list_engineers` и `list_tickets` не вызваны |
+| `test_unknown_region` | код `north` | `InvalidInput(reason="unknown_region")` с `fields = [("region", "Неизвестный регион")]`; соединение не взято |
+| `test_repository_failure_propagates` | репозиторий поднимает `DependencyUnavailable` и `DatabaseFailure` (параметризовано) | исключение пробрасывается без изменений |
+| `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; запись `db_query_failed` с `query = list_engineers` |
 
 ## `src/clients/nominatim.py` — клиент Nominatim
 
@@ -414,7 +478,7 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_create_osrm_client_from_settings` | `create_osrm_client(settings)` с тремя URL, фактором и пределом | три `httpx.AsyncClient` с `base_url` из `osrm_url_car`, `osrm_url_foot`, `osrm_url_bike` и таймаутом из `osrm_timeout_s` (в тесте 45 с); фактор и предел — из настроек; сетевых вызовов нет |
+| `test_create_osrm_client_from_settings` | `create_osrm_client(settings)` с тремя URL, фактором и пределом | три `httpx.AsyncClient` с `base_url` из `osrm_url_car`, `osrm_url_foot`, `osrm_url_bike` и таймаутом из `osrm_timeout_s` (в тесте 45 с); фактор и предел — из настроек; сетевых вызовов нет; в окружении заданы `HTTP_PROXY` и `ALL_PROXY`, но клиенты их не используют (`trust_env=False`): координаты адресов не уходят на прокси |
 | `test_aclose_closes_every_graph` | `aclose()` | закрыты все три HTTP-клиента |
 | `test_logs_no_coordinates` | успешные и неуспешные `table` и `route` | ни в одной записи лога нет координат точек (ни чисел `lat`/`lon`, ни пути запроса) |
 
@@ -541,6 +605,7 @@
 | `test_lifespan_creates_and_opens_db_pool_without_waiting` | приложение поднято через `lifespan` (`asgi-lifespan`/`TestClient`) | `app.state.db_pool` создан, `pool.open(wait=False)` вызван один раз — старт не блокируется недоступностью БД |
 | `test_lifespan_creates_osrm_client` | запуск `lifespan` | `app.state.osrm_client` — `OsrmClient`, собранный `create_osrm_client(settings)`; сетевых вызовов при старте нет — backend поднимается, пока графы OSRM ещё строятся |
 | `test_lifespan_closes_pool_and_client_on_shutdown` | завершение `lifespan` | `pool.close()` и `osrm_client.aclose()` вызваны по одному разу |
+| `test_lifespan_closes_pool_when_data_files_fail` | сборка загрузчика и сервиса списков при старте поднимает ошибку (битый файл конфигурации) | старт падает с этой ошибкой; пул БД и HTTP-клиент OSRM закрыты |
 | `test_create_app_registers_health_route` | `create_app()` | в `app.routes` присутствует `GET /health` |
 | `test_create_app_registers_error_handlers` | `create_app()` | в `app.exception_handlers` есть обработчики `AppError`, `RequestValidationError`, `StarletteHTTPException`, `Exception` |
 | `test_create_app_registers_not_implemented_stub_last` | `create_app()` | последний элемент `app.routes` — заглушка `/api/v1/{path:path}`: любой роут, объявленный в фабрике, стоит раньше неё и перекрывает её |
@@ -565,28 +630,101 @@
 | `test_get_health_returns_ok` | `GET /health` | `200`, тело `{"status": "ok", "version": "<info.version>"}` |
 | `test_get_health_content_type_is_json` | `GET /health` | заголовок `Content-Type: application/json` |
 
+## `api` — GET /api/v1/regions
+
+Файл: `tests/api/test_regions.py`.
+
+> Замена стабами: сервис списков — фейк через `app.dependency_overrides`, который возвращает
+> заданные регионы; БД нет.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_list_regions` | сервис вернул `east`/«Восток», `south_east`/«Юго-Восток» | `200`, тело `[{"code": "east", "name": "Восток"}, {"code": "south_east", "name": "Юго-Восток"}]` в том же порядке; есть `X-Request-ID` |
+
+## `api` — GET /api/v1/engineers
+
+Файл: `tests/api/test_engineers.py`.
+
+> Замена стабами: сервис списков — фейк через `app.dependency_overrides`, который возвращает
+> заданные бригады или поднимает заданное исключение и запоминает вызовы; БД нет. Логи —
+> разбором JSON-строк stderr (`capsys`, `tests/log_records.py`).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_list_engineers` | `?region=east`; сервис вернул бригаду: смена `10:00`–`23:30`, старт `(55.72, 37.74)`, навыки `connection`, `emergency`, транспорт `car` | `200`, `[{"id", "name", "vehicle_type": "car", "skills": ["connection", "emergency"], "shift_start": "10:00", "shift_end": "23:30", "start": {"lat": 55.72, "lon": 37.74}}]`; сервис вызван с `east` |
+| `test_list_engineers_empty` | сервис вернул `[]` | `200`, `[]` |
+| `test_list_engineers_region_invalid` (параметризован: нет параметра, `East!`, 51 символ) | запрос с таким `region` | `400`, `{"fields": [{"name": "region", ...}]}`; сервис не вызван |
+| `test_list_engineers_unknown_region` | сервис поднимает `InvalidInput(reason="unknown_region", fields=[("region", "Неизвестный регион")])` | `400`, `{"fields": [{"name": "region", "message": "Неизвестный регион"}]}`; запись `list_engineers_failed` уровня `warning` с `reason = unknown_region`, `region` и `request_id` ответа |
+| `test_list_engineers_db_unavailable` | сервис поднимает `DependencyUnavailable(reason="db_unavailable")` | `503` без тела; запись `list_engineers_failed` уровня `error` |
+| `test_list_engineers_db_failure` | сервис поднимает `DatabaseFailure` | `500` без тела |
+
+## `api` — GET /api/v1/tickets
+
+Файл: `tests/api/test_tickets.py`.
+
+> Замена стабами: как в разделе `GET /api/v1/engineers`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_list_tickets` | `?region=east`; сервис вернул заявку без `Тип заявки BK`, района и требуемого транспорта, окно `2026-08-17 10:00`–`12:00` | `200`, заявка со всеми полями контракта: `location: {"lat", "lon"}`, `window_start: "2026-08-17T10:00:00"`, `window_end: "2026-08-17T12:00:00"`, `received_at: "2026-08-17T00:00:00"`, `priority` — число, `type_bk`, `district`, `required_vehicle` — `null`; назначений бригадам в заявке нет |
+| `test_list_tickets_empty` | сервис вернул `[]` | `200`, `[]` |
+| `test_list_tickets_region_invalid` (параметризован: нет параметра, `East!`, 51 символ) | запрос с таким `region` | `400`, `fields` с `region`; сервис не вызван |
+| `test_list_tickets_plan_id_ignored` | `?region=east&plan_id=1` | `200`, параметр `plan_id` не влияет на ответ: в контракте его нет |
+| `test_list_tickets_unknown_region` | сервис поднимает `InvalidInput` про регион | `400`, `fields` с `region`; запись `list_tickets_failed` уровня `warning` |
+| `test_list_tickets_db_unavailable` | сервис поднимает `DependencyUnavailable` | `503` без тела; запись `list_tickets_failed` уровня `error` |
+| `test_list_tickets_db_failure` | сервис поднимает `DatabaseFailure` | `500` без тела |
+
+## `api` — POST /api/v1/data/upload, POST /api/v1/data/demo
+
+Файл: `tests/api/test_data.py`.
+
+> Замена стабами: загрузчик — фейк через `app.dependency_overrides`, который возвращает
+> заданный итог загрузки или поднимает заданное исключение и запоминает аргументы вызова
+> (код региона, источник, байты файла); БД и геокодера нет. Логи — разбором JSON-строк
+> stderr (`capsys`, `tests/log_records.py`). Предел тела в тестах на `413` —
+> `Settings(max_request_body_bytes=1024)`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_upload_csv` | multipart: `region=east`, `tickets_file` с именем `tickets.CSV`; загрузчик вернул итог с одной невалидной строкой | загрузчик вызван с `("east", "csv", байты файла)`; `200`, `{"region": "east", "engineers", "tickets", "rows_total", "rows_skipped", "rows_invalid": [{"row": 5, "reason": "bad_datetime", "column": "Начало"}]}` |
+| `test_upload_json` | то же с файлом `tickets.json` | загрузчик вызван с источником `json`; `200` |
+| `test_upload_invalid_row_without_column` | загрузчик вернул невалидную строку с `column = None` (контракт допускает ошибку, не привязанную к колонке) | в ответе `"column": null`, ответ проходит схему `InvalidRow` |
+| `test_upload_bad_extension` (параметризован: `tickets.xlsx`, `tickets`, `tickets.csv.txt`) | multipart с таким именем файла | `400`, `{"fields": [{"name": "tickets_file", "message": "Файл должен быть .csv или .json"}]}`; загрузчик не вызван; запись `data_upload_failed` уровня `warning` с `reason = file_type_invalid` и `region`, без имени файла |
+| `test_upload_form_invalid` (параметризован: нет `tickets_file`, нет `region`, `region=East!`, лишнее поле формы `engineers_file`) | multipart с таким составом | `400`, `fields` с именем параметра формы; загрузчик не вызван |
+| `test_upload_broken_multipart` | тело `multipart/form-data` с испорченным заголовком части (символ `\r` внутри заголовка) | `400` с `message`, как у любого неразбираемого тела, а не `500`; загрузчик не вызван; запись `data_upload_failed` уровня `warning` с `reason = form_invalid` |
+| `test_upload_form_over_limits` | три файла в форме при пределе два | `400` с `message` (отказ Starlette); загрузчик не вызван; запись `data_upload_failed` с `reason = form_invalid` |
+| `test_upload_too_large` | файл 2000 байт при пределе 1024, с `Content-Length` | `413` без тела; загрузчик не вызван; записи `data_upload_failed` нет |
+| `test_upload_too_large_without_content_length` | то же тело чанками, без `Content-Length` | `413` без тела (предел срабатывает при чтении формы); загрузчик не вызван; записи `data_upload_failed` нет — `413` не считается отказом разбора формы |
+| `test_demo_load` | `POST /api/v1/data/demo` с телом `{"region": "east"}` | загрузчик вызван с `("east", "demo")` без файла; `200`, итог загрузки |
+| `test_demo_body_invalid` (параметризован: `{}`, `{"region": "East!"}`, `region` из 51 символа, лишнее поле `{"region": "east", "date": "2026-08-17"}`) | `POST /api/v1/data/demo` с таким телом | `400`, `fields` с именем поля (`region` или лишнего); загрузчик не вызван |
+| `test_demo_body_not_json` | тело `region=east` (не JSON) | `400` с `message`; загрузчик не вызван |
+| `test_demo_region_in_query_not_accepted` | `POST /api/v1/data/demo?region=east` без тела | `400`: регион берётся только из тела; загрузчик не вызван |
+| `test_demo_too_large` | тело больше предела 1024 байта | `413` без тела; загрузчик не вызван |
+| `test_demo_get_does_not_load` | `GET /api/v1/data/demo?region=east` | `501` без тела (метода нет у операции); загрузчик не вызван |
+| `test_load_errors_map_to_status` (параметризован: upload и demo × `InvalidInput` с `fields` региона, `InvalidInput` с `message`, `DependencyUnavailable`, `DatabaseFailure`) | загрузчик поднимает исключение | `400 {"fields": [{"name": "region", ...}]}`, `400 {"message": ...}`, `503` без тела, `500` без тела соответственно; записей `data_upload_failed` нет — ошибку загрузки логирует загрузчик |
+
 ## `api` — заглушка /api/v1/{path}
 
 Файл: `tests/api/test_not_implemented.py`.
 
 > Зависимостей нет: заглушка не использует `Depends` на БД/OSRM, стабы не нужны.
 > Порядок регистрации проверяется на отдельном `FastAPI()` с тестовым роутом
-> `GET /api/v1/regions`, объявленным до заглушки, — в самом приложении ни одной
-> операции под `/api/v1` пока нет.
+> `GET /api/v1/regions`, объявленным до заглушки; в самом приложении — на путях операций,
+> которых ещё нет в контракте (`/api/v1/plan/...`).
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_unimplemented_path_returns_501_without_body` | `GET /api/v1/regions` на `create_app()` | `501`, тело пустое (`content == b""`), заголовка `Content-Type: application/json` нет |
+| `test_unimplemented_path_returns_501_without_body` | `GET /api/v1/plan/1` на `create_app()` | `501`, тело пустое (`content == b""`), заголовка `Content-Type: application/json` нет |
 | `test_stub_answers_any_method` (параметризован: `GET`, `POST`, `PATCH`, `DELETE`) | запрос методом на `/api/v1/plan/1/replan` | `501`, тело пустое |
 | `test_stub_answers_nested_and_root_paths` (параметризован: `/api/v1/`, `/api/v1/tickets/42/status`) | `GET` по пути | `501`, тело пустое — заглушка ловит путь любой глубины под префиксом |
 | `test_implemented_route_takes_precedence_over_stub` | на `FastAPI()` подключён роутер с `GET /api/v1/regions` → `200 []`, затем заглушка; запросы `GET /api/v1/regions` и `GET /api/v1/engineers` | первый — `200 []` от роута, второй — `501` от заглушки |
 | `test_wrong_method_on_implemented_path_returns_501` | тот же `FastAPI()` с `GET /api/v1/regions` и заглушкой; `POST /api/v1/regions` | `501` без тела, а не `405`: полное совпадение пути и метода даёт заглушка |
 | `test_path_outside_api_prefix_returns_404` | `GET /unknown` и `GET /api/v2/regions` | `404`: заглушка ограничена префиксом `/api/v1` |
 | `test_health_is_not_shadowed_by_stub` | `GET /health` на `create_app()` | `200` от health-роута |
-| `test_stub_is_absent_from_openapi_schema` | `create_app().openapi()` | в `paths` нет ни одного пути с префиксом `/api/v1` — заглушка не часть контракта и не попадает в контрактные тесты |
-| `test_stub_request_is_logged_with_request_id` | `GET /api/v1/regions` на `create_app()` (JSON на stderr, `capsys`) | ответ содержит `X-Request-ID`; в логе событие `http_request_finished` со `status=501`, `path="/api/v1/{path:path}"` (шаблон, а не запрошенный путь) и тем же `request_id` |
+| `test_stub_is_absent_from_openapi_schema` | `create_app().openapi()` | в `paths` нет пути `/api/v1/{path}` — заглушка не часть контракта и не попадает в контрактные тесты; пути `/api/v1` в схеме — ровно операции спеки |
+| `test_stub_request_is_logged_with_request_id` | `GET /api/v1/plan/1` на `create_app()` (JSON на stderr, `capsys`) | ответ содержит `X-Request-ID`; в логе событие `http_request_finished` со `status=501`, `path="/api/v1/{path:path}"` (шаблон, а не запрошенный путь) и тем же `request_id` |
 
-## `src/api/schemas/generated/common.py` — LocalDateTime
+## `src/api/schemas/generated/common.py` — LocalDateTime, LocalTime
 
 > Мок не нужен: проверка сгенерированной по `specs/common.yaml` модели (`make gen-api`) —
 > она же будет разбирать время во входных параметрах операций.
@@ -596,6 +734,8 @@
 | `test_local_datetime_accepts_local_time` | `"2026-09-23T13:20:00"` | принято, значение не изменено |
 | `test_local_datetime_rejects_zone` | `"2026-09-23T13:20:00Z"`, `"2026-09-23T13:20:00+03:00"` | `pydantic.ValidationError` — время с поясом не принимается |
 | `test_local_datetime_rejects_other_forms` | `"2026-09-23T13:20:00.5"`, `"2026-09-23 13:20:00"`, `"2026-09-23T13:20"`, `""` | `pydantic.ValidationError` |
+| `test_local_time_accepts_hours_minutes` | `"00:00"`, `"13:20"`, `"23:59"` | принято, значение не изменено |
+| `test_local_time_rejects_other_forms` | `"13:20:00"`, `"9:05"`, `"24:00"`, `"12:60"`, `"13:20+03:00"`, `""` | `pydantic.ValidationError` — только `ЧЧ:ММ` без секунд и пояса |
 | `test_local_datetime_rejects_out_of_range` | `"2026-13-01T10:00:00"`, `"2026-09-32T10:00:00"`, `"2026-09-23T24:00:00"`, `"2026-09-23T10:60:00"` | `pydantic.ValidationError` — месяц, день, час и минута вне допустимых диапазонов |
 
 ## Стенд Docker Compose — smoke
@@ -608,11 +748,14 @@
 |---|---|---|
 | `smoke_compose_up` | `cp .env.example .env && docker compose up -d` на чистой машине | `db` и `backend` — `healthy`, `frontend` отвечает; `osrm-prepare` готовит графы `car`, `foot`, `bike` или сразу завершается, если они уже есть в volume; `osrm-car`, `osrm-foot`, `osrm-bike` стартуют после него |
 | `smoke_health_via_proxy` | `curl -i http://localhost:8080/health` | `200`, `{"status": "ok", ...}` — отвечает и пока `osrm-prepare` ещё работает |
-| `smoke_unimplemented_via_proxy` | `curl -i http://localhost:8080/api/v1/regions` | `501`, тело пустое, есть заголовок `X-Request-ID` |
+| `smoke_unimplemented_via_proxy` | `curl -i http://localhost:8080/api/v1/plan/1` | `501`, тело пустое, есть заголовок `X-Request-ID` |
+| `smoke_regions_via_proxy` | `curl -i http://localhost:8080/api/v1/regions` | `200`, три региона: `east`, `south_east`, `south_center` с названиями |
+| `smoke_demo_load_via_proxy` | `curl -X POST -H 'Content-Type: application/json' -d '{"region": "east"}' http://localhost:8080/api/v1/data/demo`, затем `GET /api/v1/engineers?region=east` и `GET /api/v1/tickets?region=east`; `POST` демо-набора повторно и снова `GET /api/v1/engineers?region=east` | `200` с итогом загрузки, `rows_invalid` пустой; 13 бригад и все заявки демо-набора региона; после повторной загрузки у бригад те же `id` |
+| `smoke_upload_via_proxy` | `curl -F region=south_east -F tickets_file=@"docs/synthetic_data/<файл Юго-Востока>.csv" http://localhost:8080/api/v1/data/upload` | `200`; файл исходного набора загружен без правок, `rows_skipped` — пустые строки и служебная строка офиса |
 | `smoke_body_limit_via_proxy` | `POST /api/v1/data/upload` с телом больше `MAX_REQUEST_BODY_BYTES` | `413` от nginx, запрос не доходит до backend (в `docker compose logs backend` нет записи о нём) |
 | `smoke_backend_logs_are_json` | `docker compose logs --no-log-prefix backend` | каждая строка — один JSON-объект; у записи `http_request_finished` есть `request_id` |
 | `smoke_spa_fallback` | `curl -i http://localhost:8080/plan/1` (клиентский маршрут React) | `200`, отдаётся `index.html` |
-| `smoke_backend_migrates_on_start` | `make up` на volume БД, оставшемся от прежнего запуска стенда; `docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c '\dt'` | `migrate` — `Exited (0)`, в `docker compose logs migrate` JSON-запись о применении ревизии `5d23f2956ce7`; `backend` стартует после него и становится `healthy`; в БД шесть таблиц и `alembic_version` |
+| `smoke_backend_migrates_on_start` | `make up` на volume БД, оставшемся от прежнего запуска стенда; `docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c '\dt'` | `migrate` — `Exited (0)`, в `docker compose logs migrate` JSON-записи о применении ревизий `5d23f2956ce7` и `cb3db41d521a` (на volume, где первая уже применена, — только о второй); `backend` стартует после него и становится `healthy`; в БД шесть таблиц и `alembic_version` |
 | `smoke_restart_does_not_migrate_again` | повторный `make up` | `migrate` снова `Exited (0)`, в его логе нет записи о применении ревизии; `backend` `healthy` |
 | `smoke_backend_connects_as_app_rw` | `docker compose exec db psql … -c "SELECT DISTINCT usename FROM pg_stat_activity WHERE datname = current_database() AND backend_type = 'client backend' AND pid <> pg_backend_pid()"` | соединения пула приложения — под `app_rw`, не под владельцем схемы |
 | `smoke_backend_has_no_owner_credentials` | `docker compose exec backend env` | нет ни `MIGRATION_DATABASE_URL`, ни `APP_RW_PASSWORD`, ни `APP_RO_PASSWORD`; `POSTGRES_PASSWORD` тоже нет — в `DATABASE_URL` только пароль `app_rw` |
@@ -648,7 +791,7 @@
 | `make_tools_from_venv_overridable` | `make -n lint` и `make -n lint PY=/usr/bin/python3` | по умолчанию инструменты берутся из `back/.venv/bin`, с `PY=...` — через указанный интерпретатор |
 | `make_gen_api_is_reproducible` | `make gen-api` на неизменённых `specs/openapi.yaml` и `specs/common.yaml`, затем `git diff --exit-code back/src/api/schemas/generated` | код `0` у обеих команд, diff пуст |
 | `make_gen_api_generates_common_schemas` | `make gen-api` | в `back/src/api/schemas/generated/` есть модели и из `specs/openapi.yaml` (`HealthStatus`), и из `specs/common.yaml` (`LocalDateTime`, `ValidationError`, `RequestMessage`, `FieldErrors`, `FieldError`) — каждая спека своим запуском генератора, в свой модуль |
-| `make_up_then_smoke_passes` | нет `.env`: `make up && make smoke` | `.env` создан из `.env.example` (существующий `make up` не трогает), образы пересобраны, стенд поднят; `smoke` печатает `200` для `/health` и `501` для `/api/v1/regions` через фронтенд-прокси на `FRONTEND_PORT` из `.env`, код `0` |
+| `make_up_then_smoke_passes` | нет `.env`: `make up && make smoke` | `.env` создан из `.env.example` (существующий `make up` не трогает), образы пересобраны, стенд поднят; `smoke` печатает `200` для `/health` и `200` для `/api/v1/regions` через фронтенд-прокси на `FRONTEND_PORT` из `.env`, код `0` |
 | `make_smoke_reads_port_from_env` | в `.env` `FRONTEND_PORT="8090"`, ниже повторно `FRONTEND_PORT=8091`; затем `FRONTEND_PORT=8090;id`; `make -n smoke` | в первом случае URL на `:8091` (последнее определение); во втором значение не принято, URL на `:8080` — в команду попадает только число |
 | `make_smoke_fails_when_stand_is_down` | `make down && make smoke` | код `≠ 0`, из вывода понятно, какая проверка не прошла |
 | `make_logs_single_service` | `make logs s=backend` | потоковый вывод (`-f`) только сервиса `backend`; без `s=` — всех сервисов |
@@ -664,7 +807,10 @@
 > `schemathesis` строит кейсы из `specs/openapi.yaml` (ссылки на `specs/common.yaml`
 > разрешаются от корня) и прогоняет их против поднятого приложения в двух режимах —
 > позитивном и негативном; пишется один раз на всё приложение, а не по эндпоинту, и
-> растёт вместе со спекой.
+> растёт вместе со спекой. Загрузчик и сервис списков заменены через
+> `app.dependency_overrides` фейками, которые возвращают валидный по контракту результат
+> (итог загрузки с невалидной строкой, одна бригада, одна заявка), а на неизвестный регион
+> поднимают `InvalidInput` — так позитивные кейсы проверяют форму успешных ответов без БД.
 
 | Test | Scenario | Expected result |
 |---|---|---|

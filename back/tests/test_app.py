@@ -22,6 +22,9 @@ class _FakePool:
     async def close(self) -> None:
         self.closed_called = True
 
+    def connection(self) -> None:
+        raise AssertionError("the lifespan tests take no connection")
+
 
 class _FakeOsrmClient:
     def __init__(self) -> None:
@@ -71,6 +74,24 @@ def test_lifespan_closes_pool_and_client_on_shutdown(monkeypatch: pytest.MonkeyP
     with TestClient(app):
         pass
 
+    assert fake_pool.closed_called is True
+    assert osrm_client.aclose_calls == 1
+
+
+def test_lifespan_closes_pool_when_data_files_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_pool = _FakePool()
+    osrm_client = _FakeOsrmClient()
+    monkeypatch.setattr(app_module, "create_db_pool", lambda settings: fake_pool)
+    monkeypatch.setattr(app_module, "create_osrm_client", lambda settings: osrm_client)
+
+    def broken(*args: object) -> None:
+        raise ValueError("malformed regions.toml")
+
+    monkeypatch.setattr(app_module, "create_data_services", broken)
+    app = app_module.create_app(settings=_fake_settings())
+
+    with pytest.raises(ValueError, match="regions.toml"), TestClient(app):
+        pass
     assert fake_pool.closed_called is True
     assert osrm_client.aclose_calls == 1
 

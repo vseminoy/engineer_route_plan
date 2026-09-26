@@ -7,8 +7,8 @@ from typing import Any
 import aiosql
 from psycopg import AsyncConnection
 
-from src.domain import EngineerDraft, RegionDraft, TicketDraft
-from src.repository.db import run_query
+from src.domain import EngineerDraft, RegionDraft, RegionWritten, TicketDraft
+from src.repository.db import fetch_all, run_query
 
 QUERIES_DIR = Path(__file__).resolve().parents[2] / "queries"
 
@@ -22,11 +22,13 @@ async def replace_region_data(
     region: RegionDraft,
     engineers: list[EngineerDraft],
     tickets: list[TicketDraft],
-) -> int:
-    """Replaces everything stored for the region with the given brigades and tickets in
-    one transaction and returns the region id. Plans of the region, their rows and
-    replan events go too: they refer to the tickets and brigades being replaced. On any
-    error nothing changes."""
+) -> RegionWritten:
+    """Replaces the region's tickets with the given ones in one transaction and returns
+    the region id and whether its brigades were kept. Plans of the region, their rows and
+    replan events go too: they refer to the tickets being replaced. When the region's
+    brigades are exactly the given ones in name, skills, vehicle type and shift, they keep
+    their ids and only move to the given start points; otherwise they are replaced by the
+    given ones. On any error nothing changes."""
     async with conn.transaction():
         row = await run_query(
             "upsert_region",
@@ -45,29 +47,10 @@ async def replace_region_data(
             "delete_region_assignments",
             "delete_region_plans",
             "delete_region_tickets",
-            "delete_region_engineers",
         ):
             delete = getattr(queries, name)
             await run_query(name, partial(delete, conn, region_id=region_id))
-        await run_query(
-            "insert_engineers",
-            lambda: queries.insert_engineers(
-                conn,
-                [
-                    {
-                        "region_id": region_id,
-                        "name": e.name,
-                        "start_lon": e.start.lon,
-                        "start_lat": e.start.lat,
-                        "shift_start": e.shift_start,
-                        "shift_end": e.shift_end,
-                        "vehicle_type": e.vehicle_type.value,
-                        "skills": [s.value for s in e.skills],
-                    }
-                    for e in engineers
-                ],
-            ),
-        )
+        engineers_kept = await _store_engineers(conn, region_id, engineers)
         await run_query(
             "insert_tickets",
             lambda: queries.insert_tickets(
@@ -97,4 +80,70 @@ async def replace_region_data(
                 ],
             ),
         )
-    return region_id
+    return RegionWritten(region_id=region_id, engineers_kept=engineers_kept)
+
+
+async def _store_engineers(
+    conn: AsyncConnection[Any], region_id: int, engineers: list[EngineerDraft]
+) -> bool:
+    """Runs after the region's plans are gone, since plan rows refer to brigades.
+    Returns true when the stored brigades are kept and only their start points move."""
+    rows = await run_query(
+        "list_region_roster",
+        lambda: fetch_all(queries.list_region_roster(conn, region_id=region_id)),
+    )
+    stored = sorted(
+        (name, tuple(sorted(skills)), vehicle_type, shift_start, shift_end)
+        for name, skills, vehicle_type, shift_start, shift_end in rows
+    )
+    given = sorted(
+        (
+            e.name,
+            tuple(sorted(s.value for s in e.skills)),
+            e.vehicle_type.value,
+            e.shift_start,
+            e.shift_end,
+        )
+        for e in engineers
+    )
+    if stored == given:
+        await run_query(
+            "update_engineer_starts",
+            lambda: queries.update_engineer_starts(
+                conn,
+                [
+                    {
+                        "region_id": region_id,
+                        "name": e.name,
+                        "start_lon": e.start.lon,
+                        "start_lat": e.start.lat,
+                    }
+                    for e in engineers
+                ],
+            ),
+        )
+        return True
+    await run_query(
+        "delete_region_engineers",
+        lambda: queries.delete_region_engineers(conn, region_id=region_id),
+    )
+    await run_query(
+        "insert_engineers",
+        lambda: queries.insert_engineers(
+            conn,
+            [
+                {
+                    "region_id": region_id,
+                    "name": e.name,
+                    "start_lon": e.start.lon,
+                    "start_lat": e.start.lat,
+                    "shift_start": e.shift_start,
+                    "shift_end": e.shift_end,
+                    "vehicle_type": e.vehicle_type.value,
+                    "skills": [s.value for s in e.skills],
+                }
+                for e in engineers
+            ],
+        ),
+    )
+    return False

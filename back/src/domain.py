@@ -79,3 +79,49 @@ class TicketDraft(BaseModel):
     duration_min: int = Field(gt=0)
     status: TicketStatus
     received_at: datetime
+
+
+class RegionWritten(BaseModel):
+    """The outcome of writing a region's data: `engineers_kept` is true when the stored
+    brigades kept their ids and only moved to the new start points."""
+
+    model_config = ConfigDict(frozen=True)
+
+    region_id: int
+    engineers_kept: bool
+
+
+class Engineer(BaseModel):
+    """A stored brigade; shift times are local time of the region."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    name: str
+    start: Point
+    shift_start: time
+    shift_end: time
+    vehicle_type: VehicleType
+    skills: tuple[Skill, ...] = Field(min_length=1, max_length=3)
+
+
+class Ticket(BaseModel):
+    """A stored ticket; datetimes are naive local time of the region."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    external_id: str
+    type_bk: str | None
+    type_hd: str
+    required_skill: Skill
+    required_vehicle: VehicleType | None
+    priority: int = Field(ge=1)
+    district: str | None
+    address: str
+    location: Point
+    window_start: datetime
+    window_end: datetime
+    duration_min: int = Field(gt=0)
+    status: TicketStatus
+    received_at: datetime

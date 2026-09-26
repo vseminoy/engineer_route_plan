@@ -21,6 +21,19 @@ class LocalDateTime(RootModel[str]):
     ]
 
 
+class LocalTime(RootModel[str]):
+    root: Annotated[
+        str,
+        Field(
+            description="Время суток в местном времени региона, ЧЧ:ММ, без даты и часового пояса: 13:20. Часы 00–23, минуты 00–59.",
+            examples=["13:20"],
+            max_length=5,
+            min_length=5,
+            pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$",
+        ),
+    ]
+
+
 class FieldError(BaseModel):
     model_config = ConfigDict(
         extra="forbid",

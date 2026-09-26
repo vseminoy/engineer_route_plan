@@ -14,6 +14,8 @@ pytestmark = pytest.mark.integration
 
 TABLES = ["regions", "engineers", "tickets", "plans", "assignments", "replan_events"]
 POINT = "ST_SetSRID(ST_MakePoint(37.62, 55.75), 4326)"
+INITIAL = "5d23f2956ce7"
+HEAD = "cb3db41d521a"
 
 
 def _tables(db: Database) -> set[str]:
@@ -87,9 +89,10 @@ def _engineer(conn: psycopg.Connection, region_id: int, **overrides: Any) -> int
 
 
 TICKET_SQL = (
-    "INSERT INTO tickets (region_id, external_id, required_skill, required_vehicle, priority,"
-    " address, geom, window_start, window_end, duration_min, status, received_at)"
-    " VALUES (%(region_id)s, 'T-1', %(required_skill)s, %(required_vehicle)s, %(priority)s,"
+    "INSERT INTO tickets (region_id, external_id, type_hd, required_skill, required_vehicle,"
+    " priority, address, geom, window_start, window_end, duration_min, status, received_at)"
+    " VALUES (%(region_id)s, 'T-1', %(type_hd)s, %(required_skill)s, %(required_vehicle)s,"
+    " %(priority)s,"
     " 'адрес', " + POINT + ", %(window_start)s, %(window_end)s, %(duration_min)s,"
     " %(status)s, %(received_at)s) RETURNING id"
 )
@@ -98,6 +101,7 @@ TICKET_SQL = (
 def _ticket_params(region_id: int, **overrides: Any) -> dict[str, Any]:
     return {
         "region_id": region_id,
+        "type_hd": "Локальная заявка",
         "required_skill": "local_work",
         "required_vehicle": None,
         "priority": 3,
@@ -170,7 +174,7 @@ def test_upgrade_creates_schema(empty_db: Database) -> None:
     command.upgrade(alembic_config(), "head")
 
     assert set(TABLES) <= _tables(empty_db)
-    assert applied_revisions(empty_db) == [("5d23f2956ce7",)]
+    assert applied_revisions(empty_db) == [(HEAD,)]
     assert _roles(empty_db) == {"app_rw", "app_ro"}
 
 
@@ -257,9 +261,7 @@ def test_app_rw_changes_data(rw: psycopg.Connection) -> None:
         "Восток-2",
     )
     rw.execute("DELETE FROM regions WHERE id = %s", (region_id,))
-    assert rw.execute("SELECT count(*) FROM regions WHERE id = %s", (region_id,)).fetchone() == (
-        0,
-    )
+    assert rw.execute("SELECT count(*) FROM regions WHERE id = %s", (region_id,)).fetchone() == (0,)
 
 
 @pytest.mark.parametrize(
@@ -422,6 +424,74 @@ def test_ticket_requires_location(rw: psycopg.Connection) -> None:
     assert error.diag.column_name == "geom"
 
 
+# --- tickets.type_hd ------------------------------------------------------------------
+
+
+def _type_hd_comment(conn: psycopg.Connection) -> str:
+    row = conn.execute(
+        "SELECT col_description('tickets'::regclass, attnum) FROM pg_attribute"
+        " WHERE attrelid = 'tickets'::regclass AND attname = 'type_hd'"
+    ).fetchone()
+    assert row
+    return str(row[0])
+
+
+def _owner_ticket(db: Database, type_hd: str | None) -> None:
+    """A ticket written by the schema owner, outside the application."""
+    with db.connect() as conn:
+        region_id = _region(conn)
+        conn.execute(TICKET_SQL, _ticket_params(region_id, type_hd=type_hd))
+        conn.commit()
+
+
+def test_ticket_type_hd_required(rw: psycopg.Connection) -> None:
+    error = _violation(rw, TICKET_SQL, _ticket_params(_region(rw), type_hd=None))
+    assert isinstance(error, errors.NotNullViolation)
+    assert error.diag.column_name == "type_hd"
+
+
+def test_type_hd_upgrade_keeps_tickets(empty_db: Database) -> None:
+    command.upgrade(alembic_config(), INITIAL)
+    _owner_ticket(empty_db, "Локальная заявка")
+
+    command.upgrade(alembic_config(), "head")
+
+    with empty_db.connect() as conn:
+        assert conn.execute("SELECT type_hd FROM tickets").fetchall() == [("Локальная заявка",)]
+        assert "обязателен" in _type_hd_comment(conn)
+
+
+def test_type_hd_upgrade_fails_on_null(empty_db: Database) -> None:
+    command.upgrade(alembic_config(), INITIAL)
+    _owner_ticket(empty_db, None)
+    try:
+        with pytest.raises(Exception) as raised:
+            command.upgrade(alembic_config(), "head")
+
+        assert isinstance(getattr(raised.value, "orig", None), errors.NotNullViolation)
+        assert applied_revisions(empty_db) == [(INITIAL,)]
+        with empty_db.connect() as conn:
+            assert conn.execute("SELECT type_hd FROM tickets").fetchall() == [(None,)]
+    finally:
+        # The next test migrates this database to head, which the row would block.
+        command.downgrade(alembic_config(), "base")
+
+
+def test_type_hd_downgrade(migrated_db: Database) -> None:
+    command.downgrade(alembic_config(), INITIAL)
+    try:
+        with migrated_db.connect() as conn:
+            assert "NULL — поле пусто" in _type_hd_comment(conn)
+        _owner_ticket(migrated_db, None)
+        with migrated_db.connect() as conn:
+            conn.execute("DELETE FROM tickets")
+            conn.execute("DELETE FROM regions")
+            conn.commit()
+    finally:
+        command.upgrade(alembic_config(), "head")
+    assert applied_revisions(migrated_db) == [(HEAD,)]
+
+
 # --- assignments ------------------------------------------------------------------------
 
 
@@ -438,7 +508,9 @@ def plan_rows(rw: psycopg.Connection) -> dict[str, int]:
 
 
 def test_assignment_shapes_valid(rw: psycopg.Connection, plan_rows: dict[str, int]) -> None:
-    rw.execute(ASSIGNMENT_SQL, _assigned(plan_rows["plan"], plan_rows["ticket"], plan_rows["engineer"]))
+    rw.execute(
+        ASSIGNMENT_SQL, _assigned(plan_rows["plan"], plan_rows["ticket"], plan_rows["engineer"])
+    )
     rw.execute(ASSIGNMENT_SQL, _unassigned(plan_rows["plan"], plan_rows["ticket2"]))
 
 
@@ -461,9 +533,7 @@ def test_assignment_shapes_rejected(
     assert error.diag.constraint_name == "ck_assignments__assigned_or_reason"
 
 
-def test_assignment_ticket_once_per_plan(
-    rw: psycopg.Connection, plan_rows: dict[str, int]
-) -> None:
+def test_assignment_ticket_once_per_plan(rw: psycopg.Connection, plan_rows: dict[str, int]) -> None:
     rw.execute(ASSIGNMENT_SQL, _unassigned(plan_rows["plan"], plan_rows["ticket"]))
 
     error = _violation(rw, ASSIGNMENT_SQL, _unassigned(plan_rows["plan"], plan_rows["ticket"]))
@@ -489,9 +559,7 @@ def test_assignment_sequence_unique_per_engineer(
     assert zero.diag.constraint_name == "ck_assignments__sequence_no_positive"
 
 
-def test_assignment_arrival_whole_minute(
-    rw: psycopg.Connection, plan_rows: dict[str, int]
-) -> None:
+def test_assignment_arrival_whole_minute(rw: psycopg.Connection, plan_rows: dict[str, int]) -> None:
     params = _assigned(
         plan_rows["plan"],
         plan_rows["ticket"],
@@ -517,7 +585,12 @@ def test_replan_event_types(rw: psycopg.Connection) -> None:
         "INSERT INTO replan_events (plan_id, event_type, payload, triggered_at)"
         " VALUES (%s, %s, '{}', '2026-09-23 13:20')"
     )
-    for event_type in ("new_urgent_ticket", "new_ticket", "ticket_cancelled", "engineer_unavailable"):
+    for event_type in (
+        "new_urgent_ticket",
+        "new_ticket",
+        "ticket_cancelled",
+        "engineer_unavailable",
+    ):
         rw.execute(sql, (plan_id, event_type))
 
     error = _violation(rw, sql, (plan_id, "reorder"))

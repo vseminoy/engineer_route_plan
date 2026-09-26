@@ -8,11 +8,14 @@ import structlog
 from fastapi import FastAPI, Request, Response
 
 from src.api.body_limit import BodyLimitMiddleware
-from src.api.deps import create_db_pool
+from src.api.deps import create_data_services, create_db_pool
 from src.api.errors import REQUEST_ID_HEADER, register_error_handlers, route_path
+from src.api.routes.data import router as data_router
 from src.api.routes.health import router as health_router
 from src.api.routes.not_implemented import add_not_implemented_stub
-from src.clients.osrm import create_osrm_client
+from src.api.routes.regions import router as regions_router
+from src.clients.nominatim import NominatimClient, create_nominatim_client
+from src.clients.osrm import OsrmClient, create_osrm_client
 from src.config import Settings, get_settings
 from src.logging import configure_logging, get_logger
 
@@ -40,13 +43,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db_pool = create_db_pool(app_settings)
         await db_pool.open(wait=False)
         app.state.db_pool = db_pool
-        app.state.osrm_client = create_osrm_client(app_settings)
-
-        logger.info("app_started", mode=app_settings.app_mode)
+        osrm_client: OsrmClient | None = None
+        nominatim: NominatimClient | None = None
         try:
+            # Inside `try`: a client that fails to build or a malformed data file stops
+            # the startup, and whatever was opened before it still gets closed.
+            app.state.osrm_client = osrm_client = create_osrm_client(app_settings)
+            nominatim = create_nominatim_client(
+                app_settings.nominatim_url, app_settings.nominatim_user_agent
+            )
+            app.state.loader, app.state.region_lists = create_data_services(
+                app_settings, db_pool, nominatim
+            )
+            logger.info("app_started", mode=app_settings.app_mode)
             yield
         finally:
-            await app.state.osrm_client.aclose()
+            if nominatim is not None:
+                await nominatim.aclose()
+            if osrm_client is not None:
+                await osrm_client.aclose()
             await db_pool.close()
 
     app = FastAPI(title="Engineer Route Plan API", version="0.1.0", lifespan=lifespan)
@@ -103,5 +118,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return response
 
     app.include_router(health_router)
+    app.include_router(regions_router)
+    app.include_router(data_router)
     add_not_implemented_stub(app)
     return app

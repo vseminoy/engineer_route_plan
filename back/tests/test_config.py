@@ -65,7 +65,7 @@ def test_settings_max_request_body_bytes_default(monkeypatch: pytest.MonkeyPatch
     _required_env(monkeypatch)
     monkeypatch.delenv("MAX_REQUEST_BODY_BYTES", raising=False)
 
-    assert Settings(_env_file=None).max_request_body_bytes == 10485760
+    assert Settings(_env_file=None).max_request_body_bytes == 1048576
 
 
 def test_settings_max_request_body_bytes_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

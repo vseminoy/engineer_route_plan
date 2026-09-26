@@ -6,7 +6,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 
 class Status(StrEnum):
@@ -25,4 +25,255 @@ class HealthStatus(BaseModel):
     ]
     version: Annotated[
         str, Field(description="Версия приложения из метаданных пакета (совпадает с info.version)")
+    ]
+
+
+class RegionCode(RootModel[str]):
+    root: Annotated[
+        str,
+        Field(
+            description="Код региона — латиница в нижнем регистре, цифры и «_»; начинается с буквы",
+            examples=["east"],
+            max_length=50,
+            min_length=1,
+            pattern="^[a-z][a-z0-9_]*$",
+        ),
+    ]
+
+
+class Region(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    code: RegionCode
+    name: Annotated[str, Field(description="Название региона для показа пользователю")]
+
+
+class Point(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    lat: Annotated[float, Field(description="Широта, градусы", ge=-90.0, le=90.0)]
+    lon: Annotated[float, Field(description="Долгота, градусы", ge=-180.0, le=180.0)]
+
+
+class Skill(StrEnum):
+    local_work = "local_work"
+    connection = "connection"
+    emergency = "emergency"
+
+
+class VehicleType(StrEnum):
+    car = "car"
+    foot = "foot"
+    bike = "bike"
+    public_transport = "public_transport"
+
+
+class TicketStatus(StrEnum):
+    not_sent = "not_sent"
+    sent = "sent"
+    en_route = "en_route"
+    in_progress = "in_progress"
+    completed = "completed"
+    cancelled = "cancelled"
+    overdue = "overdue"
+
+
+class LocalTime(RootModel[str]):
+    root: Annotated[
+        str,
+        Field(
+            description="Время суток в местном времени региона, ЧЧ:ММ, без даты и часового пояса: 13:20. Часы 00–23, минуты 00–59.",
+            examples=["13:20"],
+            max_length=5,
+            min_length=5,
+            pattern="^([01][0-9]|2[0-3]):[0-5][0-9]$",
+        ),
+    ]
+
+
+class LocalDateTime(RootModel[str]):
+    root: Annotated[
+        str,
+        Field(
+            description="Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.",
+            examples=["2026-09-23T13:20:00"],
+            max_length=19,
+            min_length=19,
+            pattern="^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$",
+        ),
+    ]
+
+
+class FieldError(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    name: Annotated[
+        str,
+        Field(
+            description="Имя входного параметра так, как оно названо в контракте: поле тела, query-, path-параметр или поле формы, без префиксов body/query. Вложенность — через точку, индекс массива — в квадратных скобках (engineers[2].skills)."
+        ),
+    ]
+    message: Annotated[
+        str,
+        Field(
+            description="Что не так со значением параметра — текст для пользователя на русском языке."
+        ),
+    ]
+
+
+class RequestMessage(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    message: Annotated[
+        str,
+        Field(
+            description="Что не так с запросом в целом — текст для пользователя на русском языке."
+        ),
+    ]
+
+
+class FieldErrors(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    fields: Annotated[
+        list[FieldError],
+        Field(description="Ошибки входных параметров, по одной записи на ошибку.", min_length=1),
+    ]
+
+
+class Ticket(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: Annotated[int, Field(description="Идентификатор заявки на сервере")]
+    external_id: Annotated[
+        str, Field(description="Номер заявки из файла (колонка «Заявка»); не уникален")
+    ]
+    type_bk: Annotated[
+        str | None, Field(description="Тип заявки BK из файла; null, если колонки или значения нет")
+    ]
+    type_hd: Annotated[str, Field(description="Тип заявки HD из файла")]
+    required_skill: Skill
+    required_vehicle: Annotated[
+        VehicleType | None,
+        Field(description="Транспорт, который требует заявка; null — подходит любой"),
+    ]
+    priority: Annotated[
+        int,
+        Field(
+            description="Ранг приоритета, меньше — срочнее: 1 — авария, 2 — подключение, 3 — ремонт и дозаказ",
+            ge=1,
+        ),
+    ]
+    district: Annotated[str | None, Field(description="Район из файла; null, если не указан")]
+    address: Annotated[str, Field(description="Адрес из файла")]
+    location: Point
+    window_start: LocalDateTime
+    window_end: LocalDateTime
+    duration_min: Annotated[int, Field(description="Время работы на объекте, минуты", ge=1)]
+    status: TicketStatus
+    received_at: LocalDateTime
+
+
+class DemoDataRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    region: RegionCode
+
+
+class RegionDataUpload(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    region: RegionCode
+    tickets_file: Annotated[
+        bytes,
+        Field(description="Файл заявок, .csv или .json; формат и пределы — в описании операции"),
+    ]
+
+
+class Reason(StrEnum):
+    missing_field = "missing_field"
+    field_too_long = "field_too_long"
+    bad_datetime = "bad_datetime"
+    window_order = "window_order"
+    unknown_type = "unknown_type"
+    unknown_status = "unknown_status"
+    address_not_found = "address_not_found"
+
+
+class InvalidRow(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    row: Annotated[
+        int,
+        Field(
+            description="Номер строки: для CSV — строка файла (заголовок — строка 1), для JSON — позиция элемента массива, с 1",
+            ge=1,
+        ),
+    ]
+    reason: Annotated[
+        Reason,
+        Field(
+            description="Почему строка не загружена: missing_field — нет обязательного поля; field_too_long — поле длиннее предела (адрес — 300 символов, остальные — 200); bad_datetime — время не в формате ДД.ММ.ГГГГ Ч:ММ; window_order — начало окна не раньше окончания; unknown_type — тип заявки не из таблицы соответствия; unknown_status — «Статус BK» не из таблицы соответствия; address_not_found — для адреса не нашлось координат"
+        ),
+    ]
+    column: Annotated[
+        str | None,
+        Field(
+            description="Колонка файла, к которой относится ошибка, как в заголовке; null, если ошибка не относится к одной колонке"
+        ),
+    ]
+
+
+class DataLoadResult(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    region: RegionCode
+    engineers: Annotated[int, Field(description="Сколько бригад теперь у региона", ge=0)]
+    tickets: Annotated[int, Field(description="Сколько заявок загружено", ge=1)]
+    rows_total: Annotated[int, Field(description="Строк данных в файле, без заголовка CSV", ge=0)]
+    rows_skipped: Annotated[
+        int,
+        Field(
+            description="Пропущено строк, которые не заявки — пустых и служебной строки адреса офиса",
+            ge=0,
+        ),
+    ]
+    rows_invalid: Annotated[
+        list[InvalidRow],
+        Field(description="Строки-заявки, которые не загружены, по возрастанию номера строки"),
+    ]
+
+
+class Engineer(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: Annotated[int, Field(description="Идентификатор бригады")]
+    name: Annotated[str, Field(description="Название бригады")]
+    vehicle_type: VehicleType
+    skills: Annotated[
+        list[Skill],
+        Field(description="Навыки бригады, от одного до трёх", max_length=3, min_length=1),
+    ]
+    shift_start: LocalTime
+    shift_end: LocalTime
+    start: Point
+
+
+class ValidationError(RootModel[RequestMessage | FieldErrors]):
+    root: Annotated[
+        RequestMessage | FieldErrors,
+        Field(
+            description="Тело ответа 400. Ровно одно из двух полей: message — ошибка запроса в целом, которую нельзя привязать к одному параметру; fields — ошибки конкретных входных параметров, клиент показывает каждую у своего поля. Тексты — для пользователя, на русском, без технических деталей."
+        ),
     ]

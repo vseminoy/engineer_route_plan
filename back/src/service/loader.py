@@ -5,14 +5,14 @@ import time
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 import structlog
 from psycopg import AsyncConnection
 
-from src.domain import EngineerDraft, RegionDraft, TicketDraft
+from src.domain import EngineerDraft, RegionDraft, RegionWritten, TicketDraft
 from src.errors import AppError, InvalidInput
 from src.logging import get_logger
 from src.repository.db import database_errors
@@ -39,7 +39,8 @@ DEMO_DIR = DATA_DIR / "demo"
 Source = Literal["csv", "json", "demo"]
 Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection[Any]]]
 ReplaceRegionData = Callable[
-    [AsyncConnection[Any], RegionDraft, list[EngineerDraft], list[TicketDraft]], Awaitable[int]
+    [AsyncConnection[Any], RegionDraft, list[EngineerDraft], list[TicketDraft]],
+    Awaitable[RegionWritten],
 ]
 
 
@@ -70,13 +71,22 @@ class _Parsed:
 class Loader:
     """`connect` opens a database connection (the pool's `connection`); the loader takes
     one only to write, after the file is read and geocoded, so a slow geocoder does not
-    hold a pooled connection."""
+    hold a pooled connection.
+
+    Files are read one at a time: reading takes memory and CPU, the latter with the GIL
+    held. Writes go one at a time too, so loads hold at most one pooled connection however
+    many arrive at once; a write of a region would otherwise sit on a connection waiting
+    for the region row lock of another. Geocoding is outside both turns: Nominatim
+    requests are spaced by the client itself, and a load without cache misses does not
+    wait for one with them."""
 
     regions: Regions
     types: TicketTypes
     geocoder: Geocoder
     connect: Connect
     replace_region_data: ReplaceRegionData
+    _read_turn: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, compare=False)
+    _write_turn: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, compare=False)
 
     async def load(self, region_code: str, source: Source, data: bytes | None = None) -> LoadResult:
         """Replaces the region's brigades and tickets with those of the file (`data`, for
@@ -123,7 +133,11 @@ class Loader:
         started: float,
     ) -> LoadResult:
         # Parsing a file of up to the request body limit is CPU work; off the event loop.
-        parsed = await asyncio.to_thread(self._parse, source, region, data)
+        # `wait_ms` sums the time spent queued behind other loads for both turns.
+        queued = time.monotonic()
+        async with self._read_turn:
+            wait_ms = _since(queued)
+            parsed = await asyncio.to_thread(self._parse, source, region, data)
         invalid = list(parsed.invalid)
         office_address = parsed.split.office_address
         if office_address and len(office_address) > MAX_ADDRESS_LENGTH:
@@ -174,8 +188,11 @@ class Loader:
         )
         districts = {t.district for t in tickets if t.district}
         engineers = generate_engineers(region, self.regions, draft.office, districts)
-        async with database_errors("replace_region_data"), self.connect() as conn:
-            await self.replace_region_data(conn, draft, engineers, tickets)
+        queued = time.monotonic()
+        async with self._write_turn:
+            wait_ms += _since(queued)
+            async with database_errors("replace_region_data"), self.connect() as conn:
+                written = await self.replace_region_data(conn, draft, engineers, tickets)
 
         result = LoadResult(
             region=region.code,
@@ -192,7 +209,9 @@ class Loader:
             rows_invalid=len(invalid),
             invalid_by_reason=dict(Counter(r.reason for r in invalid)),
             engineers=result.engineers,
+            engineers_kept=written.engineers_kept,
             tickets=result.tickets,
+            wait_ms=wait_ms,
             duration_ms=_since(started),
         )
         return result

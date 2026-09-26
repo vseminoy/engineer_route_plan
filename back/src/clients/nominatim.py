@@ -46,6 +46,9 @@ class NominatimClient:
                     await self._sleep(wait)
             self._last_start = self._clock()
 
+    async def aclose(self) -> None:
+        await self._http.aclose()
+
     async def search(self, query: str) -> Point | None:
         await self._wait_turn()
         started = self._clock()

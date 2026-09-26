@@ -136,17 +136,33 @@ def test_json_not_array_of_objects(body: str) -> None:
     assert e.value.reason == "file_format_invalid"
 
 
-def test_json_invalid_syntax() -> None:
+@pytest.mark.parametrize("body", [b'[{"a": ', b""])
+def test_json_invalid_syntax(body: bytes) -> None:
     with pytest.raises(InvalidInput) as e:
-        read_rows(b'[{"a": ', "json")
+        read_rows(body, "json")
     assert e.value.reason == "file_format_invalid"
 
 
+@pytest.mark.parametrize("body", ['[{"Заявка": "1"}] x', '[{"Заявка": "1"} {}]', "[{}, ]", "[,]"])
+def test_json_malformed_array(body: str) -> None:
+    with pytest.raises(InvalidInput) as e:
+        read_rows(body.encode(), "json")
+    assert e.value.reason == "file_format_invalid"
+
+
+def test_json_whitespace_around_elements() -> None:
+    body = " \n[ \r\n\t" + json.dumps(JSON_ROWS[0], ensure_ascii=False) + " ,\n {} ] \n"
+    rows = read_rows(body.encode(), "json")
+    assert (len(rows.rows), rows.skipped) == (1, 1)
+    assert read_rows(b" [ ] ", "json").rows == []
+
+
 def test_blank_rows_skipped() -> None:
-    text = f"{HEADER}\n{TICKET}\n\n\n;;;;;;;\n{TICKET}\n"
+    blank = ["", "", ";;;;;;;", " ; ;\t;;;;; ", ";;;;;;;FMC"]
+    text = "\n".join([HEADER, TICKET, *blank, TICKET]) + "\n"
     _, rows, skipped = _read(text.encode())
     assert len(rows) == 2
-    assert skipped == 3
+    assert skipped == 5
 
 
 @pytest.mark.parametrize("marker", ["Адрес Офиса", "Адрес офиса"])

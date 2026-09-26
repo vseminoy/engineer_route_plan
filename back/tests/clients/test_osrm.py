@@ -467,7 +467,9 @@ async def test_route_needs_two_points(points: list[Point]) -> None:
 # --- creation, closing, logs ---------------------------------------------------------
 
 
-async def test_create_osrm_client_from_settings() -> None:
+async def test_create_osrm_client_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.test:3128")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.test:3128")
     settings = Settings(
         database_url="postgresql://test/test",
         osrm_url_car="http://osrm-car:5000",
@@ -486,6 +488,8 @@ async def test_create_osrm_client_from_settings() -> None:
             Graph.BIKE: "http://osrm-bike:5000",
         }
         assert all(h.timeout == httpx.Timeout(45.0) for h in http.values())
+        # The proxy of the environment is not used: every graph connects directly.
+        assert all(h.trust_env is False for h in http.values())
         assert client._factor == 2.0
         assert client._max_cells == 500 * 500
     finally:

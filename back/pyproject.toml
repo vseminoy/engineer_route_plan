@@ -12,6 +12,8 @@ dependencies = [
     "structlog>=25.5,<27",
     "alembic>=1.13,<2",
     "aiosql>=13,<16",
+    # Starlette parses multipart forms (the data file upload) with it.
+    "python-multipart>=0.0.22,<0.1",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +25,9 @@ dev = [
     "mypy>=1.11,<2",
     "datamodel-code-generator>=0.82,<0.83",
     "testcontainers[postgres]>=4.8,<5",
+    # The stub test compares the application's routes with the paths of specs/openapi.yaml.
+    "pyyaml>=6,<7",
+    "types-PyYAML>=6,<7",
 ]
 
 [tool.pytest.ini_options]

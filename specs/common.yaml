@@ -36,6 +36,16 @@ components:
         время ровно в этом виде, ни во что не пересчитывая.
       examples: ["2026-09-23T13:20:00"]
 
+    LocalTime:
+      type: string
+      minLength: 5
+      maxLength: 5
+      pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+      description: >-
+        Время суток в местном времени региона, ЧЧ:ММ, без даты и часового пояса:
+        13:20. Часы 00–23, минуты 00–59.
+      examples: ["13:20"]
+
     FieldError:
       type: object
       additionalProperties: false
@@ -132,8 +142,9 @@ components:
           $ref: "#/components/headers/X-Request-ID"
     ServiceUnavailable:
       description: >-
-        Недоступна зависимость сервера (база данных или сервис маршрутов OSRM).
-        Тела нет. Запрос можно повторить позже.
+        Недоступна зависимость сервера: база данных, сервис маршрутов OSRM или
+        внешний геокодер. Какая именно у операции — сказано в описании этого
+        ответа у неё. Тела нет. Запрос можно повторить позже.
       headers:
         X-Request-ID:
           $ref: "#/components/headers/X-Request-ID"

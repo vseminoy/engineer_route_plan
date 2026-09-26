@@ -12,3 +12,14 @@ VALUES (:region_id, :external_id, :type_bk, :type_hd, :required_skill,
         :required_vehicle, :priority, :district, :address,
         ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
         :window_start, :window_end, :duration_min, :status, :received_at);
+
+-- name: list_tickets_by_region(region_id)
+-- Tickets of one region in any status, in id order. Datetimes are naive local time of
+-- the region, returned as stored.
+SELECT id, external_id, type_bk, type_hd, required_skill, required_vehicle,
+       priority, district, address,
+       ST_Y(geom) AS lat, ST_X(geom) AS lon,
+       window_start, window_end, duration_min, status, received_at
+FROM tickets
+WHERE region_id = :region_id
+ORDER BY id;

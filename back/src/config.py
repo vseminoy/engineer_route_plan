@@ -27,8 +27,9 @@ class Settings(LoggingSettings):
     # of a region's day (up to ~530 points) takes up to ~26 s on the bike graph.
     osrm_timeout_s: float = Field(default=60, gt=0, allow_inf_nan=False)
     app_mode: Literal["demo", "full"] = "demo"
-    # Largest accepted request body, bytes; the upload of a data file is the biggest request.
-    max_request_body_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    # Largest accepted request body, bytes; the upload of a data file is the biggest request,
+    # and a file of 500 tickets takes up to ~0.5 MB (JSON with Cyrillic escaped as \uXXXX).
+    max_request_body_bytes: int = Field(default=1024 * 1024, gt=0)
     # Fallback geocoder for addresses missing from the geocache; empty switches it off.
     nominatim_url: str = ""
     nominatim_user_agent: str = "engineer-route-plan/0.1"

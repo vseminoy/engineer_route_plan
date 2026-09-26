@@ -10,3 +10,7 @@ ON CONFLICT ON CONSTRAINT ux_regions__code DO UPDATE
         office_address = EXCLUDED.office_address,
         office_geom = EXCLUDED.office_geom
 RETURNING id;
+
+-- name: get_region_id(code)$
+-- Id of the region with this code; none until the region's data is loaded for the first time.
+SELECT id FROM regions WHERE code = :code;

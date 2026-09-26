@@ -168,6 +168,11 @@ def _csv_rows(text: str) -> FileRows:
         known = [(i, name) for i, name in enumerate(header) if name in KNOWN_COLUMNS]
         rows = _Rows()
         for cells in reader:
+            if not "".join(cells).strip():
+                # A row of empty or blank cells costs a counter, not a dict: a file of
+                # blank lines stays cheap.
+                rows.skipped += 1
+                continue
             values = {name: (cells[i].strip() if i < len(cells) else "") for i, name in known}
             rows.add(Row(reader.line_num, values))
     except csv.Error:
@@ -187,6 +192,10 @@ def _json_rows(text: str) -> FileRows:
     columns: set[str] = set()
     rows = _Rows()
     for number, item in enumerate(items, start=1):
+        if not item:
+            # An empty object is a blank row: counted, not built.
+            rows.skipped += 1
+            continue
         values = {}
         for key, value in item.items():
             name = key.strip()

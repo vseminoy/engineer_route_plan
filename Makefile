@@ -58,7 +58,7 @@ smoke: ## Проверить поднятый стенд через фронте
 	@code=$$(curl -s --noproxy '*' --max-time 10 -o /dev/null -w '%{http_code}' "$(SMOKE_URL)/health"); \
 		echo "GET /health -> $$code (ожидается 200)"; test "$$code" = 200
 	@code=$$(curl -s --noproxy '*' --max-time 10 -o /dev/null -w '%{http_code}' "$(SMOKE_URL)/api/v1/regions"); \
-		echo "GET /api/v1/regions -> $$code (ожидается 501)"; test "$$code" = 501
+		echo "GET /api/v1/regions -> $$code (ожидается 200)"; test "$$code" = 200
 
 ##@ Разработка (back/)
 
@@ -83,8 +83,8 @@ lint: ## ruff check
 fmt: ## ruff format
 	cd back && $(PY) -m ruff format .
 
-typecheck: ## mypy
-	cd back && $(PY) -m mypy src
+typecheck: ## mypy over src and tests
+	cd back && $(PY) -m mypy src tests
 
 test: ## Все тесты
 	cd back && $(PY) -m pytest -q

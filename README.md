@@ -10,7 +10,7 @@
 
 ```bash
 make up       # создать .env из .env.example (если его нет) и поднять стенд
-make smoke    # проверить стенд: /health → 200, /api/v1/regions → 501
+make smoke    # проверить стенд: /health → 200, /api/v1/regions → 200
 make logs s=backend
 make down     # остановить; make reset — ещё и удалить данные БД и графы OSRM (спросит подтверждение)
 ```
@@ -52,9 +52,34 @@ docker compose up -d --build
 
 ```bash
 curl -i http://localhost:8080/health           # 200 {"status": "ok", ...}
-curl -i http://localhost:8080/api/v1/regions   # 501, пустое тело, заголовок X-Request-ID
+curl -i http://localhost:8080/api/v1/regions   # 200, список регионов, заголовок X-Request-ID
 docker compose logs --no-log-prefix backend    # по одной JSON-записи на строку, у http_request_finished есть request_id
 ```
+
+## Загрузка данных
+
+Регион — отдельный сценарий: свои заявки и бригады, код региона (`east`, `south_east`,
+`south_center`) — из `GET /api/v1/regions`. Загрузка заменяет заявки региона и удаляет его
+планы; бригады региона создаются при первой загрузке и дальше сохраняются с теми же `id`,
+у них обновляются только точки старта. Ответ загрузки — число бригад и заявок, пропущенные
+строки (пустые и строка адреса офиса) и невалидные строки с номером, колонкой и причиной.
+
+```bash
+# встроенный демо-набор региона (без интернета)
+curl --noproxy '*' -X POST -H 'Content-Type: application/json' \
+  -d '{"region": "east"}' http://localhost:8080/api/v1/data/demo
+# свой файл заявок: CSV (UTF-8 или Windows-1251, разделитель «;») или JSON (UTF-8)
+curl --noproxy '*' -F region=south_east \
+  -F "tickets_file=@docs/synthetic_data/Юго-восток Синтетические данные.csv" \
+  http://localhost:8080/api/v1/data/upload
+# бригады и заявки региона
+curl --noproxy '*' 'http://localhost:8080/api/v1/engineers?region=east'
+curl --noproxy '*' 'http://localhost:8080/api/v1/tickets?region=east'
+```
+
+Пределы: тело запроса — 1 МБ (`MAX_REQUEST_BODY_BYTES`, больше — `413`), в файле — не больше
+500 заявок и 50 колонок, адрес — до 300 символов, остальные поля — до 200. Формат колонок и
+ответов — `specs/openapi.yaml`, ветки ошибок — `back/src/api/routes/sequence_diagrams.md`.
 
 ## Данные OSM
 
@@ -119,7 +144,7 @@ https://www.openstreetmap.org/copyright.
 
 ### Бригады и смены
 
-Во входных файлах только заявки, поэтому бригады региона создаёт генератор демо-бригад (`back/src/service/engineers_generator.py`, параметры — `back/data/regions.toml`). Он детерминирован: при каждой загрузке региона получаются те же бригады.
+Во входных файлах только заявки, поэтому бригады региона создаёт генератор демо-бригад (`back/src/service/engineers_generator.py`, параметры — `back/data/regions.toml`). Он детерминирован: для региона всегда один и тот же состав бригад. Бригады создаются при первой загрузке данных региона и сохраняются при следующих с теми же id; повторная загрузка обновляет у них только точки старта (офис и удалённые города — по файлу), заменяет заявки и удаляет планы региона.
 
 - Число бригад — ориентир контрольного распределения: Восток 13, Юго-Восток 12, Югоцентр 11. В регионе не больше 30 бригад.
 - У бригады от 1 до 3 навыков, у бригад на весь день вместе есть все три навыка и все четыре вида транспорта.

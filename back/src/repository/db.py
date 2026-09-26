@@ -41,3 +41,10 @@ async def run_query(query: str, call: Callable[[], Awaitable[T]]) -> T:
     `database_errors` does."""
     async with database_errors(query):
         return await call()
+
+
+async def fetch_all(rows: AsyncIterator[T]) -> list[T]:
+    """The rows of an aiosql select, which the async adapters yield one by one instead of
+    returning a list.
+    Source: aiosql/adapters/ageneric.py, `AsyncGenericAdapter.select` (aiosql 15)."""
+    return [row async for row in rows]

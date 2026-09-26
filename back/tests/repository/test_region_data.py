@@ -115,10 +115,12 @@ async def _add_plans(conn: AsyncConnection[Any], region_id: int) -> None:
 
 async def test_replace_inserts_region_engineers_tickets(conn: AsyncConnection[Any]) -> None:
     ticket = _ticket("1")
-    region_id = await replace_region_data(
+    written = await replace_region_data(
         conn, _region(), [_engineer(1), _engineer(2)], [ticket, _ticket("2"), _ticket("3")]
     )
     await conn.commit()
+    region_id = written.region_id
+    assert not written.engineers_kept
     assert await _one(conn, "SELECT count(*) FROM regions") == 1
     assert await _one(conn, f"SELECT count(*) FROM engineers WHERE region_id = {region_id}") == 2
     assert await _one(conn, f"SELECT count(*) FROM tickets WHERE region_id = {region_id}") == 3
@@ -151,20 +153,114 @@ async def test_replace_same_code_keeps_region_id(conn: AsyncConnection[Any]) -> 
         conn, _region(name="Восток-2", office=moved), [_engineer(1)], [_ticket("1")]
     )
     await conn.commit()
-    assert first == second
+    assert first.region_id == second.region_id
     assert await _one(conn, "SELECT name, ST_Y(office_geom) FROM regions") == ("Восток-2", 55.8)
 
 
 async def test_replace_removes_previous_region_data(conn: AsyncConnection[Any]) -> None:
-    region_id = await replace_region_data(conn, _region(), [_engineer(1)], [_ticket("old")])
+    written = await replace_region_data(conn, _region(), [_engineer(1)], [_ticket("old")])
     await conn.commit()
-    await _add_plans(conn, region_id)
+    await _add_plans(conn, written.region_id)
     await replace_region_data(conn, _region(), [_engineer(7)], [_ticket("new")])
     await conn.commit()
     for table in ("plans", "assignments", "replan_events"):
         assert await _one(conn, f"SELECT count(*) FROM {table}") == 0
     assert await _one(conn, "SELECT array_agg(external_id) FROM tickets") == ["new"]
     assert await _one(conn, "SELECT array_agg(name) FROM engineers") == ["Бригада 7"]
+
+
+async def _engineer_rows(conn: AsyncConnection[Any]) -> list[tuple[Any, ...]]:
+    cur = await conn.execute(
+        "SELECT id, name, ST_Y(start_geom), ST_X(start_geom), skills, vehicle_type,"
+        " shift_start, shift_end FROM engineers ORDER BY id"
+    )
+    return list(await cur.fetchall())
+
+
+async def test_replace_same_roster_keeps_engineers(conn: AsyncConnection[Any]) -> None:
+    written = await replace_region_data(
+        conn, _region(), [_engineer(1), _engineer(2)], [_ticket("old")]
+    )
+    await conn.commit()
+    before = await _engineer_rows(conn)
+    await _add_plans(conn, written.region_id)
+    await conn.execute(
+        "INSERT INTO assignments (plan_id, ticket_id, engineer_id, sequence_no, planned_arrival,"
+        " travel_time_min, travel_distance_m, explanation)"
+        " SELECT p.id, t.id, %s, 1, '2026-08-17 10:00', 10, 1000, 'назначена'"
+        " FROM plans p, tickets t WHERE p.parent_plan_id IS NULL",
+        (before[0][0],),
+    )
+    await conn.commit()
+    moved = Point(lat=55.43, lon=37.76)
+    written = await replace_region_data(
+        conn,
+        _region(),
+        [_engineer(1, start=moved), _engineer(2, start=moved)],
+        [_ticket("new")],
+    )
+    await conn.commit()
+    assert written.engineers_kept
+    after = await _engineer_rows(conn)
+    assert [row[0] for row in after] == [row[0] for row in before]
+    assert all(row[2:4] == (moved.lat, moved.lon) for row in after)
+    assert [row[1:2] + row[4:] for row in after] == [row[1:2] + row[4:] for row in before]
+    assert await _one(conn, "SELECT array_agg(external_id) FROM tickets") == ["new"]
+    for table in ("plans", "assignments", "replan_events"):
+        assert await _one(conn, f"SELECT count(*) FROM {table}") == 0
+
+
+async def test_replace_changed_roster_recreates_engineers(conn: AsyncConnection[Any]) -> None:
+    await replace_region_data(conn, _region(), [_engineer(1), _engineer(2)], [_ticket("1")])
+    await conn.commit()
+    before = {row[0] for row in await _engineer_rows(conn)}
+    written = await replace_region_data(
+        conn, _region(), [_engineer(1), _engineer(2), _engineer(3)], [_ticket("1")]
+    )
+    await conn.commit()
+    assert not written.engineers_kept
+    after = await _engineer_rows(conn)
+    assert [row[1] for row in after] == ["Бригада 1", "Бригада 2", "Бригада 3"]
+    assert before.isdisjoint(row[0] for row in after)
+
+
+async def test_replace_skills_order_keeps_engineers(conn: AsyncConnection[Any]) -> None:
+    both = (Skill.CONNECTION, Skill.EMERGENCY)
+    await replace_region_data(conn, _region(), [_engineer(1, skills=both)], [_ticket("1")])
+    await conn.commit()
+    before = [row[0] for row in await _engineer_rows(conn)]
+    written = await replace_region_data(
+        conn, _region(), [_engineer(1, skills=tuple(reversed(both)))], [_ticket("1")]
+    )
+    await conn.commit()
+    assert written.engineers_kept
+    assert [row[0] for row in await _engineer_rows(conn)] == before
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"skills": (Skill.EMERGENCY,)},
+        {"vehicle_type": VehicleType.FOOT},
+        {"shift_start": time(15, 30)},
+        {"shift_end": time(18, 0)},
+    ],
+    ids=["skills", "vehicle", "shift_start", "shift_end"],
+)
+async def test_replace_changed_brigade_recreates_engineers(
+    conn: AsyncConnection[Any], changed: dict[str, Any]
+) -> None:
+    await replace_region_data(conn, _region(), [_engineer(1), _engineer(2)], [_ticket("1")])
+    await conn.commit()
+    before = {row[0] for row in await _engineer_rows(conn)}
+    written = await replace_region_data(
+        conn, _region(), [_engineer(1), _engineer(2, **changed)], [_ticket("1")]
+    )
+    await conn.commit()
+    assert not written.engineers_kept
+    after = await _engineer_rows(conn)
+    assert [row[1] for row in after] == ["Бригада 1", "Бригада 2"]
+    assert before.isdisjoint(row[0] for row in after)
 
 
 async def test_replace_keeps_other_regions(conn: AsyncConnection[Any]) -> None:

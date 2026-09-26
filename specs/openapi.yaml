@@ -25,7 +25,205 @@ paths:
                 $ref: "#/components/schemas/HealthStatus"
         "500":
           $ref: "./common.yaml#/components/responses/InternalError"
+
+  /api/v1/regions:
+    get:
+      operationId: list_regions
+      summary: Регионы, для которых можно загрузить данные и построить план
+      description: >-
+        Регионы из конфигурации сервера в порядке её записи, независимо от того,
+        загружены ли по ним данные. Регион — отдельный сценарий планирования:
+        один файл заявок, свои бригады, заявки и бригады разных регионов вместе
+        не планируются. Список — справочник для остальных операций, которые
+        принимают код региона.
+      responses:
+        "200":
+          description: Все регионы конфигурации
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Region"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /api/v1/data/upload:
+    post:
+      operationId: upload_region_data
+      summary: Загрузить файл заявок региона
+      description: >-
+        Заменяет заявки региона заявками файла в одной транзакции. Все заявки
+        файла относятся к выбранному региону. Бригады региона — демо-бригады,
+        их создаёт сервер: при первой загрузке региона они создаются, при
+        следующих сохраняются с теми же id, пока состав бригад в конфигурации
+        региона не меняется, и у них обновляются только точки старта — офис из
+        служебной строки файла, бригады удалённых городов по районам заявок.
+        Планы региона и события перепланирования удаляются: они ссылаются на
+        прежние заявки. При любой ошибке данные региона не меняются.
+
+
+        Файл — CSV или JSON, формат определяется по расширению имени файла
+        (.csv или .json, регистр не важен). CSV: разделитель «;», первая строка —
+        заголовок, кодировка UTF-8 или Windows-1251, с BOM или без. JSON: массив
+        объектов с ключами как у заголовков CSV, только UTF-8. Обязательные
+        колонки: «Заявка», «Тип заявки HD», «Начало», «Окончание», «Адрес»;
+        необязательные: «Тип заявки BK», «Район», «Статус BK», остальные
+        игнорируются. Не больше 500 заявок (пустые строки и служебная строка не
+        в счёт) и 50 колонок. Предел размера всего запроса — 1 048 576 байт
+        (1 МБ); больше — ответ 413.
+
+
+        Пустые строки и служебная строка адреса офиса («Адрес Офиса» /
+        «Адрес офиса» в колонке «Заявка») не заявки: они пропускаются и
+        учитываются в rows_skipped. Строка-заявка с ошибкой не загружается и
+        не прерывает загрузку остальных — она возвращается в rows_invalid с
+        номером и причиной. Файл, в котором не осталось ни одной заявки, —
+        ошибка 400.
+
+
+        Координаты адресов берутся из гео-кэша сервера; промахи кэша, если
+        включён внешний геокодер, ищутся в нём не больше 50 адресов за загрузку
+        и не чаще запроса в секунду — такая загрузка длится несколько минут.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/RegionDataUpload"
+      responses:
+        "200":
+          description: Данные региона заменены данными файла
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataLoadResult"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "413":
+          $ref: "./common.yaml#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: >-
+            Недоступна база данных или включённый внешний геокодер. Данные
+            региона не изменились.
+
+
+  /api/v1/data/demo:
+    post:
+      operationId: load_demo_data
+      summary: Загрузить встроенный демо-набор региона
+      description: >-
+        То же, что загрузка файла, но заявки берутся из демо-набора региона,
+        встроенного в сервер: заявки региона заменяются в одной транзакции,
+        бригады сохраняются (обновляются точки старта), планы региона
+        удаляются. Демо-набор загружается без доступа к интернету. Регион —
+        в теле запроса.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DemoDataRequest"
+      responses:
+        "200":
+          description: Данные региона заменены демо-набором
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataLoadResult"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "413":
+          $ref: "./common.yaml#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных. Данные региона не изменились.
+
+  /api/v1/engineers:
+    get:
+      operationId: list_engineers
+      summary: Бригады региона
+      description: >-
+        Бригады только выбранного региона, по возрастанию id. id бригады не
+        меняется при повторной загрузке данных региона. Регион без загруженных
+        данных — пустой список.
+      parameters:
+        - $ref: "#/components/parameters/RegionQuery"
+      responses:
+        "200":
+          description: Бригады региона
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Engineer"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных.
+
+  /api/v1/tickets:
+    get:
+      operationId: list_tickets
+      summary: Заявки региона
+      description: >-
+        Все заявки только выбранного региона, в любом статусе, по возрастанию
+        id, без постраничной выдачи: в регионе не больше 500 заявок — предел
+        загружаемого файла. Регион без загруженных данных — пустой список.
+        Назначения заявок бригадам — в плане, а не здесь.
+      parameters:
+        - $ref: "#/components/parameters/RegionQuery"
+      responses:
+        "200":
+          description: Заявки региона
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Ticket"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных.
 components:
+  parameters:
+    RegionQuery:
+      name: region
+      in: query
+      required: true
+      description: >-
+        Код региона из списка регионов. Код, которого нет в конфигурации
+        сервера, — ошибка 400 у параметра region.
+      schema:
+        $ref: "#/components/schemas/RegionCode"
   schemas:
     HealthStatus:
       type: object
@@ -39,3 +237,235 @@ components:
         version:
           type: string
           description: Версия приложения из метаданных пакета (совпадает с info.version)
+
+    RegionCode:
+      type: string
+      minLength: 1
+      maxLength: 50
+      pattern: "^[a-z][a-z0-9_]*$"
+      description: Код региона — латиница в нижнем регистре, цифры и «_»; начинается с буквы
+      examples: ["east"]
+
+    Region:
+      type: object
+      additionalProperties: false
+      required: [code, name]
+      properties:
+        code:
+          $ref: "#/components/schemas/RegionCode"
+        name:
+          type: string
+          description: Название региона для показа пользователю
+
+    Point:
+      type: object
+      additionalProperties: false
+      required: [lat, lon]
+      description: Точка WGS84 (EPSG:4326), градусы
+      properties:
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+          description: Широта, градусы
+        lon:
+          type: number
+          minimum: -180
+          maximum: 180
+          description: Долгота, градусы
+
+    Skill:
+      type: string
+      enum: [local_work, connection, emergency]
+      description: >-
+        Навык: local_work — локальные работы, connection — подключения и
+        дозаказы, emergency — аварийные работы
+
+    VehicleType:
+      type: string
+      enum: [car, foot, bike, public_transport]
+      description: Транспорт бригады — определяет профиль маршрута по дорожному графу
+
+    TicketStatus:
+      type: string
+      enum: [not_sent, sent, en_route, in_progress, completed, cancelled, overdue]
+      description: Статус заявки
+
+    Engineer:
+      type: object
+      additionalProperties: false
+      required: [id, name, vehicle_type, skills, shift_start, shift_end, start]
+      properties:
+        id:
+          type: integer
+          description: Идентификатор бригады
+        name:
+          type: string
+          description: Название бригады
+        vehicle_type:
+          $ref: "#/components/schemas/VehicleType"
+        skills:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/Skill"
+          description: Навыки бригады, от одного до трёх
+        shift_start:
+          $ref: "./common.yaml#/components/schemas/LocalTime"
+        shift_end:
+          $ref: "./common.yaml#/components/schemas/LocalTime"
+        start:
+          $ref: "#/components/schemas/Point"
+
+    Ticket:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - external_id
+        - type_bk
+        - type_hd
+        - required_skill
+        - required_vehicle
+        - priority
+        - district
+        - address
+        - location
+        - window_start
+        - window_end
+        - duration_min
+        - status
+        - received_at
+      properties:
+        id:
+          type: integer
+          description: Идентификатор заявки на сервере
+        external_id:
+          type: string
+          description: Номер заявки из файла (колонка «Заявка»); не уникален
+        type_bk:
+          type: [string, "null"]
+          description: Тип заявки BK из файла; null, если колонки или значения нет
+        type_hd:
+          type: string
+          description: Тип заявки HD из файла
+        required_skill:
+          $ref: "#/components/schemas/Skill"
+        required_vehicle:
+          description: Транспорт, который требует заявка; null — подходит любой
+          anyOf:
+            - $ref: "#/components/schemas/VehicleType"
+            - type: "null"
+        priority:
+          type: integer
+          minimum: 1
+          description: >-
+            Ранг приоритета, меньше — срочнее: 1 — авария, 2 — подключение,
+            3 — ремонт и дозаказ
+        district:
+          type: [string, "null"]
+          description: Район из файла; null, если не указан
+        address:
+          type: string
+          description: Адрес из файла
+        location:
+          $ref: "#/components/schemas/Point"
+        window_start:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+        window_end:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+        duration_min:
+          type: integer
+          minimum: 1
+          description: Время работы на объекте, минуты
+        status:
+          $ref: "#/components/schemas/TicketStatus"
+        received_at:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+
+    DemoDataRequest:
+      type: object
+      additionalProperties: false
+      required: [region]
+      properties:
+        region:
+          $ref: "#/components/schemas/RegionCode"
+
+    RegionDataUpload:
+      type: object
+      additionalProperties: false
+      required: [region, tickets_file]
+      properties:
+        region:
+          $ref: "#/components/schemas/RegionCode"
+        tickets_file:
+          type: string
+          format: binary
+          description: >-
+            Файл заявок, .csv или .json; формат и пределы — в описании операции
+
+    InvalidRow:
+      type: object
+      additionalProperties: false
+      required: [row, reason, column]
+      properties:
+        row:
+          type: integer
+          minimum: 1
+          description: >-
+            Номер строки: для CSV — строка файла (заголовок — строка 1), для
+            JSON — позиция элемента массива, с 1
+        reason:
+          type: string
+          enum:
+            - missing_field
+            - field_too_long
+            - bad_datetime
+            - window_order
+            - unknown_type
+            - unknown_status
+            - address_not_found
+          description: >-
+            Почему строка не загружена: missing_field — нет обязательного поля;
+            field_too_long — поле длиннее предела (адрес — 300 символов,
+            остальные — 200); bad_datetime — время не в формате ДД.ММ.ГГГГ Ч:ММ;
+            window_order — начало окна не раньше окончания; unknown_type — тип
+            заявки не из таблицы соответствия; unknown_status — «Статус BK» не
+            из таблицы соответствия; address_not_found — для адреса не нашлось
+            координат
+        column:
+          type: [string, "null"]
+          description: >-
+            Колонка файла, к которой относится ошибка, как в заголовке; null,
+            если ошибка не относится к одной колонке
+
+    DataLoadResult:
+      type: object
+      additionalProperties: false
+      required: [region, engineers, tickets, rows_total, rows_skipped, rows_invalid]
+      properties:
+        region:
+          $ref: "#/components/schemas/RegionCode"
+        engineers:
+          type: integer
+          minimum: 0
+          description: Сколько бригад теперь у региона
+        tickets:
+          type: integer
+          minimum: 1
+          description: Сколько заявок загружено
+        rows_total:
+          type: integer
+          minimum: 0
+          description: Строк данных в файле, без заголовка CSV
+        rows_skipped:
+          type: integer
+          minimum: 0
+          description: Пропущено строк, которые не заявки — пустых и служебной строки адреса офиса
+        rows_invalid:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvalidRow"
+          description: Строки-заявки, которые не загружены, по возрастанию номера строки

@@ -244,7 +244,10 @@ def _cell(value: object) -> float | None:
 
 
 def create_osrm_client(settings: Settings) -> OsrmClient:
-    """Performs no network I/O: the app starts while the graphs are still being built."""
+    """Performs no network I/O: the app starts while the graphs are still being built.
+
+    Proxy variables of the environment are ignored: OSRM is an internal service, and a
+    proxy would receive the points of tickets, which are clients' addresses."""
     urls = {
         Graph.CAR: settings.osrm_url_car,
         Graph.FOOT: settings.osrm_url_foot,
@@ -252,7 +255,9 @@ def create_osrm_client(settings: Settings) -> OsrmClient:
     }
     return OsrmClient(
         {
-            graph: httpx.AsyncClient(base_url=url, timeout=httpx.Timeout(settings.osrm_timeout_s))
+            graph: httpx.AsyncClient(
+                base_url=url, timeout=httpx.Timeout(settings.osrm_timeout_s), trust_env=False
+            )
             for graph, url in urls.items()
         },
         public_transport_factor=settings.public_transport_factor,

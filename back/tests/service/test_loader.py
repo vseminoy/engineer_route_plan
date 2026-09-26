@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -7,7 +9,7 @@ from typing import Any
 import pytest
 from psycopg_pool import PoolTimeout
 
-from src.domain import EngineerDraft, Point, RegionDraft, TicketDraft
+from src.domain import EngineerDraft, Point, RegionDraft, RegionWritten, TicketDraft
 from src.errors import DatabaseFailure, DependencyUnavailable, InvalidInput
 from src.service.geocoding import GeoCache, Geocoder
 from src.service.loader import Loader
@@ -46,8 +48,9 @@ CSV = ("\n".join([HEADER, *FILE_ROWS]) + "\n").encode("cp1251")
 
 
 class FakeRepository:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(self, error: Exception | None = None, engineers_kept: bool = False) -> None:
         self.error = error
+        self.engineers_kept = engineers_kept
         self.calls: list[tuple[RegionDraft, list[EngineerDraft], list[TicketDraft]]] = []
 
     async def __call__(
@@ -56,11 +59,11 @@ class FakeRepository:
         region: RegionDraft,
         engineers: list[EngineerDraft],
         tickets: list[TicketDraft],
-    ) -> int:
+    ) -> RegionWritten:
         if self.error:
             raise self.error
         self.calls.append((region, engineers, tickets))
-        return 1
+        return RegionWritten(region_id=1, engineers_kept=self.engineers_kept)
 
 
 class FakeConnect:
@@ -108,7 +111,7 @@ def _loader(
 
 async def test_load_csv(capsys: pytest.CaptureFixture[str]) -> None:
     json_logs()
-    repo = FakeRepository()
+    repo = FakeRepository(engineers_kept=True)
     result = await _loader(repo).load("east", "csv", CSV)
     ((region, engineers, tickets),) = repo.calls
     assert region.code == "east"
@@ -128,6 +131,7 @@ async def test_load_csv(capsys: pytest.CaptureFixture[str]) -> None:
             "rows_skipped",
             "rows_invalid",
             "engineers",
+            "engineers_kept",
             "tickets",
         )
     } == {
@@ -137,10 +141,12 @@ async def test_load_csv(capsys: pytest.CaptureFixture[str]) -> None:
         "rows_skipped": 3,
         "rows_invalid": 1,
         "engineers": 13,
+        "engineers_kept": True,
         "tickets": 3,
     }
     assert record["invalid_by_reason"] == {"bad_datetime": 1}
     assert isinstance(record["duration_ms"], int) and record["duration_ms"] >= 0
+    assert isinstance(record["wait_ms"], int) and 0 <= record["wait_ms"] <= record["duration_ms"]
 
 
 async def test_load_json() -> None:
@@ -355,3 +361,61 @@ async def test_unknown_region_code_bounded_in_log(capsys: pytest.CaptureFixture[
         await _loader(FakeRepository()).load("X" * 5000 + "\nFAKE", "csv", CSV)
     (record,) = events(capsys, "data_load_failed")
     assert len(record["region"]) == 50
+
+
+class CountingLoader(Loader):
+    """Records how many file reads run at once; each read takes a while in its thread."""
+
+    reading = 0
+    most_at_once = 0
+
+    def _parse(self, *args: Any) -> Any:
+        CountingLoader.reading += 1
+        CountingLoader.most_at_once = max(CountingLoader.most_at_once, CountingLoader.reading)
+        time.sleep(0.02)
+        CountingLoader.reading -= 1
+        return super()._parse(*args)
+
+
+async def test_files_read_one_at_a_time() -> None:
+    CountingLoader.reading = CountingLoader.most_at_once = 0
+    repo = FakeRepository()
+    base = _loader(repo)
+    loader = CountingLoader(base.regions, base.types, base.geocoder, base.connect, repo)
+    await asyncio.gather(*(loader.load("east", "csv", CSV) for _ in range(3)))
+    assert len(repo.calls) == 3
+    assert CountingLoader.most_at_once == 1
+
+
+class SlowRepository(FakeRepository):
+    """Records how many writes run at once; each write yields to the event loop."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.running = 0
+        self.most_at_once = 0
+
+    async def __call__(
+        self,
+        conn: Any,
+        region: RegionDraft,
+        engineers: list[EngineerDraft],
+        tickets: list[TicketDraft],
+    ) -> RegionWritten:
+        self.running += 1
+        self.most_at_once = max(self.most_at_once, self.running)
+        await asyncio.sleep(0.02)
+        self.running -= 1
+        return await super().__call__(conn, region, engineers, tickets)
+
+
+async def test_writes_one_at_a_time(capsys: pytest.CaptureFixture[str]) -> None:
+    json_logs()
+    repo = SlowRepository()
+    loader = _loader(repo)
+    await asyncio.gather(*(loader.load("east", "csv", CSV) for _ in range(3)))
+    assert len(repo.calls) == 3
+    assert repo.most_at_once == 1
+    # Each write takes at least 20 ms, so the last load in the queue waits for two.
+    waits = sorted(r["wait_ms"] for r in events(capsys, "data_load_finished"))
+    assert waits[-1] >= 15

@@ -142,3 +142,179 @@ sequenceDiagram
     H->>H: лог unhandled_error со стеком
     H-->>Client: 500 без тела + X-Request-ID из contextvars
 ```
+
+## `GET /api/v1/regions`
+
+Справочник регионов из конфигурации сервера (`data/regions.toml`), в порядке её записи.
+Отвечает одинаково, загружены ли по региону данные или нет. Ввода-вывода нет: конфигурация
+читается один раз, при старте приложения. Своих веток ошибок у операции нет, остаются
+только общие (`500`).
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут regions)
+    participant Svc as service (конфигурация регионов)
+
+    Client->>API: GET /api/v1/regions
+    API->>Svc: список регионов
+    Svc-->>API: [(code, name)] в порядке конфигурации
+    API-->>Client: 200 [{code, name}]
+```
+
+## `POST /api/v1/data/upload`, `POST /api/v1/data/demo`
+
+Обе операции заменяют данные одного региона через загрузчик. Как загрузчик читает файл,
+проверяет строки, ищет координаты и пишет в БД, и какими исключениями завершается, — на
+диаграмме «Загрузка данных региона» диаграмм сервисного слоя (`src/service/`). Здесь показано,
+что делает HTTP-слой и какой ответ получается из каждого исключения.
+
+Обе операции — `POST`: загрузка удаляет планы региона, а `GET` клиенты и прокси вправе
+повторять сами (кэш, prefetch, повторный запрос при возврате на вкладку).
+
+На стенде nginx ждёт ответа `/api/v1/data/upload` и `/api/v1/data/demo` до 10 минут, а не 60 с, как у остальных:
+с включённым Nominatim загрузка геокодирует промахи кэша по запросу в секунду и длится минуты.
+
+Бригады файлом не принимаются: у региона демо-бригады от генератора. Они сохраняются между
+загрузками с теми же id, загрузка обновляет у них только точки старта; планы региона
+удаляются.
+
+Любую ошибку самого загрузчика он логирует сам, один раз, событием `data_load_failed`
+(`reason`, `region`, `source`, `duration_ms`). Маршрут её больше не логирует. Маршрут пишет
+только `data_upload_failed` — о том, что отклонил сам до вызова загрузчика: форма не
+разбирается (`form_invalid`) или у файла не то расширение (`file_type_invalid`).
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут data)
+    participant H as api (единый обработчик ошибок)
+    participant Loader as service (загрузчик)
+    participant DB as queries (БД)
+
+    alt POST /api/v1/data/upload (multipart: region, tickets_file)
+        Client->>API: POST /api/v1/data/upload
+        alt тело больше MAX_REQUEST_BODY_BYTES (1 МБ)
+            API->>H: исключение предела тела
+            H-->>Client: 413 без тела
+        else форма не разбирается или сверх пределов (частей больше двух, поле больше 1 КБ)
+            API->>API: лог data_upload_failed (warning, reason=form_invalid)
+            API->>H: HTTPException 400
+            H-->>Client: 400 {message}
+        else region не по шаблону или нет поля region / tickets_file
+            API->>H: RequestValidationError
+            H-->>Client: 400 {fields: [region | tickets_file]}
+        else у имени файла расширение не .csv и не .json
+            API->>API: лог data_upload_failed (warning, reason=file_type_invalid, region)
+            API->>H: InvalidInput(fields: tickets_file)
+            H-->>Client: 400 {fields: [tickets_file]}
+        else
+            API->>Loader: load(region, csv | json, байты файла)
+        end
+    else POST /api/v1/data/demo {region}
+        Client->>API: POST /api/v1/data/demo {"region": "east"}
+        alt тело больше MAX_REQUEST_BODY_BYTES
+            API->>H: исключение предела тела
+            H-->>Client: 413 без тела
+        else тело не JSON
+            API->>H: RequestValidationError (json_invalid)
+            H-->>Client: 400 {message}
+        else нет region, region не по шаблону или лишнее поле
+            API->>H: RequestValidationError
+            H-->>Client: 400 {fields: [region | имя лишнего поля]}
+        else
+            API->>Loader: load(region, demo)
+        end
+    end
+
+    alt регион не из конфигурации
+        Loader-->>API: InvalidInput(fields: region), лог data_load_failed
+        API->>H: InvalidInput
+        H-->>Client: 400 {fields: [region]}
+    else файл не читается (кодировка, формат, больше 500 заявок или 50 колонок, нет обязательной колонки)
+        Loader-->>API: InvalidInput(message), лог data_load_failed
+        API->>H: InvalidInput
+        H-->>Client: 400 {message}
+    else в файле ни одной заявки, которую можно загрузить
+        Loader-->>API: InvalidInput(message), лог data_load_failed
+        API->>H: InvalidInput
+        H-->>Client: 400 {message}
+    else БД или включённый внешний геокодер недоступны
+        Loader-->>API: DependencyUnavailable, лог data_load_failed (error)
+        API->>H: DependencyUnavailable
+        H-->>Client: 503 без тела (данные региона не изменились)
+    else БД отклонила запрос
+        Loader->>DB: замена данных региона (одна транзакция)
+        DB-->>Loader: ошибка → ROLLBACK
+        Loader-->>API: DatabaseFailure, лог data_load_failed (error)
+        API->>H: DatabaseFailure
+        H-->>Client: 500 без тела (данные региона не изменились)
+    else успех
+        Loader->>DB: замена данных региона (одна транзакция)
+        Loader-->>API: LoadResult
+        API-->>Client: 200 {region, engineers, tickets, rows_total, rows_skipped, rows_invalid[]}
+    end
+```
+
+## `GET /api/v1/engineers`, `GET /api/v1/tickets`
+
+Списки бригад и заявок одного региона, по возрастанию `id`, без постраничной выдачи: в
+регионе не больше 500 заявок (предел файла). Сервис сначала проверяет код по
+конфигурации регионов, потом находит id региона в БД по коду и читает строки по `region_id`.
+Строк других регионов в ответе не бывает: запрос отбирает строки по id региона. Регион из конфигурации без загруженных
+данных — пустой список, не ошибка. Репозиторий переводит геометрию в точку
+`{lat, lon}`, время смены — в `ЧЧ:ММ`, окна заявок — в местное время без пояса.
+Назначений заявок в списке нет, они в плане. Бизнес-ошибку маршрут логирует как
+`list_engineers_failed` / `list_tickets_failed`.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут engineers | tickets)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service
+    participant Repo as queries (репозиторий)
+    participant DB as PostgreSQL
+
+    Client->>API: GET /api/v1/engineers?region=east | /api/v1/tickets?region=east
+    alt region не по шаблону или нет параметра
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [region]}
+    else
+        API->>Svc: список (region)
+        alt регион не из конфигурации
+            Svc-->>API: InvalidInput(fields: region)
+            API->>API: лог list_engineers_failed | list_tickets_failed (warning, reason=unknown_region)
+            API->>H: InvalidInput
+            H-->>Client: 400 {fields: [region]}
+        else нет свободного соединения в пуле
+            Svc->>Svc: лог db_query_failed (query=list_engineers | list_tickets)
+            Svc-->>API: DependencyUnavailable
+            API->>API: лог list_engineers_failed | list_tickets_failed (error)
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела
+        else
+            Svc->>Repo: id региона по коду
+            Repo->>DB: SELECT id FROM regions WHERE code
+            alt БД недоступна
+                DB-->>Repo: ошибка соединения
+                Repo->>Repo: лог db_query_failed
+                Repo-->>Svc: DependencyUnavailable
+                Svc-->>API: DependencyUnavailable
+                API->>API: лог list_engineers_failed | list_tickets_failed (error)
+                API->>H: DependencyUnavailable
+                H-->>Client: 503 без тела
+            else регион не загружен (строки региона нет)
+                DB-->>Repo: нет строки
+                Repo-->>Svc: None
+                Svc-->>API: []
+                API-->>Client: 200 []
+            else
+                Repo->>DB: SELECT ... WHERE region_id ORDER BY id
+                DB-->>Repo: строки
+                Repo-->>API: модели (Point, время смены, окна)
+                API-->>Client: 200 [Engineer] | [Ticket]
+            end
+        end
+    end
+```

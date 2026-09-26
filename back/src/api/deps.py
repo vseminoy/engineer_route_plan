@@ -5,8 +5,16 @@ from fastapi import Request
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
+from src.clients.nominatim import NominatimClient
 from src.clients.osrm import OsrmClient
 from src.config import Settings
+from src.repository.region_data import replace_region_data
+from src.repository.region_lists import get_region_id, list_engineers, list_tickets
+from src.service.geocoding import GeoCache, Geocoder
+from src.service.loader import DATA_DIR, Loader
+from src.service.region_lists import RegionLists
+from src.service.regions import Regions
+from src.service.ticket_types import TicketTypes
 
 
 def create_db_pool(settings: Settings) -> AsyncConnectionPool:
@@ -21,6 +29,39 @@ async def get_db_connection(request: Request) -> AsyncIterator[AsyncConnection[A
     pool: AsyncConnectionPool = request.app.state.db_pool
     async with pool.connection() as conn:
         yield conn
+
+
+def create_data_services(
+    settings: Settings, db_pool: AsyncConnectionPool, nominatim: NominatimClient | None
+) -> tuple[Loader, RegionLists]:
+    """Reads the region, ticket type and geocache files; a malformed one stops the
+    startup instead of failing the first request."""
+    regions = Regions.from_file(DATA_DIR / "regions.toml")
+    geocoder = Geocoder(
+        GeoCache.from_file(DATA_DIR / "geocache.csv"),
+        nominatim,
+        regions.remote_towns,
+        settings.nominatim_max_lookups,
+    )
+    loader = Loader(
+        regions,
+        TicketTypes.from_file(DATA_DIR / "ticket_types.toml"),
+        geocoder,
+        db_pool.connection,
+        replace_region_data,
+    )
+    lists = RegionLists(regions, db_pool.connection, get_region_id, list_engineers, list_tickets)
+    return loader, lists
+
+
+def get_loader(request: Request) -> Loader:
+    loader: Loader = request.app.state.loader
+    return loader
+
+
+def get_region_lists(request: Request) -> RegionLists:
+    lists: RegionLists = request.app.state.region_lists
+    return lists
 
 
 async def get_osrm_client(request: Request) -> AsyncIterator[OsrmClient]:

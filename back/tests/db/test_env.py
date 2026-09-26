@@ -45,21 +45,22 @@ def test_env_uses_migration_url(empty_db: Database) -> None:
     result = _alembic(url, "upgrade", "head")
 
     assert result.returncode == 0, result.stderr
-    assert applied_revisions(empty_db) == [("5d23f2956ce7",)]
+    assert applied_revisions(empty_db) == [("cb3db41d521a",)]
 
 
 def test_env_accepts_plain_postgresql_url(empty_db: Database) -> None:
     result = _alembic(empty_db.url, "upgrade", "head")
 
     assert result.returncode == 0, result.stderr
-    assert applied_revisions(empty_db) == [("5d23f2956ce7",)]
+    assert applied_revisions(empty_db) == [("cb3db41d521a",)]
 
 
 def test_env_logs_are_json(empty_db: Database) -> None:
     result = _alembic(empty_db.url, "upgrade", "head")
 
     records = _json_lines(result)
-    assert any("5d23f2956ce7" in record["event"] for record in records)
+    for revision in ("5d23f2956ce7", "cb3db41d521a"):
+        assert any(revision in record["event"] for record in records)
     output = "\n".join(_output(result))
     for secret in (RW_PASSWORD, RO_PASSWORD, empty_db.owner_password):
         assert secret not in output
