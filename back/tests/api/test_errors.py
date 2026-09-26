@@ -135,7 +135,12 @@ async def load_sample(sample_id: int) -> None:
 
 
 def _client() -> TestClient:
-    settings = Settings(database_url="postgresql://test/test", osrm_url="http://osrm.test")
+    settings = Settings(
+        database_url="postgresql://test/test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
+    )
     app = create_app(settings=settings)
     app.include_router(router)
     return TestClient(app, raise_server_exceptions=False)
@@ -211,9 +216,7 @@ def test_unmapped_app_error_returns_500(capsys: pytest.CaptureFixture[str]) -> N
 
 
 @pytest.mark.parametrize("kind", ["not_found", "db_failure"])
-def test_app_error_is_not_logged_by_handler(
-    capsys: pytest.CaptureFixture[str], kind: str
-) -> None:
+def test_app_error_is_not_logged_by_handler(capsys: pytest.CaptureFixture[str], kind: str) -> None:
     with _client() as client:
         client.get(f"/t/raise/{kind}")
 

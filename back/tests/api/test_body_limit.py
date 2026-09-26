@@ -158,7 +158,9 @@ class _Payload(BaseModel):
 def _app_with_json_route() -> FastAPI:
     settings = Settings(
         database_url="postgresql://test/test",
-        osrm_url="http://osrm.test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
         max_request_body_bytes=LIMIT,
     )
     app = create_app(settings=settings)

@@ -2,7 +2,6 @@ import types
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import httpx
 import pytest
 
 from src.api.deps import create_db_pool, get_db_connection, get_osrm_client
@@ -48,31 +47,36 @@ async def test_get_db_connection_yields_and_releases() -> None:
 
 
 def test_get_db_connection_pool_not_opened_at_import() -> None:
-    settings = Settings(database_url="postgresql://test/test", osrm_url="http://localhost:5000")
+    settings = Settings(
+        database_url="postgresql://test/test",
+        osrm_url_car="http://localhost:5000",
+        osrm_url_foot="http://localhost:5000",
+        osrm_url_bike="http://localhost:5000",
+    )
     pool = create_db_pool(settings)
     assert pool.closed is True
 
 
+class _FakeOsrmClient:
+    def __init__(self) -> None:
+        self.aclose_calls = 0
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
 async def test_get_osrm_client_returns_shared_client() -> None:
-    client = httpx.AsyncClient(base_url="http://localhost:5000")
-    try:
-        request = _fake_request(osrm_client=client)
-        agen = get_osrm_client(request)  # type: ignore[arg-type]
-        returned = await agen.__anext__()
-        assert returned is client
-        assert str(returned.base_url) == "http://localhost:5000"
-    finally:
-        await client.aclose()
+    client = _FakeOsrmClient()
+    request = _fake_request(osrm_client=client)
+    agen = get_osrm_client(request)  # type: ignore[arg-type]
+    assert await agen.__anext__() is client
 
 
 async def test_get_osrm_client_not_closed_per_request() -> None:
-    client = httpx.AsyncClient(base_url="http://localhost:5000")
-    try:
-        request = _fake_request(osrm_client=client)
-        agen = get_osrm_client(request)  # type: ignore[arg-type]
+    client = _FakeOsrmClient()
+    request = _fake_request(osrm_client=client)
+    agen = get_osrm_client(request)  # type: ignore[arg-type]
+    await agen.__anext__()
+    with pytest.raises(StopAsyncIteration):
         await agen.__anext__()
-        with pytest.raises(StopAsyncIteration):
-            await agen.__anext__()
-        assert client.is_closed is False
-    finally:
-        await client.aclose()
+    assert client.aclose_calls == 0

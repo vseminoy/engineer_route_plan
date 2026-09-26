@@ -88,6 +88,12 @@ def configure_logging(settings: LoggingSettings) -> None:
     access_logger.propagate = False
     access_logger.disabled = True
 
+    # httpx logs every request line with its full URL at INFO: the geocoder's query is an
+    # address, and OSRM's path is a list of client points. The clients log their own
+    # records without them.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     return structlog.get_logger(name)

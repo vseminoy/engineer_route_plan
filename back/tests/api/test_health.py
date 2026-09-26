@@ -7,7 +7,12 @@ from src.config import Settings
 
 
 def _client() -> TestClient:
-    settings = Settings(database_url="postgresql://test/test", osrm_url="http://osrm.test")
+    settings = Settings(
+        database_url="postgresql://test/test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
+    )
     app = create_app(settings=settings)
     return TestClient(app)
 

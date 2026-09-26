@@ -326,7 +326,7 @@ async def test_unknown_region_logged(capsys: pytest.CaptureFixture[str]) -> None
 
 
 async def test_too_many_rows() -> None:
-    rows = "\n".join(_ticket(i, ADDRESSES[0]) for i in range(10_001))
+    rows = "\n".join(_ticket(i, ADDRESSES[0]) for i in range(501))
     repo = FakeRepository()
     with pytest.raises(InvalidInput) as e:
         await _loader(repo).load("east", "csv", f"{HEADER}\n{rows}\n".encode())

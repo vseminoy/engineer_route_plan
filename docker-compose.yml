@@ -20,47 +20,58 @@ services:
       timeout: 3s
       retries: 20
 
-  # One-shot: downloads the region extract and builds the MLD graph into the volume.
-  # Skips the work when the volume already holds a graph built from the same URL; an
-  # interrupted download of the same URL is resumed rather than restarted.
+  # One-shot: builds an MLD graph per profile from the repository's road extract into
+  # `car/`, `foot/` and `bike/` of the volume. Skips a profile whose graph was built from a
+  # file with the same checksum, so replacing the extract rebuilds all three on the next `up`.
   osrm-prepare:
     image: ghcr.io/project-osrm/osrm-backend:v6.0.0
-    environment:
-      OSRM_PBF_URL: ${OSRM_PBF_URL:?set in .env}
     volumes:
       - osrm-data:/data
+      - ./osrm:/src:ro
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -eu
         cd /data
-        if [ -f ready ] && [ "$$(cat ready)" = "$$OSRM_PBF_URL" ]; then
-          echo "osrm-prepare: graph is up to date"
-          exit 0
-        fi
-        rm -f ready region.osrm*
-        if [ "$$(cat region.url 2>/dev/null || true)" != "$$OSRM_PBF_URL" ]; then
-          rm -f region.osm.pbf region.osm.pbf.part
-          echo "$$OSRM_PBF_URL" > region.url
-        fi
-        if [ ! -f region.osm.pbf ]; then
-          echo "osrm-prepare: downloading $$OSRM_PBF_URL"
-          wget -c -O region.osm.pbf.part "$$OSRM_PBF_URL"
-          mv region.osm.pbf.part region.osm.pbf
-        fi
-        echo "osrm-prepare: extracting"
-        osrm-extract -p /opt/car.lua region.osm.pbf
-        echo "osrm-prepare: partitioning"
-        osrm-partition region.osrm
-        echo "osrm-prepare: customizing"
-        osrm-customize region.osrm
-        echo "$$OSRM_PBF_URL" > ready
-        rm -f region.osm.pbf region.url
+        # One copy for all three profiles, hashed before any graph is removed: a missing
+        # extract stops the service here and the built graphs stay in place.
+        rm -f region.osm.pbf
+        cp /src/moscow-oblast.osm.pbf region.osm.pbf
+        sum="$$(sha256sum region.osm.pbf)"
+        sum="$${sum%% *}"
+        for profile in car foot bike; do
+          if [ -f "$$profile/ready" ] && [ "$$(cat "$$profile/ready")" = "$$sum" ]; then
+            echo "osrm-prepare: $$profile graph is up to date"
+            continue
+          fi
+          case "$$profile" in
+            bike) lua=/opt/bicycle.lua ;;
+            *) lua="/opt/$$profile.lua" ;;
+          esac
+          rm -rf "$$profile"
+          mkdir "$$profile"
+          # osrm-extract writes the graph next to its input; a hard link puts it in the
+          # profile's directory without copying the extract again.
+          ln region.osm.pbf "$$profile/region.osm.pbf"
+          echo "osrm-prepare: $$profile: extracting"
+          osrm-extract -p "$$lua" "$$profile/region.osm.pbf"
+          rm "$$profile/region.osm.pbf"
+          echo "osrm-prepare: $$profile: partitioning"
+          osrm-partition "$$profile/region.osrm"
+          echo "osrm-prepare: $$profile: customizing"
+          osrm-customize "$$profile/region.osrm"
+          echo "$$sum" > "$$profile/ready"
+        done
+        rm region.osm.pbf
         echo "osrm-prepare: done"
 
-  osrm:
+  # One `osrm-routed` per profile: a server answers only for the graph it loaded. The
+  # table limit is raised from the default 100 points: a region's day has more tickets
+  # and brigades than that. The backend reads the same OSRM_MAX_TABLE_SIZE to split larger
+  # tables into strips.
+  osrm-car: &osrm
     image: ghcr.io/project-osrm/osrm-backend:v6.0.0
-    command: ["osrm-routed", "--algorithm", "mld", "/data/region.osrm"]
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "${OSRM_MAX_TABLE_SIZE:-1000}", "/data/car/region.osrm"]
     volumes:
       - osrm-data:/data
     depends_on:
@@ -68,6 +79,14 @@ services:
       osrm-prepare:
         condition: service_completed_successfully
         restart: true
+
+  osrm-foot:
+    <<: *osrm
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "${OSRM_MAX_TABLE_SIZE:-1000}", "/data/foot/region.osrm"]
+
+  osrm-bike:
+    <<: *osrm
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "${OSRM_MAX_TABLE_SIZE:-1000}", "/data/bike/region.osrm"]
 
   # One-shot: brings the schema to the latest revision, then exits. It alone holds the
   # schema owner's credentials and the role passwords, which the migration sets on the
@@ -86,14 +105,19 @@ services:
       db:
         condition: service_healthy
 
-  # Starts without waiting for OSRM: the graph may take a long time to build, and
-  # the backend opens its OSRM client lazily. Connects as `app_rw`, which may change
+  # Starts without waiting for OSRM: the graphs may take a long time to build, and
+  # the backend opens its OSRM clients lazily. Connects as `app_rw`, which may change
   # data but not the schema.
   backend:
     build: ./back
     environment:
       DATABASE_URL: postgresql://app_rw:${APP_RW_PASSWORD:?set in .env}@db:5432/${POSTGRES_DB}
-      OSRM_URL: http://osrm:5000
+      OSRM_URL_CAR: http://osrm-car:5000
+      OSRM_URL_FOOT: http://osrm-foot:5000
+      OSRM_URL_BIKE: http://osrm-bike:5000
+      PUBLIC_TRANSPORT_FACTOR: ${PUBLIC_TRANSPORT_FACTOR:-1.5}
+      OSRM_MAX_TABLE_SIZE: ${OSRM_MAX_TABLE_SIZE:-1000}
+      OSRM_TIMEOUT_S: ${OSRM_TIMEOUT_S:-60}
       APP_MODE: ${APP_MODE:-demo}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: json

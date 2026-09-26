@@ -21,7 +21,7 @@ from src.domain import Point
 from src.errors import DependencyUnavailable
 from src.service.geocoding import cache_key, nominatim_queries, remote_town
 from src.service.regions import Regions
-from src.service.ticket_file import COL_ADDRESS, COL_DISTRICT, read_rows, split_rows
+from src.service.ticket_file import COL_ADDRESS, COL_DISTRICT, read_rows
 
 DEFAULT_SOURCES = (Path("../docs/synthetic_data"), Path("../docs/control_distribution"))
 DEFAULT_CACHE = Path("data/geocache.csv")
@@ -35,7 +35,7 @@ def source_addresses(sources: list[Path]) -> dict[str, tuple[str, str | None]]:
     found: dict[str, tuple[str, str | None]] = {}
     for directory in sources:
         for path in sorted(directory.glob("*.csv")):
-            split = split_rows(read_rows(path.read_bytes(), "csv"))
+            split = read_rows(path.read_bytes(), "csv")
             if split.office_address:
                 found.setdefault(cache_key(split.office_address), (split.office_address, None))
             for row in split.rows:

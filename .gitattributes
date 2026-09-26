@@ -1,2 +1,4 @@
 # Demo sets are the source files byte for byte: cp1251 with CRLF line ends.
 back/data/demo/*.csv -text
+# The OSM road extract for the OSRM graphs.
+*.osm.pbf binary

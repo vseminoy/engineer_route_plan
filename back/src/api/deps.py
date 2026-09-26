@@ -1,11 +1,11 @@
 from collections.abc import AsyncIterator
 from typing import Any
 
-import httpx
 from fastapi import Request
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
+from src.clients.osrm import OsrmClient
 from src.config import Settings
 
 
@@ -23,11 +23,7 @@ async def get_db_connection(request: Request) -> AsyncIterator[AsyncConnection[A
         yield conn
 
 
-def create_osrm_client(settings: Settings) -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=settings.osrm_url)
-
-
-async def get_osrm_client(request: Request) -> AsyncIterator[httpx.AsyncClient]:
+async def get_osrm_client(request: Request) -> AsyncIterator[OsrmClient]:
     """Returns the app-wide client created in `lifespan` — not closed per request,
     so keep-alive connections to OSRM are reused across requests."""
     yield request.app.state.osrm_client

@@ -48,9 +48,9 @@ ps: ## Статус сервисов
 logs: ## Логи в реальном времени; один сервис — make logs s=backend
 	$(COMPOSE) logs -f $(s)
 
-reset: ## ОСТОРОЖНО: удалить данные БД и граф OSRM (без вопроса — CONFIRM=yes)
+reset: ## ОСТОРОЖНО: удалить данные БД и графы OSRM (без вопроса — CONFIRM=yes)
 	@[ "$(CONFIRM)" = yes ] || { \
-		printf 'Удалить данные БД и граф OSRM? [y/N] '; read answer; \
+		printf 'Удалить данные БД и графы OSRM? [y/N] '; read answer; \
 		[ "$$answer" = y ] || { echo "Отменено"; exit 1; }; }
 	$(COMPOSE) down -v
 

@@ -34,7 +34,10 @@ SENTINEL_IDS = frozenset({"Адрес Офиса", "Адрес офиса"})
 # Hour of one or two digits: emergency windows are written "17.08.2026 0:01".
 _DATETIME = re.compile(r"(\d{2})\.(\d{2})\.(\d{4}) (\d{1,2}):(\d{2})")
 
-MAX_ROWS = 10_000
+# A file is one region's day, and the whole day goes into one travel matrix and one solver
+# run, whose cost grows with the square of the points. 500 tickets are well above what the
+# region's brigades can serve in a day, so a shortage of brigades still fits.
+MAX_ROWS = 500
 MAX_COLUMNS = 50
 # Longer values are not addresses or ticket fields but junk; they are cut off before any
 # pattern runs over them.
@@ -55,7 +58,9 @@ class Row:
 
 
 @dataclass(frozen=True)
-class SplitRows:
+class FileRows:
+    """The tickets of a file, apart from the rows that are not tickets."""
+
     office_address: str | None
     rows: list[Row]
     skipped: int
@@ -120,11 +125,38 @@ def _check_columns(columns: set[str]) -> None:
 
 def _too_many_rows() -> InvalidInput:
     return InvalidInput(
-        "too_many_rows", message=f"В файле больше {MAX_ROWS} строк: разделите его на части"
+        "too_many_rows",
+        message=f"В файле больше {MAX_ROWS} заявок: план строится не больше чем по {MAX_ROWS} заявкам",
     )
 
 
-def _csv_rows(text: str) -> list[Row]:
+class _Rows:
+    """Keeps the tickets of a file and only counts the rows that are not tickets — blank
+    rows and the office address row — so a file of blank lines costs no memory. Raises as
+    soon as the file has more tickets than allowed."""
+
+    def __init__(self) -> None:
+        self.office: str | None = None
+        self.tickets: list[Row] = []
+        self.skipped = 0
+
+    def add(self, row: Row) -> None:
+        values = row.values
+        if not any(values.values()):
+            self.skipped += 1
+        elif values.get(COL_ID, "") in SENTINEL_IDS:
+            self.skipped += 1
+            self.office = values.get(COL_BK) or self.office
+        elif len(self.tickets) == MAX_ROWS:
+            raise _too_many_rows()
+        else:
+            self.tickets.append(row)
+
+    def result(self) -> FileRows:
+        return FileRows(self.office, self.tickets, self.skipped)
+
+
+def _csv_rows(text: str) -> FileRows:
     reader = csv.reader(io.StringIO(text, newline=""), delimiter=";")
     try:
         header = [cell.strip() for cell in next(reader, [])]
@@ -134,18 +166,16 @@ def _csv_rows(text: str) -> list[Row]:
             raise _format_error(f"больше {MAX_COLUMNS} колонок")
         _check_columns(set(header))
         known = [(i, name) for i, name in enumerate(header) if name in KNOWN_COLUMNS]
-        rows: list[Row] = []
+        rows = _Rows()
         for cells in reader:
-            if len(rows) == MAX_ROWS:
-                raise _too_many_rows()
             values = {name: (cells[i].strip() if i < len(cells) else "") for i, name in known}
-            rows.append(Row(reader.line_num, values))
+            rows.add(Row(reader.line_num, values))
     except csv.Error:
         raise _format_error("CSV не разбирается") from None
-    return rows
+    return rows.result()
 
 
-def _json_rows(text: str) -> list[Row]:
+def _json_rows(text: str) -> FileRows:
     try:
         items = json.loads(text)
     # ValueError also covers integers longer than the interpreter allows; RecursionError —
@@ -154,10 +184,8 @@ def _json_rows(text: str) -> list[Row]:
         raise _format_error("JSON не разбирается") from None
     if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
         raise _format_error("ожидается JSON-массив объектов")
-    if len(items) > MAX_ROWS:
-        raise _too_many_rows()
     columns: set[str] = set()
-    rows = []
+    rows = _Rows()
     for number, item in enumerate(items, start=1):
         values = {}
         for key, value in item.items():
@@ -168,31 +196,16 @@ def _json_rows(text: str) -> list[Row]:
                 raise _format_error(f"значение «{name}» должно быть строкой или числом")
             values[name] = "" if value is None else str(value).strip()
         columns |= values.keys()
-        rows.append(Row(number, values))
-    if rows:
+        rows.add(Row(number, values))
+    if items:
         _check_columns(columns)
-    return rows
+    return rows.result()
 
 
-def read_rows(data: bytes, fmt: FileFormat) -> list[Row]:
+def read_rows(data: bytes, fmt: FileFormat) -> FileRows:
+    """Blank rows and the office address row are dropped before any field is checked."""
     text = decode(data, fmt)
     return _csv_rows(text) if fmt == "csv" else _json_rows(text)
-
-
-def split_rows(rows: list[Row]) -> SplitRows:
-    """Drops blank rows and the office address row before any field is checked."""
-    office: str | None = None
-    kept = []
-    skipped = 0
-    for row in rows:
-        if not any(row.values.values()):
-            skipped += 1
-        elif row.values.get(COL_ID, "") in SENTINEL_IDS:
-            skipped += 1
-            office = row.values.get(COL_BK) or office
-        else:
-            kept.append(row)
-    return SplitRows(office, kept, skipped)
 
 
 def _datetime(value: str) -> datetime | None:

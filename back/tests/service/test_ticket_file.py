@@ -1,6 +1,7 @@
 import codecs
 import json
 import time
+import tracemalloc
 from datetime import datetime
 from pathlib import Path
 
@@ -14,7 +15,6 @@ from src.service.ticket_file import (
     Row,
     parse_ticket,
     read_rows,
-    split_rows,
 )
 from src.service.ticket_types import TicketTypes
 
@@ -40,7 +40,7 @@ def types() -> TicketTypes:
 
 
 def _read(data: bytes, fmt: str = "csv") -> tuple[str | None, list[Row], int]:
-    split = split_rows(read_rows(data, fmt))  # type: ignore[arg-type]  # test passes literals
+    split = read_rows(data, fmt)  # type: ignore[arg-type]  # test passes literals
     return split.office_address, split.rows, split.skipped
 
 
@@ -259,17 +259,31 @@ def test_field_too_long(types: TicketTypes) -> None:
 
 
 def test_too_many_rows() -> None:
-    rows = "\n".join([TICKET] * 10_001)
+    rows = "\n".join([TICKET] * 501)
     with pytest.raises(InvalidInput) as e:
         read_rows(f"{HEADER}\n{rows}\n".encode(), "csv")
     assert e.value.reason == "too_many_rows"
-    items = [JSON_ROWS[0]] * 10_001
+    items = [JSON_ROWS[0]] * 501
     with pytest.raises(InvalidInput) as e:
         read_rows(json.dumps(items, ensure_ascii=False).encode(), "json")
     assert e.value.reason == "too_many_rows"
-    assert (
-        len(read_rows(f"{HEADER}\n{chr(10).join([TICKET] * 10_000)}\n".encode(), "csv")) == 10_000
-    )
+    # Blank rows and the office address row are not tickets and do not count.
+    full = "\n".join([TICKET] * 500 + ["", ";;;;;;;", SENTINEL])
+    assert len(read_rows(f"{HEADER}\n{full}\n".encode(), "csv").rows) == 500
+
+
+def test_blank_rows_are_counted_not_kept() -> None:
+    blank = "\n" * 200_000
+    tracemalloc.start()
+    try:
+        read = read_rows(f"{HEADER}\n{TICKET}\n{blank}".encode(), "csv")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(read.rows) == 1
+    assert read.skipped == 200_000
+    # A kept row costs about 400 bytes; 200 000 of them would take ~80 MB.
+    assert peak < 20 * 1024 * 1024
 
 
 @pytest.mark.parametrize(
@@ -297,7 +311,7 @@ def test_json_bad_value_in_known_column() -> None:
 
 def test_unknown_columns_dropped() -> None:
     item = dict(JSON_ROWS[0]) | {"k" * 1000: {"nested": 1}, "Бригада": "Бригада А"}
-    (row,) = read_rows(json.dumps([item], ensure_ascii=False).encode(), "json")
+    (row,) = read_rows(json.dumps([item], ensure_ascii=False).encode(), "json").rows
     assert set(row.values) <= {
         "Заявка",
         "Тип заявки BK",
@@ -309,7 +323,7 @@ def test_unknown_columns_dropped() -> None:
         "Статус BK",
     }
     header = HEADER + ";Бригада"
-    (row,) = read_rows(f"{header}\n{TICKET};Бригада А\n".encode(), "csv")
+    (row,) = read_rows(f"{header}\n{TICKET};Бригада А\n".encode(), "csv").rows
     assert "Бригада" not in row.values and "Подключение" not in row.values
 
 

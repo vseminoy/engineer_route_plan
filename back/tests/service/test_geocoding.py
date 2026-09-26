@@ -7,7 +7,7 @@ from src.domain import Point
 from src.errors import DependencyUnavailable
 from src.service.geocoding import GeoCache, Geocoder, nominatim_queries
 from src.service.regions import Regions
-from src.service.ticket_file import COL_ADDRESS, COL_DISTRICT, read_rows, split_rows
+from src.service.ticket_file import COL_ADDRESS, COL_DISTRICT, read_rows
 from tests.log_records import events, json_logs
 
 BACK_DIR = Path(__file__).resolve().parents[2]
@@ -135,7 +135,7 @@ async def test_geocache_covers_every_source_address() -> None:
     )
     addresses: list[tuple[str, str | None]] = []
     for path in sorted(DOCS_DIR.glob("*/*.csv")):
-        split = split_rows(read_rows(path.read_bytes(), "csv"))
+        split = read_rows(path.read_bytes(), "csv")
         if split.office_address:
             addresses.append((split.office_address, None))
         addresses += [

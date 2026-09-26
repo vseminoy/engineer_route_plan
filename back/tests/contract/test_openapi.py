@@ -18,7 +18,12 @@ schemathesis.experimental.OPEN_API_3_1.enable()
 _OPENAPI_PATH = Path(__file__).resolve().parents[3] / "specs" / "openapi.yaml"
 
 _app = create_app(
-    settings=Settings(database_url="postgresql://test/test", osrm_url="http://osrm.test")
+    settings=Settings(
+        database_url="postgresql://test/test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
+    )
 )
 
 # Negative cases send requests that break the spec's constraints; the contract

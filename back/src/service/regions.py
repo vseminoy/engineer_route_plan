@@ -12,6 +12,9 @@ from src.errors import InvalidInput
 
 # Full-day brigades must together hold every vehicle type, and there are four of them.
 MIN_FULL_DAY_ENGINEERS = 4
+# With the region's tickets, the brigades' start points make up one travel matrix and one
+# solver run; 30 brigades serve about 300 tickets a day.
+MAX_ENGINEERS = 30
 
 
 def _point(value: object) -> object:
@@ -65,7 +68,7 @@ class Region(BaseModel):
     code: str
     name: str
     center: Point
-    engineers: int = Field(gt=0)
+    engineers: int = Field(gt=0, le=MAX_ENGINEERS)
 
     @field_validator("center", mode="before")
     @classmethod

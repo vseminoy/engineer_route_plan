@@ -2,6 +2,7 @@ import json
 import logging
 import logging.config
 
+import httpx
 import pytest
 import structlog
 import uvicorn.config
@@ -55,7 +56,9 @@ def test_configure_logging_json_format_produces_one_json_line_per_record(
 ) -> None:
     settings = Settings(
         database_url="postgresql://test/test",
-        osrm_url="http://osrm.test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
         log_format="json",
     )
     configure_logging(settings)
@@ -75,7 +78,9 @@ def test_configure_logging_console_format_is_human_readable_not_json(
 ) -> None:
     settings = Settings(
         database_url="postgresql://test/test",
-        osrm_url="http://osrm.test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
         log_format="console",
     )
     configure_logging(settings)
@@ -96,7 +101,11 @@ def _apply_uvicorn_default_logging() -> None:
 
 def _json_settings() -> Settings:
     return Settings(
-        database_url="postgresql://test/test", osrm_url="http://osrm.test", log_format="json"
+        database_url="postgresql://test/test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
+        log_format="json",
     )
 
 
@@ -144,3 +153,21 @@ def test_configure_logging_drops_uvicorn_duplicate_of_unhandled_error(
     lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
     assert [line["event"] for line in lines] == ["Some other uvicorn error"]
     assert len(error_logger.filters) == 1
+
+
+async def test_configure_logging_silences_httpx_request_lines(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = _json_settings().model_copy(update={"log_level": "DEBUG"})
+    configure_logging(settings)
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, json=[]))
+    async with httpx.AsyncClient(base_url="http://geo.test", transport=transport) as http:
+        await http.get("/search", params={"q": "Волгоградский проспект 128"})
+        await http.get("/route/v1/car/37.618423,55.751244;37.588144,55.733842")
+    logging.getLogger("httpx").warning("pool exhausted")
+
+    err = capsys.readouterr().err
+    assert "HTTP Request" not in err
+    assert "search" not in err
+    assert "55.751244" not in err
+    assert "pool exhausted" in err

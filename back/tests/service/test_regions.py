@@ -67,6 +67,12 @@ def test_overnight_shift_rejected(tmp_path: Path, start: str, end: str) -> None:
         _load(tmp_path, text)
 
 
+def test_too_many_engineers_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="30"):
+        _load(tmp_path, CONFIG.replace("engineers = 13", "engineers = 31"))
+    assert _load(tmp_path, CONFIG.replace("engineers = 13", "engineers = 30")) is not None
+
+
 def test_too_few_full_day_engineers_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="full-day"):
         _load(tmp_path, CONFIG.replace("engineers = 13", "engineers = 5"))

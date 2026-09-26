@@ -8,10 +8,11 @@ import structlog
 from fastapi import FastAPI, Request, Response
 
 from src.api.body_limit import BodyLimitMiddleware
-from src.api.deps import create_db_pool, create_osrm_client
+from src.api.deps import create_db_pool
 from src.api.errors import REQUEST_ID_HEADER, register_error_handlers, route_path
 from src.api.routes.health import router as health_router
 from src.api.routes.not_implemented import add_not_implemented_stub
+from src.clients.osrm import create_osrm_client
 from src.config import Settings, get_settings
 from src.logging import configure_logging, get_logger
 

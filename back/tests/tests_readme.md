@@ -16,6 +16,7 @@
 - [`src/service/geocoding.py` — координаты адресов](#srcservicegeocodingpy--координаты-адресов)
 - [`src/service/loader.py` — загрузка данных региона](#srcserviceloaderpy--загрузка-данных-региона)
 - [`src/clients/nominatim.py` — клиент Nominatim](#srcclientsnominatimpy--клиент-nominatim)
+- [`src/clients/osrm.py` — клиент OSRM](#srcclientsosrmpy--клиент-osrm)
 - [`scripts/build_geocache.py` — сборка гео-кэша](#scriptsbuild_geocachepy--сборка-гео-кэша)
 - [`src/api/errors.py` — единый обработчик ошибок](#srcapierrorspy--единый-обработчик-ошибок)
 - [`src/api/body_limit.py` — предел размера тела запроса](#srcapibody_limitpy--предел-размера-тела-запроса)
@@ -36,17 +37,22 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_settings_reads_from_env` | заданы `DATABASE_URL`, `OSRM_URL`, `APP_MODE=demo` в окружении | `Settings()` собирает поля с этими значениями |
+| `test_settings_reads_from_env` | заданы `DATABASE_URL`, `OSRM_URL_CAR`, `OSRM_URL_FOOT`, `OSRM_URL_BIKE`, `APP_MODE=demo` в окружении | `Settings()` собирает поля с этими значениями |
 | `test_settings_rejects_unknown_app_mode` | `APP_MODE=production` (не `demo`/`full`) | `pydantic.ValidationError` |
 | `test_settings_missing_required_var` | `DATABASE_URL` не задан | `pydantic.ValidationError` |
 | `test_settings_rejects_unknown_log_format` | `LOG_FORMAT=xml` (не `json`/`console`) | `pydantic.ValidationError` |
 | `test_settings_max_request_body_bytes_default` | `MAX_REQUEST_BODY_BYTES` не задан | `max_request_body_bytes == 10485760` (10 МБ) |
-| `test_migration_settings_reads_from_env` | заданы `MIGRATION_DATABASE_URL`, `LOG_LEVEL`, `LOG_FORMAT` | `MigrationSettings()` собирает поля с этими значениями; `DATABASE_URL` и `OSRM_URL` ему не нужны |
+| `test_migration_settings_reads_from_env` | заданы `MIGRATION_DATABASE_URL`, `LOG_LEVEL`, `LOG_FORMAT` | `MigrationSettings()` собирает поля с этими значениями; `DATABASE_URL` и `OSRM_URL_*` ему не нужны |
 | `test_migration_settings_missing_url` | `MIGRATION_DATABASE_URL` не задан | `pydantic.ValidationError` |
 | `test_migration_settings_ignore_env_file` | в текущем каталоге `.env` с `MIGRATION_DATABASE_URL`, в окружении его нет | `pydantic.ValidationError`: адрес владельца схемы берётся только из окружения процесса миграции, не из `.env` приложения |
 | `test_settings_ignore_migration_vars_in_env` | в окружении `MIGRATION_DATABASE_URL`, `APP_RW_PASSWORD`, `APP_RO_PASSWORD` рядом с обычными переменными | `Settings()` собирается, этих полей у него нет — приложение не получает адрес владельца схемы |
 | `test_settings_max_request_body_bytes_from_env` | `MAX_REQUEST_BODY_BYTES=2048` | `max_request_body_bytes == 2048` |
 | `test_settings_rejects_non_positive_body_limit` (параметризован: `0`, `-1`) | `MAX_REQUEST_BODY_BYTES` не больше нуля | `pydantic.ValidationError` — нулевой предел отбивал бы любой запрос с телом |
+| `test_settings_missing_osrm_url` (параметризован: `OSRM_URL_CAR`, `OSRM_URL_FOOT`, `OSRM_URL_BIKE`) | одна из трёх переменных не задана | `pydantic.ValidationError` — у каждого профиля свой граф, запасного нет |
+| `test_settings_osrm_defaults` | `PUBLIC_TRANSPORT_FACTOR`, `OSRM_MAX_TABLE_SIZE`, `OSRM_TIMEOUT_S` не заданы | `public_transport_factor == 1.5`, `osrm_max_table_size == 1000` (совпадает с `--max-table-size` стенда), `osrm_timeout_s == 60` |
+| `test_settings_rejects_bad_osrm_timeout` (параметризован: `0`, `-1`, `inf`) | `OSRM_TIMEOUT_S` не положительное конечное число | `pydantic.ValidationError` |
+| `test_settings_rejects_public_transport_factor_below_one` (параметризован: `0.9`, `0`, `-1`, `inf`, `nan`) | `PUBLIC_TRANSPORT_FACTOR` меньше 1 или не конечное число | `pydantic.ValidationError` — общественный транспорт не быстрее машины, а бесконечный коэффициент сделал бы матрицу бесконечной |
+| `test_settings_rejects_non_positive_max_table_size` (параметризован: `0`, `-1`) | `OSRM_MAX_TABLE_SIZE` не больше нуля | `pydantic.ValidationError` |
 
 ## `src/logging.py` — логирование с run_id (`structlog`, `09-logging.md`)
 
@@ -64,6 +70,7 @@
 | `test_configure_logging_routes_uvicorn_loggers_to_json` | к логгерам применён `uvicorn.config.LOGGING_CONFIG` (текстовые handlers на `uvicorn` и `uvicorn.access`, `propagate=False`), затем `configure_logging(settings)` с `log_format="json"` и запись в `uvicorn.error` | ровно одна строка вывода, и она — JSON с `event == "Started server process"`: стартовые строки uvicorn выходят в том же формате, что и записи приложения |
 | `test_configure_logging_drops_uvicorn_duplicate_of_unhandled_error` | `LOGGING_CONFIG` uvicorn, `configure_logging(settings)` дважды; в `uvicorn.error` пишутся `"Exception in ASGI application\n"` со стеком и другая ошибка | выходит только другая ошибка: необработанное исключение уже записано `unhandled_error`, второй записи со стеком нет; фильтр на логгере один |
 | `test_configure_logging_keeps_uvicorn_access_log_off` | тот же `LOGGING_CONFIG`, затем `configure_logging(settings)` и запись в `uvicorn.access` | `uvicorn.access` не видит ни одного handler (`hasHandlers() is False` — по этой проверке uvicorn включает свой access-лог), вывод пуст: URL с параметрами в лог не попадает |
+| `test_configure_logging_silences_httpx_request_lines` | `configure_logging(settings)` с `log_level="DEBUG"`, запрос `httpx.AsyncClient` через `MockTransport` на URL с адресом в query и координатами в пути | в выводе нет строки `HTTP Request: …` и нет ни адреса, ни координат: URL внешних сервисов содержит персональные данные; `warning` и выше от `httpx` проходят |
 
 > `configure_logging` каждый раз заменяет `root.handlers` целиком — после первого вызова
 > (например, внутри `create_app()` в тесте) вывод `caplog`/`pytest` для последующих тестов в
@@ -212,7 +219,8 @@
 | `test_json_bad_value_in_known_column` | в JSON значение «Адрес» — вложенный объект | `InvalidInput(reason="file_format_invalid")`, `message` называет колонку |
 | `test_unknown_columns_dropped` | JSON с ключом из 1000 символов (вложенный объект) и `Бригада`; CSV с колонками `Подключение` и `Бригада` | в строке только колонки, которые использует загрузчик; неизвестный ключ с вложенным объектом не ошибка |
 | `test_too_many_columns` | заголовок CSV из 20 005 колонок и 1000 пустых строк | `InvalidInput(reason="file_format_invalid")` быстрее 100 мс |
-| `test_too_many_rows` | CSV и JSON из 10 001 строки; CSV из 10 000 строк | `InvalidInput(reason="too_many_rows")` для 10 001; 10 000 строк разобраны |
+| `test_too_many_rows` | CSV и JSON из 501 заявки; CSV из 500 заявок, пустой строки, строки из одних разделителей и строки адреса офиса | `InvalidInput(reason="too_many_rows")` для 501; 500 заявок — файл принят, после отбрасывания служебных строк остаются 500 заявок |
+| `test_blank_rows_are_counted_not_kept` | CSV из заявки и 200 000 пустых строк | одна заявка, `skipped = 200 000`; пик памяти разбора меньше 20 МБ — пустые строки только считаются (сохранённая строка стоила бы ~400 байт, всего ~80 МБ) |
 | `test_blank_rows_skipped` | две пустые строки и строка из одних `;` между заявками | не заявки, `rows_skipped = 3`, в `rows_invalid` не попали |
 | `test_sentinel_row_gives_office_address` | служебная строка `Адрес Офиса` и, в другом файле, `Адрес офиса` | обе отброшены до проверки полей, в `rows_skipped`; адрес офиса — значение второго столбца |
 | `test_no_sentinel_row` | файл без служебной строки | адреса офиса нет (`None`), заявки разобраны |
@@ -262,6 +270,7 @@
 | `test_regions_config_shipped` | `data/regions.toml` из репозитория | три региона `east`, `south_east`, `south_center`: название, центр, число бригад 13, 12, 11, три вида смен |
 | `test_unknown_region_code` | код `north` | `InvalidInput(reason="unknown_region")` с полем `region` |
 | `test_overnight_shift_rejected` | смена `22:00–06:00` и смена с началом, равным концу | ошибка при чтении конфигурации |
+| `test_too_many_engineers_rejected` | 31 бригада у региона; 30 бригад | 31 — ошибка при чтении конфигурации; 30 — конфигурация читается |
 | `test_too_few_full_day_engineers_rejected` | 5 бригад при долях 25 % / 25 % (на весь день остаётся 3) | ошибка при чтении: бригад «весь день» меньше четырёх |
 
 ## `src/service/engineers_generator.py` — генератор демо-бригад
@@ -338,7 +347,7 @@
 | `test_connection_taken_only_to_write` | успешная загрузка; загрузка, прерванная недоступным Nominatim | соединение взято один раз — на запись; при отказе геокодера не взято ни одного |
 | `test_client_error_logged_as_warning` | неподдерживаемая кодировка; отказ БД | `data_load_failed` на уровне `warning` и `error` соответственно |
 | `test_unknown_region_logged` | код региона `north` | `InvalidInput(reason="unknown_region")`; репозиторий не вызван; `data_load_failed` с `reason`, `region = north`, уровень `warning` |
-| `test_too_many_rows` | CSV из 10 001 заявки | `InvalidInput(reason="too_many_rows")`; репозиторий не вызван |
+| `test_too_many_rows` | CSV из 501 заявки | `InvalidInput(reason="too_many_rows")`; репозиторий не вызван |
 | `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; записи `db_query_failed` (`query = replace_region_data`) и `data_load_failed` уровня `error` |
 | `test_unknown_region_code_bounded_in_log` | код региона из 5000 символов с переводом строки | в записи `data_load_failed` поле `region` — 50 символов |
 | `test_logs_no_addresses` | загрузка с промахами кэша и невалидными строками | ни в одной записи лога нет адресов и текста строк файла — только счётчики и коды причин |
@@ -361,6 +370,53 @@
 | `test_timeout_and_network_error` | транспорт поднимает `httpx.ConnectTimeout` и `httpx.ConnectError` | `DependencyUnavailable`; `nominatim_request_failed` без `status` |
 | `test_malformed_response` | `200` с телом не JSON и JSON без `lat` | `DependencyUnavailable`; `nominatim_request_failed` |
 | `test_logs_no_address` | любой запрос | адреса нет ни в одной записи лога |
+
+## `src/clients/osrm.py` — клиент OSRM
+
+Файл: `tests/clients/test_osrm.py`.
+
+> Замена стабами: HTTP — по одному `httpx.MockTransport` на граф (`car`, `foot`, `bike`) с
+> заданными ответами; каждый транспорт запоминает пришедшие запросы. Реальных сетевых
+> вызовов нет. В тестах `public_transport_factor = 1.5`, `max_table_size = 1000`, если в
+> строке не сказано иное.
+
+### Матрица `table`
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_table_car` | `table(car, [A, B])`, граф `car` отвечает `200 {code: Ok, durations, distances}` | `TravelMatrix` с `durations_s` и `distances_m` из ответа (секунды, метры, дробные); один запрос `GET /table/v1/car/{lonA},{latA};{lonB},{latB}` с `annotations=duration,distance` и без `sources` — координаты в порядке `lon,lat`, с пятью знаками после запятой (около метра: `55.751244` уходит как `55.75124`); запись `osrm_request_finished` уровня `debug` с `endpoint = table`, `profile = car`, `points = 2`, `status = 200`, `duration_ms` |
+| `test_table_uses_graph_of_vehicle` (параметризован: `car`, `foot`, `bike`) | `table(vehicle, [A, B])` | запрос пришёл только в транспорт графа этого профиля, путь `/table/v1/{profile}/…`; в два других графа запросов нет; матрица — ответ этого графа без изменений |
+| `test_table_public_transport_is_car_times_factor` | `table(public_transport, [A, B])`, граф `car` отвечает `durations [[0, 600], [700, 0]]`, `distances [[0, 5000], [5200, 0]]` | запрос ушёл в граф `car`; `durations_s == [[0, 900], [1050, 0]]`, `distances_m` — без изменений; в записи лога `profile = car` |
+| `test_table_empty_points` | `table(car, [])` | пустая матрица, запросов нет |
+| `test_table_single_point` (параметризован: `car`, `public_transport`) | `table(vehicle, [A])`; граф ответил бы `400 InvalidOptions` — так `osrm-routed` отвечает на таблицу из одной точки | `TravelMatrix([[0.0]], [[0.0]])`, запросов нет |
+| `test_table_null_cell_is_none` (параметризован: `car`, `public_transport`) | в ответе `durations[0][1] = null`, `distances[0][1] = null` | соответствующие ячейки — `None`: не ноль и не расстояние по прямой; у `public_transport` `None` остаётся `None` |
+| `test_table_in_strips_over_limit` | `max_table_size = 3`, `table(car, [A, B, C, D])` (16 ячеек > 9) | два запроса: все 4 точки в пути, `sources=0;1` и `sources=2;3` (по 2 источника: 2 × 4 ≤ 9); строки матрицы склеены по порядку источников — 4 × 4; два `osrm_request_finished` |
+| `test_table_strip_failure_fails_whole_matrix` | `max_table_size = 3`, 4 точки; первая полоса — `200`, вторая — `503` | `DependencyUnavailable(reason="osrm_unavailable")`, неполная матрица не возвращается |
+| `test_table_server_error` | ответ `503` | `DependencyUnavailable(reason="osrm_unavailable")`; запись `osrm_request_failed` уровня `error` с `endpoint = table`, `profile`, `points`, `status = 503`, `error = http_error` (тело не JSON), `duration_ms` |
+| `test_table_error_code` (параметризован: `TooBig`, `NoSegment`, `InvalidQuery`) | ответ `400 {code: <код>, message: …}` | `DependencyUnavailable(reason="osrm_unavailable")`; `osrm_request_failed` со `status = 400`, `error = <код>` |
+| `test_table_timeout_and_network_error` | транспорт поднимает `httpx.ReadTimeout` и `httpx.ConnectError` | `DependencyUnavailable`; `osrm_request_failed` без `status`, `error` — класс исключения |
+| `test_table_url_too_long` | `table(car, …)` по 4000 точкам (`max_table_size = 4000`) — URL длиннее предела httpx | `DependencyUnavailable`, а не `httpx.InvalidURL`; `osrm_request_failed` с `error = InvalidURL`, `points = 4000` |
+| `test_table_malformed_response` (параметризован: тело не JSON при `200`; `200 {code: Ok}` без `durations`; строк меньше, чем точек; `code` ≠ `Ok` при `200`; ячейка `Infinity`; ячейка `NaN`; целое вне диапазона `float`; `502` с текстовым телом; тело `200` глубже стека парсера JSON) | ответ графа, лог на уровне `debug` | `DependencyUnavailable`; одна запись `osrm_request_failed` с `duration_ms` и `error = malformed_response` (для `code` ≠ `Ok` — `error = <код>`, для `502` без JSON — `error = http_error`); записи `osrm_request_finished` нет — отвергнутый ответ не считается выполненным запросом |
+| `test_graph_failure_does_not_affect_other_graphs` | граф `foot` отвечает `503`, граф `car` — `200` | `table(foot, …)` — `DependencyUnavailable`; следующий `table(car, …)` возвращает матрицу |
+
+### Маршрут `route`
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_route_found` | `route(car, [A, B, C])`, ответ `200 {code: Ok, routes: [{duration, distance, legs: [2 шт.], geometry: {type: LineString, coordinates: [[lon, lat], …]}}]}` | `Route` с `duration_s`, `distance_m`, двумя `legs` (`duration_s`, `distance_m`) и `geometry` — список `Point(lat, lon)`: координаты GeoJSON переставлены; запрос `GET /route/v1/car/…` с `overview=full`, `geometries=geojson`; `osrm_request_finished` с `endpoint = route`, `found = true` |
+| `test_route_public_transport_is_car_times_factor` | `route(public_transport, [A, B])`, граф `car`: `duration 600`, leg `duration 600`, `distance 5000` | запрос ушёл в граф `car`; `duration_s == 900`, `legs[0].duration_s == 900`, расстояния и геометрия — без изменений |
+| `test_route_no_route` | ответ `400 {code: NoRoute}` | `None` — не ошибка и не прямая; запись `osrm_request_finished` с `status = 400`, `found = false`; `osrm_request_failed` нет |
+| `test_route_errors` (параметризован: `503`; `400 {code: NoSegment}`; `httpx.ConnectError`; `200` без `routes`; `200` без `geometry`; участков не на один меньше, чем точек; пустая геометрия; `duration = true`) | ответ графа, лог на уровне `debug` | `DependencyUnavailable(reason="osrm_unavailable")`; одна запись `osrm_request_failed` с `endpoint = route`, записи `osrm_request_finished` нет |
+| `test_route_error_carries_no_coordinates` | геометрия с точкой вне диапазона широт (`95.43219`) | `DependencyUnavailable`; в тексте исключения и его цепочки (`traceback.format_exception`) нет координат отвергнутой точки |
+| `test_route_needs_two_points` (параметризован: 0 и 1 точка) | `route(car, points)` | `ValueError` — ошибка вызывающего кода; запросов нет |
+
+### Создание, закрытие, логи
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_create_osrm_client_from_settings` | `create_osrm_client(settings)` с тремя URL, фактором и пределом | три `httpx.AsyncClient` с `base_url` из `osrm_url_car`, `osrm_url_foot`, `osrm_url_bike` и таймаутом из `osrm_timeout_s` (в тесте 45 с); фактор и предел — из настроек; сетевых вызовов нет |
+| `test_aclose_closes_every_graph` | `aclose()` | закрыты все три HTTP-клиента |
+| `test_logs_no_coordinates` | успешные и неуспешные `table` и `route` | ни в одной записи лога нет координат точек (ни чисел `lat`/`lon`, ни пути запроса) |
 
 ## `scripts/build_geocache.py` — сборка гео-кэша
 
@@ -466,24 +522,24 @@
 ## `src/api/deps.py` — Depends-фабрики БД/OSRM
 
 > Замена стабами: пул соединений БД (`psycopg_pool.AsyncConnectionPool` — фейковый пул с
-> контролируемым `connection()`), `httpx.AsyncClient` (реальный сетевой вызов не выполняется).
+> контролируемым `connection()`), `OsrmClient` (реальный сетевой вызов не выполняется).
 
 | Test | Scenario | Expected result |
 |---|---|---|
 | `test_get_db_connection_yields_and_releases` | фабрика вызвана как `Depends` с фейковым пулом в `app.state` | соединение из пула отдано генератором и возвращено в пул после выхода из блока |
 | `test_get_db_connection_pool_not_opened_at_import` | создание пула (`open=False`), `pool.open()` не вызывается | конструктор пула не выполняет сетевого подключения — приложение поднимается без доступной БД |
-| `test_get_osrm_client_returns_shared_client` | фабрика вызвана как `Depends`, клиент уже создан в `lifespan` и лежит в `app.state.osrm_client` | возвращает тот же объект `httpx.AsyncClient` (`base_url == settings.osrm_url`), не создаёт новый |
-| `test_get_osrm_client_not_closed_per_request` | выход из генератора после одного вызова зависимости | `aclose()` клиента НЕ вызывается — клиент общий на всё приложение, закрывается только в `lifespan`-shutdown (переоткрытие TCP-соединения на каждый запрос убило бы смысл `keep-alive` к OSRM) |
+| `test_get_osrm_client_returns_shared_client` | фабрика вызвана как `Depends`, клиент уже создан в `lifespan` и лежит в `app.state.osrm_client` | возвращает тот же объект `OsrmClient`, не создаёт новый |
+| `test_get_osrm_client_not_closed_per_request` | выход из генератора после одного вызова зависимости | `aclose()` `OsrmClient` НЕ вызывается — клиент общий на всё приложение, закрывается только в `lifespan`-shutdown (переоткрытие TCP-соединения на каждый запрос убило бы смысл `keep-alive` к OSRM) |
 
 ## `src/app.py` — app factory и lifespan
 
-> Замена стабами: конструктор пула БД и конструктор `httpx.AsyncClient` (проверяем, что
+> Замена стабами: конструктор пула БД и `create_osrm_client` (проверяем, что
 > `lifespan` их вызывает и потом закрывает, а не что они реально открывают соединения).
 
 | Test | Scenario | Expected result |
 |---|---|---|
 | `test_lifespan_creates_and_opens_db_pool_without_waiting` | приложение поднято через `lifespan` (`asgi-lifespan`/`TestClient`) | `app.state.db_pool` создан, `pool.open(wait=False)` вызван один раз — старт не блокируется недоступностью БД |
-| `test_lifespan_creates_osrm_client` | запуск `lifespan` | `app.state.osrm_client` — `httpx.AsyncClient` с `base_url == settings.osrm_url` |
+| `test_lifespan_creates_osrm_client` | запуск `lifespan` | `app.state.osrm_client` — `OsrmClient`, собранный `create_osrm_client(settings)`; сетевых вызовов при старте нет — backend поднимается, пока графы OSRM ещё строятся |
 | `test_lifespan_closes_pool_and_client_on_shutdown` | завершение `lifespan` | `pool.close()` и `osrm_client.aclose()` вызваны по одному разу |
 | `test_create_app_registers_health_route` | `create_app()` | в `app.routes` присутствует `GET /health` |
 | `test_create_app_registers_error_handlers` | `create_app()` | в `app.exception_handlers` есть обработчики `AppError`, `RequestValidationError`, `StarletteHTTPException`, `Exception` |
@@ -545,12 +601,12 @@
 ## Стенд Docker Compose — smoke
 
 > Ручной сценарий из корневого `README.md`, не часть `pytest`: поднимает настоящие
-> контейнеры (`db`, `osrm-prepare`, `osrm`, `backend`, `frontend`), ничего не мокается.
+> контейнеры (`db`, `osrm-prepare`, `osrm-car`, `osrm-foot`, `osrm-bike`, `backend`, `frontend`), ничего не мокается.
 > Запросы идут через nginx фронтенда (`http://localhost:8080`).
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `smoke_compose_up` | `cp .env.example .env && docker compose up -d` на чистой машине | `db` и `backend` — `healthy`, `frontend` отвечает; `osrm-prepare` готовит граф или сразу завершается, если граф уже есть в volume |
+| `smoke_compose_up` | `cp .env.example .env && docker compose up -d` на чистой машине | `db` и `backend` — `healthy`, `frontend` отвечает; `osrm-prepare` готовит графы `car`, `foot`, `bike` или сразу завершается, если они уже есть в volume; `osrm-car`, `osrm-foot`, `osrm-bike` стартуют после него |
 | `smoke_health_via_proxy` | `curl -i http://localhost:8080/health` | `200`, `{"status": "ok", ...}` — отвечает и пока `osrm-prepare` ещё работает |
 | `smoke_unimplemented_via_proxy` | `curl -i http://localhost:8080/api/v1/regions` | `501`, тело пустое, есть заголовок `X-Request-ID` |
 | `smoke_body_limit_via_proxy` | `POST /api/v1/data/upload` с телом больше `MAX_REQUEST_BODY_BYTES` | `413` от nginx, запрос не доходит до backend (в `docker compose logs backend` нет записи о нём) |
@@ -563,6 +619,12 @@
 | `smoke_db_port_on_loopback` | `docker compose port db 5432`; с хоста `psql -h 127.0.0.1 -p "$DB_PORT" -U app_ro -d "$POSTGRES_DB" -c 'SELECT count(*) FROM regions'` | порт опубликован только на `127.0.0.1:${DB_PORT}`; `app_ro` читает, запись под ним отклоняется правами |
 | `smoke_backend_local_time` | `docker compose exec backend python -c "import time; print(time.strftime('%z'))"` | `+0300`; метки `timestamp` в логе `backend` совпадают с местным временем, а не с UTC |
 | `smoke_migration_failure_blocks_backend` | в `.env` временно другой `POSTGRES_PASSWORD` (в томе БД остаётся прежний); `docker compose up -d` | `migrate` — `Exited (1)`, последняя строка его лога — JSON `migration_failed`; `docker compose up` завершается ошибкой «service "migrate" didn't complete successfully»; остановленный `backend` не стартует, уже запущенный с неизменёнными настройками продолжает работать; после возврата значения `make up` поднимает стенд |
+| `smoke_osrm_prepare_reuses_graphs` | повторный `make up` после готовых графов; `docker compose logs --tail 5 osrm-prepare` | `osrm-prepare` — `Exited (0)`, в логе «graph is up to date» для каждого из трёх профилей, строк `extracting` нет — графы не пересобираются |
+| `smoke_osrm_prepare_rebuilds_on_new_extract` | `osrm/moscow-oblast.osm.pbf` заменён другим файлом; `make up` | в логе `osrm-prepare` — `extracting`, `partitioning`, `customizing` для `car`, `foot`, `bike` и `done`; `osrm-car`, `osrm-foot`, `osrm-bike` перезапущены и отвечают на `/route` |
+| `smoke_osrm_prepare_resumes_interrupted_build` | во время `foot: extracting` — `docker compose kill osrm-prepare`; затем `make up` | `car` — «graph is up to date», `foot` и `bike` собираются заново; стенд поднимается |
+| `smoke_osrm_prepare_keeps_graphs_without_extract` | готовые графы; `docker compose run --rm --no-deps -v <пустой каталог>:/src:ro osrm-prepare` | сервис завершается ошибкой `cp: can't stat '/src/moscow-oblast.osm.pbf'`; в volume `osrm-data` папки `car`, `foot`, `bike` и их `ready` на месте; следующий `make up` — «graph is up to date» для всех трёх |
+| `smoke_osrm_profiles_differ` | из контейнера `backend`: `OsrmClient.route` по одним и тем же двум точкам в Москве (~5 км) для `car`, `bike`, `foot`, `public_transport` | у всех четырёх маршрут найден; время `foot` > `bike` > `car`; время `public_transport` = время `car` × 1,5 |
+| `smoke_osrm_table_over_default_limit` | из контейнера `backend`: `OsrmClient.table(car, …)` по 150 точкам внутри МКАД | матрица 150 × 150 без `None` на диагонали и без ошибки — `--max-table-size 1000` действует (предел `osrm-routed` по умолчанию — 100) |
 | `smoke_env_example_has_role_passwords` | `.env` без `APP_RW_PASSWORD`; `docker compose up -d` | compose отказывается стартовать и называет переменную; в `.env.example` обе переменные паролей ролей есть |
 
 ## `Makefile` — команды проекта

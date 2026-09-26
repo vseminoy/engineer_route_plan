@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src import app as app_module
+from src.clients.osrm import OsrmClient
 from src.config import Settings
 from src.errors import AppError
 
@@ -22,8 +23,21 @@ class _FakePool:
         self.closed_called = True
 
 
+class _FakeOsrmClient:
+    def __init__(self) -> None:
+        self.aclose_calls = 0
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+
+
 def _fake_settings() -> Settings:
-    return Settings(database_url="postgresql://test/test", osrm_url="http://osrm.test")
+    return Settings(
+        database_url="postgresql://test/test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
+    )
 
 
 def test_lifespan_creates_and_opens_db_pool_without_waiting(
@@ -44,19 +58,21 @@ def test_lifespan_creates_osrm_client(monkeypatch: pytest.MonkeyPatch) -> None:
     app = app_module.create_app(settings=_fake_settings())
 
     with TestClient(app):
-        assert str(app.state.osrm_client.base_url) == "http://osrm.test"
+        assert isinstance(app.state.osrm_client, OsrmClient)
 
 
 def test_lifespan_closes_pool_and_client_on_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_pool = _FakePool()
     monkeypatch.setattr(app_module, "create_db_pool", lambda settings: fake_pool)
+    osrm_client = _FakeOsrmClient()
+    monkeypatch.setattr(app_module, "create_osrm_client", lambda settings: osrm_client)
     app = app_module.create_app(settings=_fake_settings())
 
     with TestClient(app):
-        osrm_client = app.state.osrm_client
+        pass
 
     assert fake_pool.closed_called is True
-    assert osrm_client.is_closed is True
+    assert osrm_client.aclose_calls == 1
 
 
 def test_create_app_registers_health_route() -> None:
@@ -110,7 +126,11 @@ def test_http_request_finished_is_logged(capsys: pytest.CaptureFixture[str]) -> 
     # app actually emits is what the check is about. DEBUG: a successful health
     # probe is logged at that level.
     settings = Settings(
-        database_url="postgresql://test/test", osrm_url="http://osrm.test", log_level="DEBUG"
+        database_url="postgresql://test/test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
+        log_level="DEBUG",
     )
     app = app_module.create_app(settings=settings)
 

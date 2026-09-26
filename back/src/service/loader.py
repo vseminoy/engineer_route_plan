@@ -23,12 +23,11 @@ from src.service.ticket_file import (
     COL_ADDRESS,
     MAX_ADDRESS_LENGTH,
     FileFormat,
+    FileRows,
     InvalidRow,
     ParsedTicket,
-    SplitRows,
     parse_ticket,
     read_rows,
-    split_rows,
 )
 from src.service.ticket_types import TicketTypes
 
@@ -62,7 +61,7 @@ class LoadResult:
 @dataclass(frozen=True)
 class _Parsed:
     rows_total: int
-    split: SplitRows
+    split: FileRows
     tickets: list[ParsedTicket]
     invalid: list[InvalidRow]
 
@@ -104,8 +103,7 @@ class Loader:
         fmt: FileFormat = "csv" if source == "demo" else source
         if source == "demo":
             data = (DEMO_DIR / f"{region.code}.csv").read_bytes()
-        rows = read_rows(data or b"", fmt)
-        split = split_rows(rows)
+        split = read_rows(data or b"", fmt)
         tickets: list[ParsedTicket] = []
         invalid: list[InvalidRow] = []
         for row in split.rows:
@@ -114,7 +112,7 @@ class Loader:
                 invalid.append(outcome)
             else:
                 tickets.append(outcome)
-        return _Parsed(len(rows), split, tickets, invalid)
+        return _Parsed(len(split.rows) + split.skipped, split, tickets, invalid)
 
     async def _load(
         self,
@@ -124,7 +122,7 @@ class Loader:
         log: structlog.stdlib.BoundLogger,
         started: float,
     ) -> LoadResult:
-        # Parsing a file of up to ten thousand rows is CPU work; off the event loop.
+        # Parsing a file of up to the request body limit is CPU work; off the event loop.
         parsed = await asyncio.to_thread(self._parse, source, region, data)
         invalid = list(parsed.invalid)
         office_address = parsed.split.office_address

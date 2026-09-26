@@ -10,7 +10,12 @@ from src.config import Settings
 
 
 def _client() -> TestClient:
-    settings = Settings(database_url="postgresql://test/test", osrm_url="http://osrm.test")
+    settings = Settings(
+        database_url="postgresql://test/test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
+    )
     return TestClient(create_app(settings=settings))
 
 
@@ -91,7 +96,12 @@ def test_health_is_not_shadowed_by_stub() -> None:
 
 
 def test_stub_is_absent_from_openapi_schema() -> None:
-    settings = Settings(database_url="postgresql://test/test", osrm_url="http://osrm.test")
+    settings = Settings(
+        database_url="postgresql://test/test",
+        osrm_url_car="http://osrm.test",
+        osrm_url_foot="http://osrm.test",
+        osrm_url_bike="http://osrm.test",
+    )
     paths = create_app(settings=settings).openapi()["paths"]
 
     assert not [path for path in paths if path.startswith("/api/v1")]
