@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from src.api.deps import get_loader, get_region_lists
+from src.api.deps import get_loader, get_region_lists, get_ticket_statuses
 from src.app import create_app
 from src.config import Settings
 from src.domain import Engineer, Point, Skill, Ticket, TicketStatus, VehicleType
@@ -95,10 +95,25 @@ class FakeLoader:
         return self.result
 
 
+class FakeStatuses:
+    """Returns `TICKET` with the requested status, or raises `error`."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[int, TicketStatus]] = []
+
+    async def change(self, ticket_id: int, status: TicketStatus) -> Ticket:
+        self.calls.append((ticket_id, status))
+        if self.error:
+            raise self.error
+        return TICKET.model_copy(update={"id": ticket_id, "status": status})
+
+
 def client(
     lists: FakeLists | None = None,
     loader: FakeLoader | None = None,
     max_body: int | None = None,
+    statuses: FakeStatuses | None = None,
 ) -> TestClient:
     """The application with fake data services; built inside the test, so its JSON logs go
     to the stderr `capsys` reads."""
@@ -114,4 +129,5 @@ def client(
     )
     app.dependency_overrides[get_region_lists] = lambda: lists or FakeLists()
     app.dependency_overrides[get_loader] = lambda: loader or FakeLoader()
+    app.dependency_overrides[get_ticket_statuses] = lambda: statuses or FakeStatuses()
     return TestClient(app)

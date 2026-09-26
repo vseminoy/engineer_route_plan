@@ -180,6 +180,18 @@ class Ticket(BaseModel):
     received_at: LocalDateTime
 
 
+class TicketStatusChange(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    status: Annotated[
+        TicketStatus,
+        Field(
+            description="Новый статус заявки; допустимые переходы — в описании операции change_ticket_status"
+        ),
+    ]
+
+
 class DemoDataRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",

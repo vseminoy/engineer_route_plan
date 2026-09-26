@@ -213,6 +213,62 @@ paths:
         "503":
           $ref: "./common.yaml#/components/responses/ServiceUnavailable"
           description: Недоступна база данных.
+
+  /api/v1/tickets/{ticket_id}/status:
+    patch:
+      operationId: change_ticket_status
+      summary: Изменить статус заявки
+      description: >-
+        Диспетчер отмечает ход заявки по сообщению бригады. Статусы идут по
+        цепочке not_sent → sent → en_route → in_progress → completed; переход
+        вперёд по цепочке допустим и через шаг (из sent сразу в completed).
+        cancelled — из любого незакрытого статуса. overdue — из not_sent, sent
+        и en_route; из overdue — в en_route, in_progress, completed или
+        cancelled. completed и cancelled — закрытые статусы: из них переходов
+        нет, и закрытая заявка не участвует в последующих перепланированиях.
+        Любой другой переход, в том числе назад по цепочке, — ошибка 400 с
+        message; статус заявки при этом не меняется. Запрос со статусом,
+        который у заявки уже есть, ничего не меняет и отвечает 200 — повтор
+        запроса безопасен. Отмена после выезда бригады (из en_route или
+        in_progress) отмечается у заявки: выезд уже потрачен и учитывается в
+        метриках плана. Уже построенные планы запрос не меняет.
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          description: Идентификатор заявки на сервере
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 9223372036854775807
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TicketStatusChange"
+      responses:
+        "200":
+          description: Заявка с новым статусом
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ticket"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+          description: Заявки с таким ticket_id нет.
+        "413":
+          $ref: "./common.yaml#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных. Статус заявки не изменился.
 components:
   parameters:
     RegionQuery:
@@ -384,6 +440,17 @@ components:
           $ref: "#/components/schemas/TicketStatus"
         received_at:
           $ref: "./common.yaml#/components/schemas/LocalDateTime"
+
+    TicketStatusChange:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/TicketStatus"
+          description: >-
+            Новый статус заявки; допустимые переходы — в описании операции
+            change_ticket_status
 
     DemoDataRequest:
       type: object

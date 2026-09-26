@@ -4,9 +4,10 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from src.domain import Engineer, Point, Skill, Ticket, TicketStatus, VehicleType
+from src.domain import Engineer, Point, Skill, Ticket, VehicleType
 from src.repository.db import fetch_all, run_query
 from src.repository.region_data import queries
+from src.repository.tickets import ticket_from_row
 
 
 async def get_region_id(conn: AsyncConnection[Any], code: str) -> int | None:
@@ -41,42 +42,4 @@ async def list_tickets(conn: AsyncConnection[Any], region_id: int) -> list[Ticke
         "list_tickets_by_region",
         lambda: fetch_all(queries.list_tickets_by_region(conn, region_id=region_id)),
     )
-    tickets = []
-    for (
-        id_,
-        external_id,
-        type_bk,
-        type_hd,
-        required_skill,
-        required_vehicle,
-        priority,
-        district,
-        address,
-        lat,
-        lon,
-        window_start,
-        window_end,
-        duration_min,
-        status,
-        received_at,
-    ) in rows:
-        tickets.append(
-            Ticket(
-                id=id_,
-                external_id=external_id,
-                type_bk=type_bk,
-                type_hd=type_hd,
-                required_skill=Skill(required_skill),
-                required_vehicle=VehicleType(required_vehicle) if required_vehicle else None,
-                priority=priority,
-                district=district,
-                address=address,
-                location=Point(lat=lat, lon=lon),
-                window_start=window_start,
-                window_end=window_end,
-                duration_min=duration_min,
-                status=TicketStatus(status),
-                received_at=received_at,
-            )
-        )
-    return tickets
+    return [ticket_from_row(row) for row in rows]

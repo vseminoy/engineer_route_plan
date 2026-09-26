@@ -318,3 +318,113 @@ sequenceDiagram
         end
     end
 ```
+
+## `PATCH /api/v1/tickets/{ticket_id}/status`
+
+Диспетчер меняет статус заявки по сообщению бригады. Допустимые переходы:
+
+| Из | В |
+|---|---|
+| `not_sent` | `sent`, `en_route`, `in_progress`, `completed`, `cancelled`, `overdue` |
+| `sent` | `en_route`, `in_progress`, `completed`, `cancelled`, `overdue` |
+| `en_route` | `in_progress`, `completed`, `cancelled`, `overdue` |
+| `in_progress` | `completed`, `cancelled` |
+| `overdue` | `en_route`, `in_progress`, `completed`, `cancelled` |
+| `completed`, `cancelled` | — (закрытые статусы) |
+
+Вперёд по цепочке `not_sent → sent → en_route → in_progress → completed` можно и через
+шаг: диспетчер отмечает то, о чём сообщила бригада, а промежуточные сообщения могли не
+дойти. Назад по цепочке и из закрытого статуса — нельзя: закрытая заявка финальна и в
+перепланировании не участвует. Тот же статус, что у заявки уже есть, — `200` без
+изменений, так что повтор запроса после обрыва связи безопасен.
+
+Отмена из `en_route` или `in_progress` ставит у заявки `cancelled_after_dispatch`: выезд
+бригады уже потрачен и учитывается в метриках плана. Построенные планы операция не меняет.
+
+Чтение статуса, проверка перехода и запись — в одной транзакции, строка заявки
+блокируется (`SELECT ... FOR UPDATE`): два одновременных запроса к одной заявке
+выполняются по очереди, и второй проверяет переход от статуса, записанного первым.
+
+Изменение сервис логирует после фиксации транзакции событием `ticket_status_changed`
+(`ticket_id`, `status_from`, `status_to`); запрос без изменения его не пишет. Отказ маршрут
+логирует один раз событием `ticket_status_change_failed` (`ticket_id`, `reason`; при
+недопустимом переходе ещё `status_from`, `status_to`).
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут tickets)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (статусы заявок)
+    participant Repo as queries (репозиторий)
+    participant DB as PostgreSQL
+
+    Client->>API: PATCH /api/v1/tickets/87/status {"status": "completed"}
+    alt тело больше MAX_REQUEST_BODY_BYTES
+        API->>H: исключение предела тела
+        H-->>Client: 413 без тела
+    else тело не JSON
+        API->>H: RequestValidationError (json_invalid)
+        H-->>Client: 400 {message}
+    else ticket_id не целое или вне 1..2^63−1, нет status, status не из перечня или лишнее поле
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [ticket_id | status | имя лишнего поля]}
+    else
+        API->>Svc: change(ticket_id, status)
+        alt нет свободного соединения в пуле или БД недоступна
+            Svc->>Svc: лог db_query_failed
+            Svc-->>API: DependencyUnavailable
+            API->>API: лог ticket_status_change_failed (error)
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела (статус не изменился)
+        else
+            Svc->>Repo: BEGIN
+            Repo->>DB: SELECT заявка FROM tickets WHERE id FOR UPDATE
+            alt заявки нет
+                DB-->>Repo: нет строки
+                Repo-->>Svc: None → ROLLBACK
+                Svc-->>API: NotFound
+                API->>API: лог ticket_status_change_failed (warning, reason=ticket_not_found)
+                API->>H: NotFound
+                H-->>Client: 404 без тела
+            else статус уже тот же
+                DB-->>Repo: строка заявки
+                Repo-->>Svc: Ticket → COMMIT
+                Svc-->>API: Ticket (без изменений, без лога)
+                API-->>Client: 200 Ticket
+            else переход недопустим (назад по цепочке, из закрытого статуса, in_progress → overdue)
+                DB-->>Repo: строка заявки
+                Svc-->>API: InvalidInput(message) → ROLLBACK
+                API->>API: лог ticket_status_change_failed (warning, reason=transition_not_allowed, status_from, status_to)
+                API->>H: InvalidInput
+                H-->>Client: 400 {message} (статус не изменился)
+            else переход допустим
+                DB-->>Repo: строка заявки
+                Repo->>DB: UPDATE tickets SET status, cancelled_after_dispatch (при отмене из en_route | in_progress) RETURNING ...
+                alt БД отклонила запрос
+                    DB-->>Repo: ошибка
+                    Repo->>Repo: лог db_query_failed → ROLLBACK
+                    Repo-->>Svc: DatabaseFailure
+                    Svc-->>API: DatabaseFailure
+                    API->>API: лог ticket_status_change_failed (error)
+                    API->>H: DatabaseFailure
+                    H-->>Client: 500 без тела (статус не изменился)
+                else
+                    DB-->>Repo: строка заявки
+                    Repo-->>Svc: Ticket → COMMIT
+                    alt COMMIT не удался
+                        Svc->>Svc: лог db_query_failed (query=change_ticket_status)
+                        Svc-->>API: DependencyUnavailable | DatabaseFailure (без ticket_status_changed)
+                        API->>API: лог ticket_status_change_failed (error)
+                        API->>H: DependencyUnavailable | DatabaseFailure
+                        H-->>Client: 503 | 500 без тела (статус не изменился)
+                    else
+                        Svc->>Svc: лог ticket_status_changed (ticket_id, status_from, status_to)
+                        Svc-->>API: Ticket
+                        API-->>Client: 200 Ticket
+                    end
+                end
+            end
+        end
+    end
+```

@@ -10,10 +10,12 @@ from src.clients.osrm import OsrmClient
 from src.config import Settings
 from src.repository.region_data import replace_region_data
 from src.repository.region_lists import get_region_id, list_engineers, list_tickets
+from src.repository.tickets import lock_ticket, update_ticket_status
 from src.service.geocoding import GeoCache, Geocoder
 from src.service.loader import DATA_DIR, Loader
 from src.service.region_lists import RegionLists
 from src.service.regions import Regions
+from src.service.ticket_status import TicketStatuses
 from src.service.ticket_types import TicketTypes
 
 
@@ -54,6 +56,10 @@ def create_data_services(
     return loader, lists
 
 
+def create_ticket_statuses(db_pool: AsyncConnectionPool) -> TicketStatuses:
+    return TicketStatuses(db_pool.connection, lock_ticket, update_ticket_status)
+
+
 def get_loader(request: Request) -> Loader:
     loader: Loader = request.app.state.loader
     return loader
@@ -62,6 +68,11 @@ def get_loader(request: Request) -> Loader:
 def get_region_lists(request: Request) -> RegionLists:
     lists: RegionLists = request.app.state.region_lists
     return lists
+
+
+def get_ticket_statuses(request: Request) -> TicketStatuses:
+    statuses: TicketStatuses = request.app.state.ticket_statuses
+    return statuses
 
 
 async def get_osrm_client(request: Request) -> AsyncIterator[OsrmClient]:

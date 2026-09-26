@@ -11,6 +11,7 @@
 - [`src/repository/db.py` — обёртка запросов к БД](#srcrepositorydbpy--обёртка-запросов-к-бд)
 - [`src/repository/region_data.py` — замена данных региона](#srcrepositoryregion_datapy--замена-данных-региона)
 - [`src/repository/region_lists.py` — чтение бригад и заявок региона](#srcrepositoryregion_listspy--чтение-бригад-и-заявок-региона)
+- [`src/repository/tickets.py` — статус заявки](#srcrepositoryticketspy--статус-заявки)
 - [`src/service/ticket_file.py` — чтение файла заявок](#srcserviceticket_filepy--чтение-файла-заявок)
 - [`src/service/ticket_types.py` — таблица соответствия типов заявок](#srcserviceticket_typespy--таблица-соответствия-типов-заявок)
 - [`src/service/regions.py` — конфигурация регионов](#srcserviceregionspy--конфигурация-регионов)
@@ -18,6 +19,7 @@
 - [`src/service/geocoding.py` — координаты адресов](#srcservicegeocodingpy--координаты-адресов)
 - [`src/service/loader.py` — загрузка данных региона](#srcserviceloaderpy--загрузка-данных-региона)
 - [`src/service/region_lists.py` — регионы, бригады и заявки региона](#srcserviceregion_listspy--регионы-бригады-и-заявки-региона)
+- [`src/service/ticket_status.py` — переходы статусов заявки](#srcserviceticket_statuspy--переходы-статусов-заявки)
 - [`src/clients/nominatim.py` — клиент Nominatim](#srcclientsnominatimpy--клиент-nominatim)
 - [`src/clients/osrm.py` — клиент OSRM](#srcclientsosrmpy--клиент-osrm)
 - [`scripts/build_geocache.py` — сборка гео-кэша](#scriptsbuild_geocachepy--сборка-гео-кэша)
@@ -29,6 +31,7 @@
 - [`api` — GET /api/v1/regions](#api--get-apiv1regions)
 - [`api` — GET /api/v1/engineers](#api--get-apiv1engineers)
 - [`api` — GET /api/v1/tickets](#api--get-apiv1tickets)
+- [`api` — PATCH /api/v1/tickets/{ticket_id}/status](#api--patch-apiv1ticketsticket_idstatus)
 - [`api` — POST /api/v1/data/upload, POST /api/v1/data/demo](#api--post-apiv1dataupload-post-apiv1datademo)
 - [`api` — заглушка /api/v1/{path}](#api--заглушка-apiv1path)
 - [`src/api/schemas/generated/common.py` — LocalDateTime, LocalTime](#srcapischemasgeneratedcommonpy--localdatetime-localtime)
@@ -228,6 +231,25 @@
 | `test_lists_of_region_without_rows` | `id`, под которым в БД нет ни бригад, ни заявок | оба списка пустые |
 | `test_lists_db_unavailable` | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` с именем запроса |
 
+## `src/repository/tickets.py` — статус заявки
+
+Файл: `tests/repository/test_tickets.py`.
+
+> Мока нет: `@pytest.mark.integration`, контейнер PostGIS и ревизия, как в разделе схемы БД;
+> заявки записываются `replace_region_data`, запросы `lock_ticket` и `update_ticket_status`
+> из `queries/tickets.sql` вызываются через aiosql под ролью `app_rw`. Нарушение ограничения
+> проверяется по имени ограничения в исходной ошибке драйвера (`__cause__`).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_lock_ticket` | загружен регион с заявкой; `lock_ticket` по её `id` в транзакции | `Ticket` с теми же полями, что у этой заявки в `list_tickets` (координаты не переставлены, окна — наивные `datetime`) |
+| `test_lock_ticket_missing` | `id`, которого нет в таблице | `None` |
+| `test_update_ticket_status` | `update_ticket_status(id, completed, cancelled_after_dispatch=False)` | возвращён `Ticket` со статусом `completed`, остальные поля без изменений; `list_tickets` видит `completed`; `cancelled_after_dispatch` в строке — `false`; другие заявки региона не изменились |
+| `test_update_ticket_status_cancelled_after_dispatch` | `update_ticket_status(id, cancelled, cancelled_after_dispatch=True)` | в строке `status = 'cancelled'`, `cancelled_after_dispatch = true` |
+| `test_update_ticket_status_check_constraint` | статус `'bogus'` в обход домена | `DatabaseFailure(reason="db_query_failed")`, причина — нарушение `ck_tickets__status`; строка не изменилась |
+| `test_lock_ticket_waits_for_concurrent_change` | соединение A в транзакции взяло `lock_ticket` и записало `en_route`; соединение B вызывает `lock_ticket` той же заявки | B не получает строку, пока A не зафиксировал транзакцию (за 0,3 с ожидания результата нет); после COMMIT у A — B получает заявку со статусом `en_route` |
+| `test_ticket_queries_db_unavailable` (параметризован: `lock_ticket`, `update_ticket_status`) | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` с именем запроса |
+
 ## `src/service/ticket_file.py` — чтение файла заявок
 
 Файл: `tests/service/test_ticket_file.py`.
@@ -415,6 +437,33 @@
 | `test_unknown_region` | код `north` | `InvalidInput(reason="unknown_region")` с `fields = [("region", "Неизвестный регион")]`; соединение не взято |
 | `test_repository_failure_propagates` | репозиторий поднимает `DependencyUnavailable` и `DatabaseFailure` (параметризовано) | исключение пробрасывается без изменений |
 | `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; запись `db_query_failed` с `query = list_engineers` |
+
+## `src/service/ticket_status.py` — переходы статусов заявки
+
+Файл: `tests/service/test_ticket_status.py`.
+
+> Замена стабами: репозиторий (`lock_ticket` — фейк, который возвращает заявку с заданным
+> статусом или `None`; `update_ticket_status` — фейк, который возвращает заявку с новым
+> статусом; оба могут поднять заданное исключение и запоминают вызовы), фабрика соединений —
+> фейк, чьё соединение запоминает, чем закончилась транзакция (COMMIT или откат), и может
+> поднять ошибку драйвера при фиксации. Логи —
+> разбором JSON-строк stderr (`capsys`, `tests/log_records.py`).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_transition_table` (параметризован: все 49 пар «из → в» по 7 статусам) | заявка в статусе «из», запрос на статус «в» | разрешённый переход (таблица диаграммы `PATCH /api/v1/tickets/{ticket_id}/status`) — `update_ticket_status` вызван с новым статусом, возвращена заявка из него, транзакция зафиксирована; тот же статус — `update_ticket_status` не вызван, возвращена заявка как есть; остальные — `InvalidInput`, как в следующей строке |
+| `test_transition_not_allowed` | заявка `completed`, запрос `en_route` | `InvalidInput(reason="transition_not_allowed")` с `message = "Статус заявки нельзя изменить с «Выполнена» на «В пути»"` и `params = {ticket_id, status_from: completed, status_to: en_route}`; `update_ticket_status` не вызван; транзакция откачена |
+| `test_closed_ticket_stays_closed` (параметризован: `completed`, `cancelled` × остальные 6 статусов) | заявка в закрытом статусе, запрос на другой статус | `InvalidInput(reason="transition_not_allowed")`; `update_ticket_status` не вызван |
+| `test_back_along_chain_not_allowed` (параметризован: `sent → not_sent`, `in_progress → en_route`, `in_progress → overdue`) | переход назад по цепочке или из `in_progress` в `overdue` | `InvalidInput(reason="transition_not_allowed")` |
+| `test_forward_skip_allowed` | заявка `sent`, запрос `completed` | статус записан, `update_ticket_status` вызван один раз |
+| `test_cancelled_after_dispatch` (параметризован: из `en_route` и `in_progress` → `true`; из `not_sent`, `sent`, `overdue` → `false`) | запрос `cancelled` | `update_ticket_status` вызван с `cancelled_after_dispatch` по параметру |
+| `test_not_cancel_keeps_flag_false` | заявка `in_progress`, запрос `completed` | `update_ticket_status` вызван с `cancelled_after_dispatch = False` |
+| `test_status_change_logged` | заявка `sent`, запрос `en_route` | одна запись `ticket_status_changed` уровня `info` с `ticket_id`, `status_from = sent`, `status_to = en_route`, после фиксации транзакции; адреса и других полей заявки в записи нет |
+| `test_same_status_not_logged` | заявка `en_route`, запрос `en_route` | записи `ticket_status_changed` нет |
+| `test_ticket_not_found` | `lock_ticket` вернул `None` | `NotFound(reason="ticket_not_found", params={ticket_id})`; `update_ticket_status` не вызван |
+| `test_repository_failure_propagates` (параметризован: `lock_ticket` и `update_ticket_status` × `DependencyUnavailable`, `DatabaseFailure`) | репозиторий поднимает исключение | исключение пробрасывается без изменений; транзакция откачена; записи `ticket_status_changed` нет |
+| `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; запись `db_query_failed` с `query = change_ticket_status` |
+| `test_commit_failure_is_dependency_unavailable` | статус записан, фиксация транзакции поднимает `OperationalError` | `DependencyUnavailable(reason="db_unavailable")`; одна запись `db_query_failed` с `query = change_ticket_status`; записи `ticket_status_changed` нет |
 
 ## `src/clients/nominatim.py` — клиент Nominatim
 
@@ -674,6 +723,28 @@
 | `test_list_tickets_db_unavailable` | сервис поднимает `DependencyUnavailable` | `503` без тела; запись `list_tickets_failed` уровня `error` |
 | `test_list_tickets_db_failure` | сервис поднимает `DatabaseFailure` | `500` без тела |
 
+## `api` — PATCH /api/v1/tickets/{ticket_id}/status
+
+Файл: `tests/api/test_ticket_status.py`.
+
+> Замена стабами: сервис статусов — фейк через `app.dependency_overrides`, который возвращает
+> заявку с запрошенным статусом или поднимает заданное исключение и запоминает вызовы; БД нет.
+> Логи — разбором JSON-строк stderr (`capsys`, `tests/log_records.py`). Предел тела в тесте на
+> `413` — `Settings(max_request_body_bytes=1024)`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_change_ticket_status` | `PATCH /api/v1/tickets/87/status` с `{"status": "completed"}` | сервис вызван с `(87, completed)`; `200`, заявка со всеми полями контракта `Ticket` и `"status": "completed"` |
+| `test_change_ticket_status_body_invalid` (параметризован: `{}`, `{"status": "done"}`, `{"status": null}`, лишнее поле `{"status": "completed", "comment": "x"}`) | запрос с таким телом | `400`, `{"fields": [{"name": "status" \| "comment", ...}]}`; сервис не вызван |
+| `test_change_ticket_status_body_not_json` | тело `status=completed` | `400` с `message`; сервис не вызван |
+| `test_change_ticket_status_id_invalid` (параметризован: `0`, `-1`, `abc`, `9223372036854775808`) | запрос с таким `ticket_id` | `400`, `{"fields": [{"name": "ticket_id", ...}]}`; сервис не вызван |
+| `test_change_ticket_status_transition_not_allowed` | сервис поднимает `InvalidInput(reason="transition_not_allowed", message=...)` с `params` `ticket_id`, `status_from`, `status_to` | `400`, `{"message": "Статус заявки нельзя изменить с «Выполнена» на «В пути»"}`; запись `ticket_status_change_failed` уровня `warning` с `reason`, `ticket_id`, `status_from`, `status_to` и `request_id` ответа |
+| `test_change_ticket_status_not_found` | сервис поднимает `NotFound(reason="ticket_not_found")` | `404` без тела; запись `ticket_status_change_failed` уровня `warning` с `reason = ticket_not_found` и `ticket_id` |
+| `test_change_ticket_status_db_unavailable` | сервис поднимает `DependencyUnavailable(reason="db_unavailable")` | `503` без тела; запись `ticket_status_change_failed` уровня `error` |
+| `test_change_ticket_status_db_failure` | сервис поднимает `DatabaseFailure` | `500` без тела |
+| `test_change_ticket_status_too_large` | тело больше предела 1024 байта | `413` без тела; сервис не вызван |
+| `test_ticket_status_get_not_implemented` | `GET /api/v1/tickets/87/status` | `501` без тела (метода нет у операции); сервис не вызван |
+
 ## `api` — POST /api/v1/data/upload, POST /api/v1/data/demo
 
 Файл: `tests/api/test_data.py`.
@@ -809,8 +880,9 @@
 > позитивном и негативном; пишется один раз на всё приложение, а не по эндпоинту, и
 > растёт вместе со спекой. Загрузчик и сервис списков заменены через
 > `app.dependency_overrides` фейками, которые возвращают валидный по контракту результат
-> (итог загрузки с невалидной строкой, одна бригада, одна заявка), а на неизвестный регион
-> поднимают `InvalidInput` — так позитивные кейсы проверяют форму успешных ответов без БД.
+> (итог загрузки с невалидной строкой, одна бригада, одна заявка; смена статуса — заявка с
+> запрошенным статусом), а на неизвестный регион поднимают `InvalidInput` — так позитивные
+> кейсы проверяют форму успешных ответов без БД.
 
 | Test | Scenario | Expected result |
 |---|---|---|

@@ -8,7 +8,7 @@ import structlog
 from fastapi import FastAPI, Request, Response
 
 from src.api.body_limit import BodyLimitMiddleware
-from src.api.deps import create_data_services, create_db_pool
+from src.api.deps import create_data_services, create_db_pool, create_ticket_statuses
 from src.api.errors import REQUEST_ID_HEADER, register_error_handlers, route_path
 from src.api.routes.data import router as data_router
 from src.api.routes.health import router as health_router
@@ -55,6 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.loader, app.state.region_lists = create_data_services(
                 app_settings, db_pool, nominatim
             )
+            app.state.ticket_statuses = create_ticket_statuses(db_pool)
             logger.info("app_started", mode=app_settings.app_mode)
             yield
         finally:

@@ -1,13 +1,14 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 
-from src.api.deps import get_region_lists
+from src.api.deps import get_region_lists, get_ticket_statuses
 from src.api.schemas.generated import models as api
-from src.domain import Engineer, Ticket
-from src.errors import AppError, InvalidInput
+from src.domain import Engineer, Ticket, TicketStatus
+from src.errors import AppError, DatabaseFailure, DependencyUnavailable
 from src.logging import get_logger
 from src.service.region_lists import RegionLists
+from src.service.ticket_status import TicketStatuses
 
 logger = get_logger(__name__)
 
@@ -16,12 +17,17 @@ router = APIRouter(prefix="/api/v1", tags=["regions"])
 # The `region` query parameter as `RegionCode` in the contract.
 RegionQuery = Annotated[str, Query(min_length=1, max_length=50, pattern="^[a-z][a-z0-9_]*$")]
 Lists = Annotated[RegionLists, Depends(get_region_lists)]
+# The `ticket_id` path parameter as in the contract: a BIGINT key.
+TicketId = Annotated[int, Path(ge=1, le=9223372036854775807)]
+Statuses = Annotated[TicketStatuses, Depends(get_ticket_statuses)]
 
 
-def _log_failed(event: str, error: AppError, region: str) -> None:
-    """A client's mistake at `warning`, a dependency's at `error`."""
-    log = logger.warning if isinstance(error, InvalidInput) else logger.error
-    log(event, reason=error.reason, **({"region": region} | error.params))
+def _log_failed(event: str, error: AppError, **params: object) -> None:
+    """A dependency's failure at `error`; the client's mistake (bad input, an unknown
+    resource) at `warning`."""
+    failed = isinstance(error, DependencyUnavailable | DatabaseFailure)
+    log = logger.error if failed else logger.warning
+    log(event, reason=error.reason, **(params | error.params))
 
 
 def _engineer(e: Engineer) -> api.Engineer:
@@ -66,7 +72,7 @@ async def list_engineers(region: RegionQuery, lists: Lists) -> list[api.Engineer
     try:
         engineers = await lists.engineers(region)
     except AppError as e:
-        _log_failed("list_engineers_failed", e, region)
+        _log_failed("list_engineers_failed", e, region=region)
         raise
     return [_engineer(e) for e in engineers]
 
@@ -76,6 +82,22 @@ async def list_tickets(region: RegionQuery, lists: Lists) -> list[api.Ticket]:
     try:
         tickets = await lists.tickets(region)
     except AppError as e:
-        _log_failed("list_tickets_failed", e, region)
+        _log_failed("list_tickets_failed", e, region=region)
         raise
     return [_ticket(t) for t in tickets]
+
+
+@router.patch(
+    "/tickets/{ticket_id}/status",
+    response_model=api.Ticket,
+    operation_id="change_ticket_status",
+)
+async def change_ticket_status(
+    ticket_id: TicketId, body: api.TicketStatusChange, statuses: Statuses
+) -> api.Ticket:
+    try:
+        ticket = await statuses.change(ticket_id, TicketStatus(body.status.value))
+    except AppError as e:
+        _log_failed("ticket_status_change_failed", e, ticket_id=ticket_id)
+        raise
+    return _ticket(ticket)

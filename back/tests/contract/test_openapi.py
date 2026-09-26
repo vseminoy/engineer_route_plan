@@ -4,13 +4,13 @@ import pytest
 import schemathesis
 from schemathesis import Case, DataGenerationMethod
 
-from src.api.deps import get_loader, get_region_lists
+from src.api.deps import get_loader, get_region_lists, get_ticket_statuses
 from src.app import create_app
 from src.config import Settings
 from src.domain import Engineer, Ticket
 from src.errors import InvalidInput
 from src.service.loader import LoadResult
-from tests.api.region_fakes import FakeLists, FakeLoader
+from tests.api.region_fakes import FakeLists, FakeLoader, FakeStatuses
 
 # specs/openapi.yaml declares `openapi: 3.1.0` (profile.yaml, stack.contract). 3.1
 # support in schemathesis is gated behind an experimental flag, without which schema
@@ -58,9 +58,10 @@ _app = create_app(
 )
 # The data services stand in for the database: the positive cases then check the shape
 # of successful answers, which a missing database would turn into `503`.
-_lists, _loader = _Lists(), _Loader()
+_lists, _loader, _statuses = _Lists(), _Loader(), FakeStatuses()
 _app.dependency_overrides[get_region_lists] = lambda: _lists
 _app.dependency_overrides[get_loader] = lambda: _loader
+_app.dependency_overrides[get_ticket_statuses] = lambda: _statuses
 
 # Negative cases send requests that break the spec's constraints; the contract
 # answers them with `400`, never `422`.

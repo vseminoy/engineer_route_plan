@@ -81,6 +81,23 @@ curl --noproxy '*' 'http://localhost:8080/api/v1/tickets?region=east'
 500 заявок и 50 колонок, адрес — до 300 символов, остальные поля — до 200. Формат колонок и
 ответов — `specs/openapi.yaml`, ветки ошибок — `back/src/api/routes/sequence_diagrams.md`.
 
+## Статус заявки
+
+Диспетчер отмечает ход заявки по сообщению бригады:
+
+```bash
+curl --noproxy '*' -X PATCH -H 'Content-Type: application/json' \
+  -d '{"status": "en_route"}' http://localhost:8080/api/v1/tickets/1/status
+```
+
+Статусы идут по цепочке `not_sent → sent → en_route → in_progress → completed`, вперёд можно и
+через шаг. `cancelled` — из любого незакрытого статуса, `overdue` — из `not_sent`, `sent`,
+`en_route`, а из него — в `en_route`, `in_progress`, `completed` или `cancelled`. `completed` и
+`cancelled` — закрытые статусы: заявку больше нельзя перевести, и в перепланировании она не
+участвует. Недопустимый переход — `400` с текстом, статус не меняется; тот же статус — `200` без
+изменений. Отмена из `en_route` или `in_progress` отмечается у заявки: выезд бригады уже потрачен.
+Таблица переходов и ветки ошибок — в `back/src/api/routes/sequence_diagrams.md`.
+
 ## Данные OSM
 
 `osrm/moscow-oblast.osm.pbf` — дороги Москвы и Московской области из выгрузки Центрального ФО
