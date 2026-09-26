@@ -29,3 +29,5 @@ back/.env.*.local
 /docs/application.md
 AGENTS.md
 .DS_Store
+home.md
+server.md
