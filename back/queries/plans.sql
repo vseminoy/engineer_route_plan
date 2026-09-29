@@ -29,6 +29,15 @@ UPDATE plans SET status = 'done' WHERE id = :plan_id;
 -- The build did not finish; no assignment rows exist for this plan.
 UPDATE plans SET status = 'failed', failed_reason = :failed_reason WHERE id = :plan_id;
 
+-- name: sweep_running_plans(failed_reason)
+-- Every plan left `running` across all regions: the process that was building it stopped
+-- before writing an outcome (a backend restart, graceful or not). Closes them all in one
+-- statement and returns the ids for logging; called once at startup, before the app
+-- accepts requests.
+UPDATE plans SET status = 'failed', failed_reason = :failed_reason
+WHERE status = 'running'
+RETURNING id;
+
 -- name: insert_assignments(plan_id, ticket_id, engineer_id, sequence_no, planned_arrival, travel_time_min, travel_distance_m, unassigned_reason, explanation)*!
 -- One row per open ticket of the plan's region: assigned (engineer_id and the rest of the
 -- route fields) or not (unassigned_reason), never both.
