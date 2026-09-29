@@ -2,8 +2,10 @@
 // these helpers only ever do string slicing, no timezone-aware Date math.
 
 export function timeOnly(plannedArrival: string): string {
-  // 'YYYY-MM-DD HH:MM' -> 'HH:MM'
-  const match = plannedArrival.match(/(\d{2}:\d{2})$/);
+  // '2026-08-17T10:05:00' -> '10:05'. The trailing (?::\d{2})? is required:
+  // without it, matching bare `\d{2}:\d{2}$` against a string that ends in
+  // seconds finds "05:00" (minutes:seconds) instead of "10:05" (hours:minutes).
+  const match = plannedArrival.match(/(\d{2}:\d{2})(?::\d{2})?$/);
   return match ? match[1] : plannedArrival;
 }
 

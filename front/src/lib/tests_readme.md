@@ -4,6 +4,7 @@
 
 - [`src/lib/fieldErrors.ts` — один формат ошибок полей](#srclibfielderrorsts--один-формат-ошибок-полей)
 - [`src/lib/fileValidation.ts` — проверка файла заявок](#srclibfilevalidationts--проверка-файла-заявок)
+- [`src/lib/format.ts` — извлечение времени из наивного datetime](#srclibformatts--извлечение-времени-из-наивного-datetime)
 - [`src/lib/labels.ts` — текст ошибки по операции и коду](#srcliblabelsts--текст-ошибки-по-операции-и-коду)
 - [`src/lib/ticketStatus.ts` — допустимые переходы статуса заявки](#srclibticketstatusts--допустимые-переходы-статуса-заявки)
 
@@ -28,6 +29,20 @@
 | `rejects an empty file` | Файл `tickets.csv` размером 0 байт | Текст «Файл пустой.» |
 | `rejects a file over the backend size limit` | Файл размером `MAX_UPLOAD_BYTES + 1` | Текст «Файл слишком большой (предел — 1 МБ).» |
 | `accepts a non-empty .csv or .json file within the limit` | Файлы `tickets.csv` (ровно на пределе) и `TICKETS.JSON` | `null` (файл проходит проверку) |
+
+## `src/lib/format.ts` — извлечение времени из наивного datetime
+
+Файл: `src/lib/format.test.ts` (`vitest`).
+
+> `timeOnly` берёт последние `HH:MM` перед необязательными секундами, а не последние
+> 5 символов строки — иначе `'...T10:05:00'` отдаёт `20:00` (минуты:секунды), а не `10:05`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `extracts hours:minutes from a full naive datetime with seconds` | `timeOnly('2026-08-17T10:05:00')` | `'10:05'` |
+| `leaves a bare HH:MM unchanged` | `timeOnly('10:05')` | `'10:05'` |
+| `returns the input as-is when no time is found` | `timeOnly('n/a')` | `'n/a'` |
+| `reads hours:minutes from a full naive datetime with seconds` | `minutesSinceMidnight('2026-08-17T10:05:00')` | `605` |
 
 ## `src/lib/labels.ts` — текст ошибки по операции и коду
 
