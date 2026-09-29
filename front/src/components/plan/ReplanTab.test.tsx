@@ -25,6 +25,7 @@ function donePlanResult(planId: number): Plan {
     planId,
     algorithm: 'or_tools',
     status: 'done',
+    region: 'east',
     engineerSetId: 1,
     engineers: [],
     unassigned: [],

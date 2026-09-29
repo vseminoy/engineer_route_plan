@@ -111,6 +111,7 @@ export interface Plan {
   planId: number;
   algorithm: Algorithm;
   status: PlanStatus;
+  region: RegionCode; // the plan's region, whatever its status — recovers state on a direct load of /plan/:id
   engineerSetId: number; // the set this plan was built for, whatever its status
   parentPlanId?: number;
   // Present only once status === 'done'.

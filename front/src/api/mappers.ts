@@ -132,6 +132,7 @@ export function mapPlan(api: GeneratedPlan): Plan {
     planId: api.plan_id,
     algorithm: api.algorithm as Algorithm,
     status: api.status as PlanStatus,
+    region: api.region as RegionCode,
     engineerSetId: api.engineer_set_id
   };
 
@@ -170,6 +171,7 @@ export function mapPlanReplanResult(api: PlanReplanResult): Plan {
     planId: api.plan_id,
     algorithm: api.algorithm as Algorithm,
     status: 'done',
+    region: api.region as RegionCode,
     engineerSetId: api.engineer_set_id,
     parentPlanId: api.parent_plan_id,
     engineers: api.engineers.map(mapEngineerRoute),

@@ -84,10 +84,12 @@ class ComparisonEntryRead:
 @dataclass(frozen=True)
 class PlanRead:
     """`engineers`/`unassigned`/`metrics` are `None` unless `status == "done"`;
-    `engineer_set_id` is always set — it is part of the plan row, not of the outcome."""
+    `engineer_set_id`/`region_code` are always set — they are part of the plan row, not
+    of the outcome."""
 
     plan_id: int
     algorithm: str
+    region_code: str
     engineer_set_id: int
     status: str
     failed_reason: str | None
@@ -112,6 +114,7 @@ class PlanReader:
                 return PlanRead(
                     plan_id=row.id,
                     algorithm=row.algorithm,
+                    region_code=row.region_code,
                     engineer_set_id=row.engineer_set_id,
                     status=row.status,
                     failed_reason=row.failed_reason,
@@ -126,6 +129,7 @@ class PlanReader:
         return PlanRead(
             plan_id=row.id,
             algorithm=row.algorithm,
+            region_code=row.region_code,
             engineer_set_id=row.engineer_set_id,
             status=row.status,
             failed_reason=None,

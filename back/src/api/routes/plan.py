@@ -128,6 +128,7 @@ def _plan(p: PlanRead) -> api.Plan:
         plan_id=p.plan_id,
         algorithm=api.PlanAlgorithm(p.algorithm),
         status=api.PlanStatus(p.status),
+        region=api.RegionCode(p.region_code),
         engineer_set_id=p.engineer_set_id,
         engineers=[_engineer_route(r) for r in p.engineers] if p.engineers is not None else None,
         unassigned=[_unassigned(u) for u in p.unassigned] if p.unassigned is not None else None,
@@ -155,6 +156,7 @@ async def build_plan(
         plan_id=queued.plan_id,
         algorithm=api.PlanAlgorithm(queued.algorithm),
         status=api.PlanStatus.running,
+        region=body.region,
         engineer_set_id=queued.engineer_set_id,
     )
 
@@ -288,6 +290,7 @@ async def replan_plan(
         plan_id=outcome.plan_id,
         parent_plan_id=outcome.parent_plan_id,
         algorithm=api.PlanAlgorithm(outcome.algorithm),
+        region=api.RegionCode(plan.region_code),
         engineer_set_id=outcome.engineer_set_id,
         status=api.Status1.done,
         engineers=[_engineer_route(r) for r in plan.engineers],

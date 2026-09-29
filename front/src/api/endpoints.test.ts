@@ -105,6 +105,7 @@ describe('replan', () => {
           plan_id: 43,
           parent_plan_id: 42,
           algorithm: 'or_tools',
+          region: 'east',
           engineer_set_id: 1,
           status: 'done',
           engineers: [],

@@ -32,19 +32,21 @@ export function EngineerListTab({ plan, roster, ticketById }: Props) {
       <div style={{ fontSize: 11, color: 'var(--color-text-muted)', padding: '0 2px 2px' }}>
         Шкала смены · тёмный — на объекте, светлый — в пути, серый — бригада свободна
       </div>
-      {plan.engineers.map((engineer) => (
-        <EngineerCard
-          key={engineer.engineerId}
-          engineer={engineer}
-          roster={rosterById.get(engineer.engineerId)}
-          color={getEngineerColor(engineer.engineerId)}
-          ticketById={ticketById}
-          diffTags={diffTagsByTicket}
-          selected={highlightedEngineerId === engineer.engineerId}
-          onSelect={() => toggleHighlightedEngineer(engineer.engineerId)}
-          onStopClick={openTicket}
-        />
-      ))}
+      {plan.engineers
+        .filter((engineer) => engineer.route.length > 0)
+        .map((engineer) => (
+          <EngineerCard
+            key={engineer.engineerId}
+            engineer={engineer}
+            roster={rosterById.get(engineer.engineerId)}
+            color={getEngineerColor(engineer.engineerId)}
+            ticketById={ticketById}
+            diffTags={diffTagsByTicket}
+            selected={highlightedEngineerId === engineer.engineerId}
+            onSelect={() => toggleHighlightedEngineer(engineer.engineerId)}
+            onStopClick={openTicket}
+          />
+        ))}
     </>
   );
 }

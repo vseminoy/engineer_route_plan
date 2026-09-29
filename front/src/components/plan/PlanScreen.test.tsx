@@ -46,7 +46,9 @@ afterEach(() => {
 
 describe('PlanScreen — running/done/failed transitions', () => {
   it('shows the waiting message while the build is still running (polling handled by usePlan itself)', () => {
-    usePlanMock.mockReturnValue(planQueryResult({ planId: 42, algorithm: 'or_tools', status: 'running', engineerSetId: 7 }));
+    usePlanMock.mockReturnValue(
+      planQueryResult({ planId: 42, algorithm: 'or_tools', status: 'running', region: 'east', engineerSetId: 7 })
+    );
 
     renderPlanScreen();
 
@@ -60,6 +62,7 @@ describe('PlanScreen — running/done/failed transitions', () => {
         planId: 42,
         algorithm: 'or_tools',
         status: 'done',
+        region: 'east',
         engineerSetId: 7,
         engineers: [],
         unassigned: [],
@@ -83,18 +86,56 @@ describe('PlanScreen — running/done/failed transitions', () => {
 
   it('shows the failure reason and a rebuild button when the build failed, and rebuilds on click', async () => {
     usePlanMock.mockReturnValue(
-      planQueryResult({ planId: 42, algorithm: 'or_tools', status: 'failed', engineerSetId: 7, failedReason: 'osrm_unavailable' })
+      planQueryResult({
+        planId: 42,
+        algorithm: 'or_tools',
+        status: 'failed',
+        region: 'east',
+        engineerSetId: 7,
+        failedReason: 'osrm_unavailable'
+      })
     );
-    buildPlanMock.mockResolvedValue({ planId: 99, algorithm: 'or_tools', status: 'running', engineerSetId: 7 });
+    buildPlanMock.mockResolvedValue({ planId: 99, algorithm: 'or_tools', status: 'running', region: 'east', engineerSetId: 7 });
 
     renderPlanScreen();
 
-    expect(screen.getByText('Сервис маршрутов недоступен')).toBeInTheDocument();
+    expect(
+      screen.getByText('Сервис маршрутов недоступен: возможно, он ещё загружает карту дорог после запуска стенда. Подождите немного и попробуйте построить план ещё раз.')
+    ).toBeInTheDocument();
     const button = screen.getByRole('button', { name: 'Построить заново' });
 
     await act(async () => fireEvent.click(button));
 
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/plan/99'));
     expect(buildPlanMock).toHaveBeenCalledWith('east', expect.any(String), 'or_tools', 7);
+  });
+
+  it('recovers the region from the plan itself when opened directly with no region selected, so rebuild still works', async () => {
+    useUiStore.setState({ selectedRegion: null });
+    usePlanMock.mockReturnValue(
+      planQueryResult({
+        planId: 42,
+        algorithm: 'or_tools',
+        status: 'failed',
+        region: 'south_east',
+        engineerSetId: 7,
+        failedReason: 'osrm_unavailable'
+      })
+    );
+    buildPlanMock.mockResolvedValue({
+      planId: 99,
+      algorithm: 'or_tools',
+      status: 'running',
+      region: 'south_east',
+      engineerSetId: 7
+    });
+
+    renderPlanScreen();
+    const button = screen.getByRole('button', { name: 'Построить заново' });
+
+    await act(async () => fireEvent.click(button));
+
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/plan/99'));
+    expect(buildPlanMock).toHaveBeenCalledWith('south_east', expect.any(String), 'or_tools', 7);
   });
 });

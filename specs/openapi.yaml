@@ -1282,7 +1282,7 @@ components:
     Plan:
       type: object
       additionalProperties: false
-      required: [plan_id, algorithm, status, engineer_set_id]
+      required: [plan_id, algorithm, status, region, engineer_set_id]
       properties:
         plan_id:
           type: integer
@@ -1291,6 +1291,12 @@ components:
           $ref: "#/components/schemas/PlanAlgorithm"
         status:
           $ref: "#/components/schemas/PlanStatus"
+        region:
+          $ref: "#/components/schemas/RegionCode"
+          description: >-
+            Регион плана, каким бы ни был status — клиент, открывший план по
+            прямой ссылке (GET /plan/{id} без предварительного выбора
+            региона), берёт регион отсюда
         engineer_set_id:
           type: integer
           description: >-
@@ -1572,6 +1578,7 @@ components:
         - parent_plan_id
         - algorithm
         - status
+        - region
         - engineer_set_id
         - engineers
         - unassigned
@@ -1587,6 +1594,9 @@ components:
         algorithm:
           $ref: "#/components/schemas/PlanAlgorithm"
           description: Тот же алгоритм, что у plan_id
+        region:
+          $ref: "#/components/schemas/RegionCode"
+          description: Тот же регион, что у plan_id — перепланирование не меняет регион
         engineer_set_id:
           type: integer
           description: Тот же набор бригад, что у plan_id — перепланирование не меняет набор

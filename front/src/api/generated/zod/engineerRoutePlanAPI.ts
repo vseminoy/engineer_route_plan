@@ -440,6 +440,10 @@ export const BuildPlanBody = zod.strictObject({
   "engineer_set_id": zod.int().min(1).max(buildPlanBodyEngineerSetIdMax).nullish().default(buildPlanBodyEngineerSetIdDefault).describe('Набор бригад региона, для которого строится план; null или отсутствует — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у поля engineer_set_id')
 })
 
+export const buildPlanResponseRegionMax = 50;
+
+
+export const buildPlanResponseRegionRegExp = new RegExp('^[a-z][a-z0-9_]*$');
 
 export const buildPlanResponseEngineersOneItemRouteItemPlannedArrivalMin = 19;
 export const buildPlanResponseEngineersOneItemRouteItemPlannedArrivalMax = 19;
@@ -474,6 +478,7 @@ export const BuildPlanResponse = zod.strictObject({
   "plan_id": zod.int().describe('Идентификатор плана на сервере'),
   "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Чем строится план: or_tools — основной алгоритм (RoutingModel, трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый план для сравнения (назначение по порядку поступления заявок)'),
   "status": zod.enum(['running', 'done', 'failed']).describe('running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет; done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не закончился (OSRM/БД недоступны, расчёт завис дольше отведённого времени или прерван остановкой сервера), см. failed_reason'),
+  "region": zod.string().min(1).max(buildPlanResponseRegionMax).regex(buildPlanResponseRegionRegExp).describe('Регион плана, каким бы ни был status — клиент, открывший план по прямой ссылке (GET /plan/{id} без предварительного выбора региона), берёт регион отсюда'),
   "engineer_set_id": zod.int().describe('Набор бригад, для которого построен план — тот же, что был передан (или default) в POST /plan/build, каким бы ни был status'),
   "engineers": zod.union([zod.array(zod.strictObject({
   "engineer_id": zod.int().describe('Бригада маршрута'),
@@ -519,6 +524,10 @@ export const GetPlanParams = zod.strictObject({
   "plan_id": zod.int().min(1).max(getPlanPathPlanIdMax).describe('Идентификатор плана на сервере')
 })
 
+export const getPlanResponseRegionMax = 50;
+
+
+export const getPlanResponseRegionRegExp = new RegExp('^[a-z][a-z0-9_]*$');
 
 export const getPlanResponseEngineersOneItemRouteItemPlannedArrivalMin = 19;
 export const getPlanResponseEngineersOneItemRouteItemPlannedArrivalMax = 19;
@@ -553,6 +562,7 @@ export const GetPlanResponse = zod.strictObject({
   "plan_id": zod.int().describe('Идентификатор плана на сервере'),
   "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Чем строится план: or_tools — основной алгоритм (RoutingModel, трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый план для сравнения (назначение по порядку поступления заявок)'),
   "status": zod.enum(['running', 'done', 'failed']).describe('running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет; done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не закончился (OSRM/БД недоступны, расчёт завис дольше отведённого времени или прерван остановкой сервера), см. failed_reason'),
+  "region": zod.string().min(1).max(getPlanResponseRegionMax).regex(getPlanResponseRegionRegExp).describe('Регион плана, каким бы ни был status — клиент, открывший план по прямой ссылке (GET /plan/{id} без предварительного выбора региона), берёт регион отсюда'),
   "engineer_set_id": zod.int().describe('Набор бригад, для которого построен план — тот же, что был передан (или default) в POST /plan/build, каким бы ни был status'),
   "engineers": zod.union([zod.array(zod.strictObject({
   "engineer_id": zod.int().describe('Бригада маршрута'),
@@ -750,6 +760,10 @@ export const ReplanPlanBody = zod.union([zod.strictObject({
   "engineer_id": zod.int().min(1).max(replanPlanBodyFourEngineerIdMax).describe('Бригада, ставшая недоступной')
 })]).describe('Одно событие перепланирования; тип определяет event_type.')
 
+export const replanPlanResponseRegionMax = 50;
+
+
+export const replanPlanResponseRegionRegExp = new RegExp('^[a-z][a-z0-9_]*$');
 
 export const replanPlanResponseEngineersItemRouteItemPlannedArrivalMin = 19;
 export const replanPlanResponseEngineersItemRouteItemPlannedArrivalMax = 19;
@@ -788,6 +802,7 @@ export const ReplanPlanResponse = zod.strictObject({
   "plan_id": zod.int().describe('Идентификатор нового плана'),
   "parent_plan_id": zod.int().describe('План, от которого посчитан этот, — plan_id из пути запроса'),
   "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Тот же алгоритм, что у plan_id'),
+  "region": zod.string().min(1).max(replanPlanResponseRegionMax).regex(replanPlanResponseRegionRegExp).describe('Тот же регион, что у plan_id — перепланирование не меняет регион'),
   "engineer_set_id": zod.int().describe('Тот же набор бригад, что у plan_id — перепланирование не меняет набор'),
   "status": zod.enum(['done']).describe('Перепланирование синхронное: ответ 200 всегда несёт готовый план'),
   "engineers": zod.array(zod.strictObject({

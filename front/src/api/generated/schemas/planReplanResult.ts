@@ -9,6 +9,7 @@ import type { PlanAlgorithm } from './planAlgorithm';
 import type { PlanDiff } from './planDiff';
 import type { PlanMetrics } from './planMetrics';
 import type { PlanReplanResultStatus } from './planReplanResultStatus';
+import type { RegionCode } from './regionCode';
 import type { UnassignedTicket } from './unassignedTicket';
 
 export interface PlanReplanResult {
@@ -18,6 +19,8 @@ export interface PlanReplanResult {
   parent_plan_id: number;
   /** Тот же алгоритм, что у plan_id */
   algorithm: PlanAlgorithm;
+  /** Тот же регион, что у plan_id — перепланирование не меняет регион */
+  region: RegionCode;
   /** Тот же набор бригад, что у plan_id — перепланирование не меняет набор */
   engineer_set_id: number;
   /** Перепланирование синхронное: ответ 200 всегда несёт готовый план */

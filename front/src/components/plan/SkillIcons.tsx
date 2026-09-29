@@ -32,7 +32,7 @@ export function SkillIcons({ skills }: { skills: Skill[] }) {
   return (
     <span className="skill-icons">
       {skills.map((skill) => (
-        <span key={skill} className="skill-icon" role="img" aria-label={`Навык: ${skillLabel(skill)}`} title={skillLabel(skill)}>
+        <span key={skill} className="skill-icon" role="img" aria-label={`Навык: ${skillLabel(skill)}`} data-tooltip={skillLabel(skill)}>
           <svg width={13} height={13} viewBox="0 0 20 20">
             {ICON_PATH[skill]}
           </svg>

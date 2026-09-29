@@ -250,6 +250,7 @@ textarea {
 }
 
 .skill-icon {
+  position: relative;
   width: 22px;
   height: 22px;
   border-radius: 6px;
@@ -259,6 +260,34 @@ textarea {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+/* Custom tooltip instead of the native title attribute — browsers hold the
+   title tooltip for ~1s before showing it, and this needs half that. */
+.skill-icon::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-text-primary);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.1s ease, visibility 0.1s ease;
+  z-index: 10;
+}
+
+.skill-icon:hover::after {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0.5s;
 }
 
 .engineer-timeline {
@@ -327,6 +356,12 @@ textarea {
 .diff-tag--changed {
   color: var(--color-changed-text);
   background: var(--color-changed-bg);
+}
+
+.diff-tag--idle {
+  color: var(--color-text-muted);
+  background: var(--color-bg);
+  flex-shrink: 0;
 }
 
 /* ---- Unassigned card ---- */
@@ -408,6 +443,53 @@ textarea {
 .bar-row__label {
   width: 92px;
   flex-shrink: 0;
+}
+
+.bar-row--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.bar-row--stacked .bar-row__label {
+  width: auto;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar-row__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bar-row__shift {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-row__body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 16px;
+}
+
+.bar-row--idle {
+  align-items: center;
+  opacity: 0.7;
+}
+
+.bar-row--idle .bar-row__label {
+  width: auto;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bar-row__track {
@@ -505,7 +587,7 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: 1100;
 }
 
 .ticket-modal__card {
@@ -550,7 +632,7 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  z-index: 200;
+  z-index: 1200;
   font-size: 14px;
   color: var(--color-text-secondary);
 }
@@ -565,6 +647,6 @@ textarea {
   padding: 12px 18px;
   border-radius: 10px;
   font-size: 14px;
-  z-index: 300;
+  z-index: 1300;
   max-width: min(480px, calc(100vw - 32px));
 }

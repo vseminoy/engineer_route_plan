@@ -533,6 +533,12 @@ class Plan(BaseModel):
     plan_id: Annotated[int, Field(description="Идентификатор плана на сервере")]
     algorithm: PlanAlgorithm
     status: PlanStatus
+    region: Annotated[
+        RegionCode,
+        Field(
+            description="Регион плана, каким бы ни был status — клиент, открывший план по прямой ссылке (GET /plan/{id} без предварительного выбора региона), берёт регион отсюда"
+        ),
+    ]
     engineer_set_id: Annotated[
         int,
         Field(
@@ -781,6 +787,10 @@ class PlanReplanResult(BaseModel):
         int, Field(description="План, от которого посчитан этот, — plan_id из пути запроса")
     ]
     algorithm: Annotated[PlanAlgorithm, Field(description="Тот же алгоритм, что у plan_id")]
+    region: Annotated[
+        RegionCode,
+        Field(description="Тот же регион, что у plan_id — перепланирование не меняет регион"),
+    ]
     engineer_set_id: Annotated[
         int,
         Field(description="Тот же набор бригад, что у plan_id — перепланирование не меняет набор"),

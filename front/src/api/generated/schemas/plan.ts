@@ -9,6 +9,7 @@ import type { PlanAlgorithm } from './planAlgorithm';
 import type { PlanFailedReason } from './planFailedReason';
 import type { PlanMetrics } from './planMetrics';
 import type { PlanStatus } from './planStatus';
+import type { RegionCode } from './regionCode';
 import type { UnassignedTicket } from './unassignedTicket';
 
 export interface Plan {
@@ -16,6 +17,8 @@ export interface Plan {
   plan_id: number;
   algorithm: PlanAlgorithm;
   status: PlanStatus;
+  /** Регион плана, каким бы ни был status — клиент, открывший план по прямой ссылке (GET /plan/{id} без предварительного выбора региона), берёт регион отсюда */
+  region: RegionCode;
   /** Набор бригад, для которого построен план — тот же, что был передан (или default) в POST /plan/build, каким бы ни был status */
   engineer_set_id: number;
   /** Маршруты всех бригад региона на дату плана, по возрастанию engineer_id; null, если status не done */

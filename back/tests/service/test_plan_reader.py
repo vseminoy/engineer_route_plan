@@ -139,6 +139,7 @@ async def test_running_plan_has_no_routes() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -156,6 +157,7 @@ async def test_failed_plan_carries_reason() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -174,6 +176,7 @@ async def test_done_plan_lists_every_set_engineer() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -201,6 +204,7 @@ async def test_visit_fields_and_distance_rounding() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -224,6 +228,7 @@ async def test_idle_time_is_shift_minus_travel_and_duration() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -248,6 +253,7 @@ async def test_visits_sorted_by_sequence_no() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -267,6 +273,7 @@ async def test_engineer_without_assignments_has_full_shift_idle() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -294,6 +301,7 @@ async def test_metrics_engineers_used_counts_used_only() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -312,6 +320,7 @@ async def test_metrics_total_distance_km_sums_all_routes() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -337,6 +346,7 @@ async def test_metrics_distance_and_idle_by_engineer_cover_every_engineer() -> N
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -359,6 +369,7 @@ async def test_metrics_assigned_and_unassigned_counts() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        region_code="east",
         engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
@@ -394,6 +405,7 @@ def _multi_repo(
         1: PlanRow(
             id=1,
             region_id=100,
+            region_code="east",
             engineer_set_id=100,
             plan_date=DAY,
             algorithm="or_tools",
@@ -403,6 +415,7 @@ def _multi_repo(
         2: PlanRow(
             id=2,
             region_id=100,
+            region_code="east",
             engineer_set_id=baseline_engineer_set_id,
             plan_date=DAY,
             algorithm="baseline_fcfs",

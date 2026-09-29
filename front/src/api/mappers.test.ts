@@ -110,9 +110,15 @@ describe('mapTicketSummary', () => {
 
 describe('mapPlan', () => {
   it('maps a running build to a status with no engineers/unassigned/metrics yet', () => {
-    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'running', engineer_set_id: 1 };
+    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'running', region: 'east', engineer_set_id: 1 };
 
-    expect(mapPlan(api)).toEqual({ planId: 42, algorithm: 'or_tools', status: 'running', engineerSetId: 1 });
+    expect(mapPlan(api)).toEqual({
+      planId: 42,
+      algorithm: 'or_tools',
+      status: 'running',
+      region: 'east',
+      engineerSetId: 1
+    });
   });
 
   it('maps a failed build to its reason, with no engineers/unassigned/metrics', () => {
@@ -120,6 +126,7 @@ describe('mapPlan', () => {
       plan_id: 42,
       algorithm: 'or_tools',
       status: 'failed',
+      region: 'east',
       engineer_set_id: 1,
       failed_reason: 'osrm_unavailable'
     };
@@ -128,13 +135,21 @@ describe('mapPlan', () => {
       planId: 42,
       algorithm: 'or_tools',
       status: 'failed',
+      region: 'east',
       engineerSetId: 1,
       failedReason: 'osrm_unavailable'
     });
   });
 
   it('maps a failed build stopped by the server-shutdown sweep', () => {
-    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'failed', engineer_set_id: 1, failed_reason: 'shutdown' };
+    const api: Plan = {
+      plan_id: 42,
+      algorithm: 'or_tools',
+      status: 'failed',
+      region: 'east',
+      engineer_set_id: 1,
+      failed_reason: 'shutdown'
+    };
 
     expect(mapPlan(api).failedReason).toBe('shutdown');
   });
@@ -144,6 +159,7 @@ describe('mapPlan', () => {
       plan_id: 42,
       algorithm: 'or_tools',
       status: 'done',
+      region: 'east',
       engineer_set_id: 1,
       engineers: [
         {
@@ -216,6 +232,7 @@ describe('mapPlanReplanResult', () => {
       plan_id: 43,
       parent_plan_id: 42,
       algorithm: 'or_tools',
+      region: 'east',
       engineer_set_id: 1,
       status: 'done',
       engineers: [
@@ -259,6 +276,7 @@ describe('mapPlanReplanResult', () => {
 
     expect(plan.status).toBe('done');
     expect(plan.planId).toBe(43);
+    expect(plan.region).toBe('east');
     expect(plan.engineerSetId).toBe(1);
     expect(plan.parentPlanId).toBe(42);
     expect(plan.engineers?.[0].route[0].plannedArrival).toBe('2026-08-17T10:05:00');

@@ -47,7 +47,8 @@ export const invalidRowReasonText: Record<InvalidRowReason, string> = {
 
 // A queued build that never finished (GET /plan/{id} status: 'failed').
 export const planFailedReasonText: Record<PlanFailedReason, string> = {
-  osrm_unavailable: 'Сервис маршрутов недоступен',
+  osrm_unavailable:
+    'Сервис маршрутов недоступен: возможно, он ещё загружает карту дорог после запуска стенда. Подождите немного и попробуйте построить план ещё раз.',
   db_unavailable: 'База данных недоступна',
   build_error: 'Не удалось построить план',
   timeout: 'Расчёт не уложился в отведённое время',

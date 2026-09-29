@@ -60,7 +60,7 @@ export function SidePanel({ plan, roster, ticketById, engineerSetName, onReplann
       <div className="side-panel__body">
         {activeTab === 'engineers' && <EngineerListTab plan={plan} roster={roster} ticketById={ticketById} />}
         {activeTab === 'unassigned' && <UnassignedListTab plan={plan} ticketById={ticketById} />}
-        {activeTab === 'metrics' && <MetricsTab plan={plan} engineerSetName={engineerSetName} />}
+        {activeTab === 'metrics' && <MetricsTab plan={plan} roster={roster} engineerSetName={engineerSetName} />}
         {activeTab === 'replan' && <ReplanTab plan={plan} ticketById={ticketById} onReplanned={onReplanned} />}
       </div>
     </div>

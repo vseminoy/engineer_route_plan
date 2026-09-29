@@ -69,6 +69,7 @@ def test_replan_new_urgent_ticket_returns_the_new_plan() -> None:
     plan = PlanRead(
         plan_id=2,
         algorithm="or_tools",
+        region_code="east",
         engineer_set_id=70,
         status="done",
         failed_reason=None,

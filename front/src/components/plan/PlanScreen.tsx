@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { MapView } from '@/components/map/MapView';
 import { SidePanel } from './SidePanel';
@@ -23,6 +23,7 @@ export function PlanScreen() {
   const planId = Number(planIdParam);
   const navigate = useNavigate();
   const selectedRegion = useUiStore((s) => s.selectedRegion);
+  const setSelectedRegion = useUiStore((s) => s.setSelectedRegion);
   const selectedTicketId = useUiStore((s) => s.selectedTicketId);
   const closeTicket = useUiStore((s) => s.closeTicket);
   const [dismissedError, setDismissedError] = useState(false);
@@ -30,6 +31,17 @@ export function PlanScreen() {
   const [rebuildError, setRebuildError] = useState<string | null>(null);
 
   const planQuery = usePlan(planId);
+
+  // A plan opened directly by URL (a fresh tab, a refresh, a bookmark) starts with no
+  // selectedRegion — the store is UI-only and does not survive a reload. Everything else
+  // on this screen (rebuild, the engineers/tickets/engineer-sets queries) needs it, so it
+  // is recovered from the plan itself as soon as it loads.
+  const planRegion = planQuery.data?.region;
+  useEffect(() => {
+    if (planRegion && planRegion !== selectedRegion) {
+      setSelectedRegion(planRegion);
+    }
+  }, [planRegion, selectedRegion, setSelectedRegion]);
   const engineersQuery = useEngineers(selectedRegion, planQuery.data?.engineerSetId ?? null);
   const ticketsQuery = useTickets(selectedRegion);
   const engineerSetsQuery = useEngineerSets(selectedRegion);

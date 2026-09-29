@@ -852,8 +852,10 @@ sequenceDiagram
 Клиент опрашивает этот эндпоинт с паузой между запросами, пока `status` не
 станет `done` или `failed`. `engineer_set_id` — набор бригад, для которого план
 построен (тот же, что был передан или подставлен по умолчанию в `POST /plan/build`) —
-в ответе всегда, независимо от `status`: он часть самой строки плана, а не результата
-расчёта.
+и `region` — регион плана — в ответе всегда, независимо от `status`: оба часть самой
+строки плана, а не результата расчёта. `region` даёт клиенту, открывшему план по
+прямой ссылке без предварительного выбора региона, восстановить его без отдельного
+запроса.
 
 ```mermaid
 sequenceDiagram
@@ -1117,7 +1119,7 @@ sequenceDiagram
                 H-->>Client: 503 | 500
             else
                 PlanRepo-->>Svc: новый plan_id
-                Svc-->>API: PlanReplanResult (engineer_set_id, engineers, unassigned, metrics, diff)
+                Svc-->>API: PlanReplanResult (region, engineer_set_id, engineers, unassigned, metrics, diff)
                 API->>API: лог plan_replan_finished (info, plan_id, parent_plan_id, event_type)
                 API-->>Client: 200 PlanReplanResult
             end

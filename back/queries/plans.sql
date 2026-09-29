@@ -62,10 +62,12 @@ VALUES (:plan_id, :ticket_id, :engineer_id, :sequence_no, :planned_arrival,
         :travel_time_min, :travel_distance_m, :unassigned_reason, :explanation);
 
 -- name: get_plan(plan_id)^
--- The plan row by id; None if there is no such plan.
-SELECT id, region_id, engineer_set_id, plan_date, algorithm, status, failed_reason
-FROM plans
-WHERE id = :plan_id;
+-- The plan row by id, with its region's code; None if there is no such plan.
+SELECT p.id, p.region_id, r.code AS region_code, p.engineer_set_id, p.plan_date, p.algorithm,
+       p.status, p.failed_reason
+FROM plans p
+JOIN regions r ON r.id = p.region_id
+WHERE p.id = :plan_id;
 
 -- name: insert_replanned_plan(region_id, engineer_set_id, plan_date, algorithm, parent_plan_id, created_at)$
 -- A plan produced by one replan event: done from the moment it exists, with its

@@ -4,14 +4,15 @@ import { OptionalMetricsBlock } from './OptionalMetricsBlock';
 import { usePlanCompare } from '@/queries/usePlanCompare';
 import { formatKm, formatSignedDelta } from '@/lib/format';
 import { describeError } from '@/lib/labels';
-import type { DonePlan } from '@/types/domain';
+import type { DonePlan, EngineerRoster } from '@/types/domain';
 
 interface Props {
   plan: DonePlan;
+  roster: EngineerRoster[];
   engineerSetName?: string;
 }
 
-export function MetricsTab({ plan, engineerSetName }: Props) {
+export function MetricsTab({ plan, roster, engineerSetName }: Props) {
   const compareQuery = usePlanCompare(plan.planId);
   const compare = compareQuery.data;
 
@@ -45,7 +46,7 @@ export function MetricsTab({ plan, engineerSetName }: Props) {
         <div style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Считаем сравнение с baseline…</div>
       )}
 
-      <IdleTimeBlock engineers={plan.engineers} />
+      <IdleTimeBlock engineers={plan.engineers} roster={roster} />
       <OptionalMetricsBlock planStabilityFallback={plan.diff?.planStability} />
     </div>
   );

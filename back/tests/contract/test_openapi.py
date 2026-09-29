@@ -101,6 +101,7 @@ class _EngineerSets(FakeEngineerSets):
 _DONE_PLAN = PlanRead(
     plan_id=1,
     algorithm="or_tools",
+    region_code="east",
     engineer_set_id=70,
     status="done",
     failed_reason=None,

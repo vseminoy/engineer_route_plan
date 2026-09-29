@@ -216,6 +216,7 @@ def _plan(status: str = "done", region_id: int = 1, engineer_set_id: int = 50) -
     return PlanRow(
         id=10,
         region_id=region_id,
+        region_code="east",
         engineer_set_id=engineer_set_id,
         plan_date=DAY,
         algorithm="or_tools",

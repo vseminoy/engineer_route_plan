@@ -15,6 +15,7 @@ from src.repository.region_data import queries
 class PlanRow:
     id: int
     region_id: int
+    region_code: str
     engineer_set_id: int
     plan_date: date
     algorithm: str
@@ -132,10 +133,11 @@ async def get_plan(conn: AsyncConnection[Any], plan_id: int) -> PlanRow | None:
     row = await run_query("get_plan", lambda: queries.get_plan(conn, plan_id=plan_id))
     if row is None:
         return None
-    id_, region_id, engineer_set_id, plan_date, algorithm, status, failed_reason = row
+    id_, region_id, region_code, engineer_set_id, plan_date, algorithm, status, failed_reason = row
     return PlanRow(
         id=id_,
         region_id=region_id,
+        region_code=region_code,
         engineer_set_id=engineer_set_id,
         plan_date=plan_date,
         algorithm=algorithm,

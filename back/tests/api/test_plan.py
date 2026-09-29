@@ -42,6 +42,7 @@ def test_build_plan_returns_202_running() -> None:
         "plan_id": 42,
         "algorithm": "or_tools",
         "status": "running",
+        "region": "east",
         "engineer_set_id": 70,
         "engineers": None,
         "unassigned": None,
@@ -154,6 +155,7 @@ def test_get_running_plan() -> None:
         PlanRead(
             plan_id=1,
             algorithm="or_tools",
+            region_code="east",
             engineer_set_id=70,
             status="running",
             failed_reason=None,
@@ -169,6 +171,7 @@ def test_get_running_plan() -> None:
         "plan_id": 1,
         "algorithm": "or_tools",
         "status": "running",
+        "region": "east",
         "engineer_set_id": 70,
         "engineers": None,
         "unassigned": None,
@@ -182,6 +185,7 @@ def test_get_failed_plan() -> None:
         PlanRead(
             plan_id=1,
             algorithm="baseline_fcfs",
+            region_code="east",
             engineer_set_id=70,
             status="failed",
             failed_reason="osrm_unavailable",
@@ -197,6 +201,7 @@ def test_get_failed_plan() -> None:
         "plan_id": 1,
         "algorithm": "baseline_fcfs",
         "status": "failed",
+        "region": "east",
         "engineer_set_id": 70,
         "failed_reason": "osrm_unavailable",
         "engineers": None,
@@ -209,6 +214,7 @@ def test_get_done_plan() -> None:
     plan = PlanRead(
         plan_id=1,
         algorithm="or_tools",
+        region_code="east",
         engineer_set_id=70,
         status="done",
         failed_reason=None,
@@ -250,6 +256,7 @@ def test_get_done_plan() -> None:
         "plan_id": 1,
         "algorithm": "or_tools",
         "status": "done",
+        "region": "east",
         "engineer_set_id": 70,
         "engineers": [
             {
