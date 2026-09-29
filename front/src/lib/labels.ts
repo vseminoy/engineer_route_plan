@@ -1,4 +1,6 @@
 import type { Skill, UnassignedReason } from '@/types/domain';
+import { ApiError, NetworkError } from '@/api/client';
+import { isFieldErrors } from '@/lib/fieldErrors';
 
 export function skillLabel(skill: Skill): string {
   switch (skill) {
@@ -22,17 +24,33 @@ export const unassignedReasonHeading: Record<UnassignedReason, string> = {
     'Подходящие бригады есть, но все уже заняты другими заявками в это время'
 };
 
-// Maps this project's flat error_code values (05_spec_backend.md §4.5) to a
-// dispatcher-facing message — never the raw code or a stack trace
-// (04_tor_frontend.md §6).
-export const apiErrorMessage: Record<string, string> = {
-  INVALID_FILE_FORMAT: 'Файл повреждён или не подходит по формату.',
-  REGION_MISMATCH: 'Файл не соответствует выбранному региону.',
-  PLAN_NOT_FOUND: 'План не найден — возможно, ссылка устарела.',
-  OSRM_UNAVAILABLE: 'Сервис построения маршрутов недоступен. Попробуйте ещё раз.',
-  VALIDATION_ERROR: 'Данные не прошли проверку.'
+// A response status with no body: text by status, used when the endpoint has
+// no more specific entry below.
+const statusMessage: Record<number, string> = {
+  404: 'Не найдено',
+  500: 'Ошибка сервера',
+  501: 'Функция ещё в разработке',
+  503: 'Сервис временно недоступен, попробуйте ещё раз'
 };
 
-export function describeApiError(errorCode: string, fallback: string): string {
-  return apiErrorMessage[errorCode] ?? fallback;
+// `"METHOD /path" (as named in the spec) + status` → a message specific to that
+// operation's failure, for a status the generic table above doesn't fit well.
+const endpointStatusMessage: Record<string, string> = {};
+
+function textForStatus(endpoint: string, status: number): string {
+  return endpointStatusMessage[`${endpoint} ${status}`] ?? statusMessage[status] ?? 'Ошибка сервера';
+}
+
+// The one message to show for any request error, wherever it came from: a
+// network failure, a bodyless status code, or a 400 whose `message` is already
+// phrased for the dispatcher. A 400 with `fields` has no single message — it
+// belongs at the form's fields, not here.
+export function describeError(error: unknown, endpoint: string): string {
+  if (error instanceof NetworkError) return 'Нет связи с сервером';
+  if (!(error instanceof ApiError)) return 'Ошибка сервера';
+  if (error.status === 400 && error.body && !isFieldErrors(error.body)) {
+    return error.body.message;
+  }
+  const text = textForStatus(endpoint, error.status);
+  return error.status >= 500 && error.requestId ? `${text} Код обращения: ${error.requestId}` : text;
 }

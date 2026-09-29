@@ -142,8 +142,3 @@ export interface TicketSummary {
   lat: number | null;
   lon: number | null;
 }
-
-export interface ApiErrorShape {
-  errorCode: string;
-  message: string;
-}

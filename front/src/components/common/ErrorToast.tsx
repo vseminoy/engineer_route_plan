@@ -3,10 +3,10 @@ interface Props {
   onDismiss: () => void;
 }
 
-// 04_tor_frontend.md §6 — backend errors surface as a plain-language
-// message, never a stack trace, and never block the whole screen
-// (OSRM_UNAVAILABLE is the one exception, handled by the caller as a
-// full-screen notice instead of this toast).
+// Backend errors surface as a plain-language message (built by the caller via
+// describeError), never a stack trace, and never block the whole screen — a
+// 503 on plan build/replan is the one exception, shown by the caller as a
+// full-screen notice instead of this toast.
 export function ErrorToast({ message, onDismiss }: Props) {
   return (
     <div className="error-toast" role="alert">

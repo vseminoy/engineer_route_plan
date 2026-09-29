@@ -100,10 +100,3 @@ export interface ApiTicketListItem {
 // (main + baseline) are already fetched in full for the Metrics tab, so the
 // app derives the comparison client-side from PlanMetrics instead (see
 // src/queries/usePlanCompare.ts) rather than depend on that endpoint.
-
-// The single flat error body this project's stack uses everywhere
-// (AGENTS.md — "flat error body, not nested"): { error_code, message }.
-export interface ApiErrorBody {
-  error_code: string;
-  message: string;
-}

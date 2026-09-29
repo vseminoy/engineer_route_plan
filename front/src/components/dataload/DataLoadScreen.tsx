@@ -8,8 +8,7 @@ import { ErrorToast } from '@/components/common/ErrorToast';
 import { loadDemoDataset, uploadDataset } from '@/api/endpoints';
 import { useBuildPlan } from '@/queries/useBuildPlan';
 import { useUiStore } from '@/store/useUiStore';
-import { describeApiError } from '@/lib/labels';
-import { ApiError } from '@/api/client';
+import { describeError } from '@/lib/labels';
 
 // Fixed demo day across all three regions' synthetic datasets
 // (07_data_dictionary.md §1: "дата фиксирована — 17.08.2026").
@@ -30,7 +29,7 @@ export function DataLoadScreen() {
       const { main } = await buildPlanMutation.mutateAsync({ region: selectedRegion, planDate: PLAN_DATE });
       navigate(`/plan/${main.planId}`);
     } catch (err) {
-      setError(err instanceof ApiError ? describeApiError(err.errorCode, err.message) : 'Не удалось построить план.');
+      setError(describeError(err, 'POST /plan/build'));
     } finally {
       setLoadingText(null);
     }
@@ -44,7 +43,7 @@ export function DataLoadScreen() {
       await loadDemoDataset(selectedRegion);
       await runBuild();
     } catch (err) {
-      setError(err instanceof ApiError ? describeApiError(err.errorCode, err.message) : 'Не удалось загрузить демо-набор.');
+      setError(describeError(err, 'POST /data/demo'));
       setLoadingText(null);
     }
   }
@@ -57,7 +56,7 @@ export function DataLoadScreen() {
       await uploadDataset(selectedRegion, ticketsFile, engineersFile);
       await runBuild();
     } catch (err) {
-      setError(err instanceof ApiError ? describeApiError(err.errorCode, err.message) : 'Не удалось загрузить файл.');
+      setError(describeError(err, 'POST /data/upload'));
       setLoadingText(null);
     }
   }

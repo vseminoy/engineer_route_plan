@@ -10,7 +10,7 @@ import { usePlan } from '@/queries/usePlan';
 import { useEngineers } from '@/queries/useEngineers';
 import { useTickets } from '@/queries/useTickets';
 import { useUiStore } from '@/store/useUiStore';
-import { describeApiError } from '@/lib/labels';
+import { describeError } from '@/lib/labels';
 import { ApiError } from '@/api/client';
 
 export function PlanScreen() {
@@ -34,11 +34,8 @@ export function PlanScreen() {
   if (planQuery.isPending) return <LoadingOverlay text="Строим план…" />;
 
   if (planQuery.isError) {
-    const message =
-      planQuery.error instanceof ApiError
-        ? describeApiError(planQuery.error.errorCode, planQuery.error.message)
-        : 'Не удалось загрузить план.';
-    if (planQuery.error instanceof ApiError && planQuery.error.errorCode === 'OSRM_UNAVAILABLE') {
+    const message = describeError(planQuery.error, 'GET /plan/{id}');
+    if (planQuery.error instanceof ApiError && planQuery.error.status === 503) {
       return (
         <LoadingOverlay text={`${message} Попробуйте обновить страницу.`} />
       );

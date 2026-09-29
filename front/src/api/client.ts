@@ -1,40 +1,44 @@
-import type { ApiErrorBody } from './types';
+import type { ValidationError } from './generated/schemas';
 
-// Flat error body — { error_code, message } — per AGENTS.md's project-specific
-// deviation from the profile's nested {error:{code,message}} contract.
+// The only status with a response body is 400 (ValidationError, from `common.yaml`);
+// every other status carries none, so `body` is set for 400 alone.
 export class ApiError extends Error {
-  errorCode: string;
+  constructor(
+    public status: number,
+    public requestId: string | null,
+    public body?: ValidationError
+  ) {
+    super(`Request failed with status ${status}`);
+  }
+}
 
-  constructor(body: ApiErrorBody, public status: number) {
-    super(body.message);
-    this.errorCode = body.error_code;
+// `fetch` itself failed (offline, DNS, CORS) — no server response to read a status from.
+export class NetworkError extends Error {
+  constructor() {
+    super('Network error');
   }
 }
 
 const BASE_URL = '/api/v1';
 
-async function parseErrorBody(res: Response): Promise<ApiErrorBody> {
-  try {
-    const body = (await res.json()) as ApiErrorBody;
-    if (body && typeof body.error_code === 'string') return body;
-  } catch {
-    // fall through to the generic body below
-  }
-  const message =
-    res.status === 501 ? 'Эта функция ещё не реализована' : res.statusText || 'Request failed';
-  return { error_code: 'UNKNOWN', message };
-}
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers:
-      init?.body && !(init.body instanceof FormData)
-        ? { 'Content-Type': 'application/json', ...init.headers }
-        : init?.headers
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      ...init,
+      headers:
+        init?.body && !(init.body instanceof FormData)
+          ? { 'Content-Type': 'application/json', ...init.headers }
+          : init?.headers
+    });
+  } catch {
+    throw new NetworkError();
+  }
+
   if (!res.ok) {
-    throw new ApiError(await parseErrorBody(res), res.status);
+    const requestId = res.headers.get('X-Request-ID');
+    const body = res.status === 400 ? ((await res.json()) as ValidationError) : undefined;
+    throw new ApiError(res.status, requestId, body);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
