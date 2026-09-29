@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from src.domain import Engineer, Point, Skill, VehicleType
-from src.errors import DependencyUnavailable, NotFound
+from src.errors import DependencyUnavailable, InvalidInput, NotFound
 from src.repository.plans import AssignmentRow, PlanRow
 from src.service.plan_reader import EngineerRouteRead, PlanRead, PlanReader, UnassignedRead
 
@@ -66,27 +66,45 @@ class FakeConnect:
 
 
 class FakeRepo:
+    """`plans`/`engineers_by_region`/`assignments_by_plan` (keyed by id) let `compare`'s
+    two `get` calls each see a different plan; the single-plan `plan`/`engineers`/
+    `assignments` keep every other test's fixtures unchanged."""
+
     def __init__(
         self,
-        plan: PlanRow | None,
+        plan: PlanRow | None = None,
         engineers: list[Engineer] | None = None,
         assignments: list[AssignmentRow] | None = None,
         error: Exception | None = None,
+        plans: dict[int, PlanRow] | None = None,
+        engineers_by_region: dict[int, list[Engineer]] | None = None,
+        assignments_by_plan: dict[int, list[AssignmentRow]] | None = None,
     ) -> None:
         self.plan = plan
         self.engineers = engineers or []
         self.assignments = assignments or []
         self.error = error
+        self.plans = plans
+        self.engineers_by_region = engineers_by_region
+        self.assignments_by_plan = assignments_by_plan
+        self.get_plan_calls: list[int] = []
 
-    async def get_plan(self, _conn: Any, _plan_id: int) -> PlanRow | None:
+    async def get_plan(self, _conn: Any, plan_id: int) -> PlanRow | None:
+        self.get_plan_calls.append(plan_id)
         if self.error:
             raise self.error
+        if self.plans is not None:
+            return self.plans.get(plan_id)
         return self.plan
 
-    async def list_engineers(self, _conn: Any, _region_id: int) -> list[Engineer]:
+    async def list_engineers(self, _conn: Any, region_id: int) -> list[Engineer]:
+        if self.engineers_by_region is not None:
+            return self.engineers_by_region.get(region_id, [])
         return self.engineers
 
-    async def list_plan_assignments(self, _conn: Any, _plan_id: int) -> list[AssignmentRow]:
+    async def list_plan_assignments(self, _conn: Any, plan_id: int) -> list[AssignmentRow]:
+        if self.assignments_by_plan is not None:
+            return self.assignments_by_plan.get(plan_id, [])
         return self.assignments
 
 
@@ -122,6 +140,7 @@ async def test_running_plan_has_no_routes() -> None:
     assert result.status == "running"
     assert result.engineers is None
     assert result.unassigned is None
+    assert result.metrics is None
 
 
 async def test_failed_plan_carries_reason() -> None:
@@ -133,6 +152,7 @@ async def test_failed_plan_carries_reason() -> None:
     assert result.failed_reason == "osrm_unavailable"
     assert result.engineers is None
     assert result.unassigned is None
+    assert result.metrics is None
 
 
 async def test_done_plan_lists_every_region_engineer() -> None:
@@ -210,3 +230,181 @@ async def test_get_plan_dependency_unavailable_propagates() -> None:
     repo = FakeRepo(None, error=DependencyUnavailable(reason="db_unavailable"))
     with pytest.raises(DependencyUnavailable):
         await _reader(repo).get(1)
+
+
+# --- metrics --------------------------------------------------------------------------
+
+
+async def test_metrics_engineers_used_counts_used_only() -> None:
+    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    repo = FakeRepo(plan, engineers=[_engineer(1), _engineer(2)], assignments=[_assigned(10, 1, 1)])
+
+    result = await _reader(repo).get(1)
+
+    assert result.metrics is not None
+    assert result.metrics.engineers_used == 1
+
+
+async def test_metrics_total_distance_km_sums_all_routes() -> None:
+    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    repo = FakeRepo(
+        plan,
+        engineers=[_engineer(1), _engineer(2)],
+        assignments=[
+            _assigned(10, 1, 1, distance_m=21400),
+            _assigned(11, 2, 1, distance_m=14000),
+        ],
+    )
+
+    result = await _reader(repo).get(1)
+
+    assert result.metrics is not None
+    assert result.metrics.total_distance_km == 35.4
+
+
+async def test_metrics_distance_and_idle_by_engineer_cover_every_engineer() -> None:
+    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    unused = _engineer(2, shift_start=time(9, 0), shift_end=time(18, 0))
+    repo = FakeRepo(plan, engineers=[_engineer(1), unused], assignments=[_assigned(10, 1, 1)])
+
+    result = await _reader(repo).get(1)
+
+    assert result.metrics is not None
+    assert set(result.metrics.distance_by_engineer) == {1, 2}
+    assert result.metrics.distance_by_engineer[2] == 0
+    assert set(result.metrics.idle_time_by_engineer_min) == {1, 2}
+    assert result.metrics.idle_time_by_engineer_min[2] == 9 * 60
+
+
+async def test_metrics_assigned_and_unassigned_counts() -> None:
+    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    repo = FakeRepo(
+        plan,
+        engineers=[_engineer(1)],
+        assignments=[_assigned(10, 1, 1), _assigned(11, 1, 2), _unassigned(12)],
+    )
+
+    result = await _reader(repo).get(1)
+
+    assert result.metrics is not None
+    assert (result.metrics.assigned_count, result.metrics.unassigned_count) == (2, 1)
+
+
+# --- compare ----------------------------------------------------------------------------
+
+
+def _multi_repo(
+    main_status: str = "done",
+    baseline_status: str = "done",
+    plan_ids: frozenset[int] = frozenset({1, 2}),
+) -> FakeRepo:
+    """Region 100 (plan 1, `main`): 2 brigades, both used, 30.0 km total. Region 200
+    (plan 2, `baseline`): 3 brigades, all used, 40.0 km total. `plan_ids` drops one of
+    the two plans out of `get_plan`'s dict, as if it never existed."""
+    plans = {
+        1: PlanRow(
+            id=1, region_id=100, algorithm="or_tools", status=main_status, failed_reason=None
+        ),
+        2: PlanRow(
+            id=2,
+            region_id=200,
+            algorithm="baseline_fcfs",
+            status=baseline_status,
+            failed_reason=None,
+        ),
+    }
+    return FakeRepo(
+        plans={k: v for k, v in plans.items() if k in plan_ids},
+        engineers_by_region={
+            100: [_engineer(1), _engineer(2)],
+            200: [_engineer(3), _engineer(4), _engineer(5)],
+        },
+        assignments_by_plan={
+            1: [
+                _assigned(10, 1, 1, distance_m=15000),
+                _assigned(11, 2, 1, distance_m=15000),
+            ],
+            2: [
+                _assigned(20, 3, 1, distance_m=10000),
+                _assigned(21, 4, 1, distance_m=15000),
+                _assigned(22, 5, 1, distance_m=15000),
+            ],
+        },
+    )
+
+
+async def test_compare_returns_engineers_used_and_total_distance_km() -> None:
+    entries = await _reader(_multi_repo()).compare(1, 2)
+
+    assert [e.metric for e in entries] == ["engineers_used", "total_distance_km"]
+    engineers_used, total_distance_km = entries
+    assert (engineers_used.main, engineers_used.baseline) == (2, 3)
+    assert (total_distance_km.main, total_distance_km.baseline) == (30.0, 40.0)
+
+
+async def test_compare_delta_is_main_minus_baseline() -> None:
+    entries = await _reader(_multi_repo()).compare(1, 2)
+
+    by_metric = {e.metric: e for e in entries}
+    assert by_metric["total_distance_km"].delta == -10.0
+    assert by_metric["engineers_used"].delta == -1
+
+
+async def test_compare_excludes_idle_time() -> None:
+    entries = await _reader(_multi_repo()).compare(1, 2)
+
+    assert "idle_time" not in {e.metric for e in entries}
+
+
+async def test_compare_main_not_found() -> None:
+    repo = _multi_repo(plan_ids=frozenset({2}))
+
+    with pytest.raises(NotFound) as e:
+        await _reader(repo).compare(1, 2)
+
+    assert e.value.reason == "plan_not_found"
+    assert e.value.params == {"plan_id": 1}
+    assert repo.get_plan_calls == [1]
+
+
+async def test_compare_baseline_not_found() -> None:
+    repo = _multi_repo(plan_ids=frozenset({1}))
+
+    with pytest.raises(NotFound) as e:
+        await _reader(repo).compare(1, 2)
+
+    assert e.value.reason == "plan_not_found"
+    assert e.value.params == {"plan_id": 2}
+    assert repo.get_plan_calls == [1, 2]
+
+
+@pytest.mark.parametrize("status", ["running", "failed"])
+async def test_compare_main_not_ready(status: str) -> None:
+    repo = _multi_repo(main_status=status)
+
+    with pytest.raises(InvalidInput) as e:
+        await _reader(repo).compare(1, 2)
+
+    assert e.value.reason == "plan_not_ready"
+    assert e.value.params is not None and e.value.params["plan_id"] == 1
+    assert repo.get_plan_calls == [1]
+
+
+@pytest.mark.parametrize("status", ["running", "failed"])
+async def test_compare_baseline_not_ready(status: str) -> None:
+    repo = _multi_repo(baseline_status=status)
+
+    with pytest.raises(InvalidInput) as e:
+        await _reader(repo).compare(1, 2)
+
+    assert e.value.reason == "plan_not_ready"
+    assert e.value.params is not None and e.value.params["plan_id"] == 2
+    assert repo.get_plan_calls == [1, 2]
+
+
+async def test_compare_dependency_unavailable_propagates() -> None:
+    repo = _multi_repo()
+    repo.error = DependencyUnavailable(reason="db_unavailable")
+
+    with pytest.raises(DependencyUnavailable):
+        await _reader(repo).compare(1, 2)

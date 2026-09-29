@@ -570,11 +570,11 @@ sequenceDiagram
 - `status=running` — построение ещё не завершилось (фоновая задача из
   `POST /plan/build` продолжает работать); `engineers` и `unassigned`
   в ответе отсутствуют.
-- `status=done` — построение завершилось успешно; `engineers` и
-  `unassigned` заполнены. Маршруты, объяснения и причины неназначенных
-  заявок — уже сохранённые данные построения; простой (`idle_time_min`)
-  каждой бригады пересчитывается из смены и сохранённых визитов при чтении,
-  не хранится отдельно.
+- `status=done` — построение завершилось успешно; `engineers`, `unassigned`
+  и `metrics` заполнены. Маршруты, объяснения и причины неназначенных
+  заявок — уже сохранённые данные построения; простой (`idle_time_min`) и
+  все поля `metrics` пересчитываются из смены и сохранённых визитов при
+  чтении, не хранятся отдельно.
 - `status=failed` — построение завершилось ошибкой; заполнено
   `failed_reason`, `engineers` и `unassigned` отсутствуют.
 
@@ -620,9 +620,73 @@ sequenceDiagram
             API-->>Client: 200 Plan
         else status=done
             PlanRepo-->>Svc: план (status=done), назначения, бригады региона
-            Svc->>Svc: собрать маршруты (idle_time_min из смены и визитов), без лога
-            Svc-->>API: Plan (status=done, engineers, unassigned)
+            Svc->>Svc: собрать маршруты (idle_time_min из смены и визитов) и metrics из них, без лога
+            Svc-->>API: Plan (status=done, engineers, unassigned, metrics)
             API-->>Client: 200 Plan
+        end
+    end
+```
+
+## `GET /api/v1/plan/{plan_id}/compare`
+
+Сравнивает `metrics` двух планов (`plan_id` из пути и `baseline_plan_id` из
+query) по каждой обязательной метрике — `engineers_used`, `total_distance_km`
+— и отвечает разницей. Оба плана читаются тем же методом, что отвечает на
+`GET /api/v1/plan/{plan_id}` (`Svc.get`), по одному за раз: сперва `plan_id`,
+и только если он готов — `baseline_plan_id`, так что проблема с главным
+планом никогда не трогает baseline вовсе. План не готов к сравнению, если у
+него ещё нет `metrics` (`status` не `done`). Разница считается тем же
+сервисом, а не маршрутом — маршрут только переводит доменный результат в
+контракт.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут plan)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (чтение плана)
+    participant PlanRepo as queries (планы)
+    participant DB as PostgreSQL
+
+    Client->>API: GET /api/v1/plan/42/compare?baseline_plan_id=41
+    alt plan_id или baseline_plan_id не целое или вне 1..2^63−1
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [plan_id | baseline_plan_id]}
+    else
+        API->>Svc: compare(plan_id, baseline_plan_id)
+        Svc->>Svc: get(plan_id)
+        Svc->>PlanRepo: план, его статус и (если есть) назначения и бригады региона
+        alt нет свободного соединения в пуле или БД недоступна
+            PlanRepo->>PlanRepo: лог db_query_failed
+            PlanRepo-->>Svc: DependencyUnavailable
+            Svc-->>API: DependencyUnavailable
+            API->>API: лог plan_compare_failed (error, plan_id, baseline_plan_id)
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела
+        else плана plan_id нет
+            PlanRepo-->>Svc: None
+            Svc-->>API: NotFound
+            API->>API: лог plan_compare_failed (warning, reason=plan_not_found)
+            API->>H: NotFound
+            H-->>Client: 404 без тела
+        else status plan_id не done
+            PlanRepo-->>Svc: план (status=running|failed)
+            Svc-->>API: InvalidInput(plan_not_ready) — baseline_plan_id не читается вовсе
+            API->>API: лог plan_compare_failed (warning, reason=plan_not_ready)
+            API->>H: InvalidInput
+            H-->>Client: 400 {message}
+        else
+            Svc->>Svc: get(baseline_plan_id) — та же последовательность ветвлений, что и для plan_id
+            alt baseline_plan_id не готов так же, как выше
+                Svc-->>API: DependencyUnavailable | NotFound | InvalidInput(plan_not_ready)
+                API->>API: лог plan_compare_failed
+                API->>H: та же ошибка
+                H-->>Client: 503 | 404 | 400
+            else оба плана done
+                Svc->>Svc: [engineers_used, total_distance_km] с delta = main − baseline
+                Svc-->>API: (PlanComparisonEntry, PlanComparisonEntry)
+                API-->>Client: 200 [PlanComparisonEntry, PlanComparisonEntry]
+            end
         end
     end
 ```

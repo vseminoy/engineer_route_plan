@@ -18,7 +18,7 @@ from src.domain import Engineer, Ticket
 from src.errors import InvalidInput
 from src.service.loader import LoadResult
 from src.service.plan_builder import QueuedPlan
-from src.service.plan_reader import PlanRead
+from src.service.plan_reader import MetricsRead, PlanRead
 from tests.api.region_fakes import (
     ENGINEER,
     TICKET,
@@ -78,6 +78,14 @@ _DONE_PLAN = PlanRead(
     failed_reason=None,
     engineers=(),
     unassigned=(),
+    metrics=MetricsRead(
+        engineers_used=0,
+        total_distance_km=0,
+        distance_by_engineer={},
+        assigned_count=0,
+        unassigned_count=0,
+        idle_time_by_engineer_min={},
+    ),
 )
 
 

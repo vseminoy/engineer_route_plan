@@ -17,7 +17,7 @@ from src.config import Settings
 from src.domain import Engineer, Point, Skill, Ticket, TicketStatus, VehicleType
 from src.service.loader import LoadResult
 from src.service.plan_builder import QueuedPlan
-from src.service.plan_reader import PlanRead
+from src.service.plan_reader import ComparisonEntryRead, MetricsRead, PlanRead
 from src.service.regions import Region
 from src.service.ticket_file import InvalidRow
 
@@ -144,7 +144,13 @@ class FakePlanBuilder:
 
 
 class FakePlanReader:
-    def __init__(self, plan: "PlanRead | None" = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        plan: "PlanRead | None" = None,
+        error: Exception | None = None,
+        compare_result: "tuple[ComparisonEntryRead, ...] | None" = None,
+        compare_error: Exception | None = None,
+    ) -> None:
         self.plan = plan or PlanRead(
             plan_id=1,
             algorithm="or_tools",
@@ -152,15 +158,37 @@ class FakePlanReader:
             failed_reason=None,
             engineers=(),
             unassigned=(),
+            metrics=MetricsRead(
+                engineers_used=0,
+                total_distance_km=0,
+                distance_by_engineer={},
+                assigned_count=0,
+                unassigned_count=0,
+                idle_time_by_engineer_min={},
+            ),
         )
         self.error = error
+        self.compare_result = compare_result or (
+            ComparisonEntryRead(metric="engineers_used", main=9, baseline=13, delta=-4),
+            ComparisonEntryRead(
+                metric="total_distance_km", main=187.3, baseline=244.9, delta=-57.6
+            ),
+        )
+        self.compare_error = compare_error
         self.calls: list[int] = []
+        self.compare_calls: list[tuple[int, int]] = []
 
     async def get(self, plan_id: int) -> PlanRead:
         self.calls.append(plan_id)
         if self.error:
             raise self.error
         return self.plan
+
+    async def compare(self, plan_id: int, baseline_plan_id: int) -> tuple[ComparisonEntryRead, ...]:
+        self.compare_calls.append((plan_id, baseline_plan_id))
+        if self.compare_error:
+            raise self.compare_error
+        return self.compare_result
 
 
 def client(

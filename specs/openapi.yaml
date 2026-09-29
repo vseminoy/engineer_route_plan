@@ -381,6 +381,62 @@ paths:
         "503":
           $ref: "./common.yaml#/components/responses/ServiceUnavailable"
           description: Недоступна база данных.
+
+  /api/v1/plan/{plan_id}/compare:
+    get:
+      operationId: compare_plan
+      summary: Сравнить обязательные метрики плана с baseline-планом
+      description: >-
+        Сравнивает план из пути запроса (обычно `algorithm=or_tools`) с
+        baseline-планом (`baseline_plan_id`, обычно `algorithm=baseline_fcfs`)
+        по обязательным метрикам (`engineers_used`, `total_distance_km`) —
+        по одной записи на каждую. Оба плана должны быть в состоянии
+        `status=done`: метрики строящегося или не сложившегося плана не
+        определены. `idle_time` в сравнение не входит — она только для
+        отображения (см. `PlanMetrics.idle_time_by_engineer_min`).
+      parameters:
+        - name: plan_id
+          in: path
+          required: true
+          description: Идентификатор плана на сервере
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 9223372036854775807
+        - name: baseline_plan_id
+          in: query
+          required: true
+          description: Идентификатор baseline-плана, с которым сравнивается plan_id
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 9223372036854775807
+      responses:
+        "200":
+          description: Сравнение по каждой обязательной метрике, в порядке engineers_used, total_distance_km
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PlanComparisonEntry"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+          description: >-
+            plan_id или baseline_plan_id вне допустимого диапазона (`fields`),
+            либо один из двух планов ещё не done (`message`).
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+          description: Плана с таким plan_id или baseline_plan_id нет.
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных.
+
 components:
   parameters:
     RegionQuery:
@@ -796,6 +852,76 @@ components:
         маршрутов недоступен, db_unavailable — недоступна база данных при сохранении плана,
         build_error — непредусмотренная ошибка построения
 
+    PlanMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        - engineers_used
+        - total_distance_km
+        - distance_by_engineer
+        - assigned_count
+        - unassigned_count
+        - idle_time_by_engineer_min
+      properties:
+        engineers_used:
+          type: integer
+          minimum: 0
+          description: Число бригад региона хотя бы с одним визитом в плане
+        total_distance_km:
+          type: number
+          minimum: 0
+          description: Суммарное расстояние всех маршрутов плана, километры
+        distance_by_engineer:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+          description: >-
+            Расстояние маршрута каждой бригады региона (ключ — engineer_id
+            строкой), километры; 0 у бригады без визитов
+        assigned_count:
+          type: integer
+          minimum: 0
+          description: Число назначенных заявок плана
+        unassigned_count:
+          type: integer
+          minimum: 0
+          description: Число неназначенных заявок плана
+        idle_time_by_engineer_min:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+          description: >-
+            Простой каждой бригады региона (ключ — engineer_id строкой), минуты;
+            то же значение, что и `EngineerRoute.idle_time_min`, только для отображения —
+            не входит ни в целевую функцию построения плана, ни в сравнение
+            (`GET /plan/{plan_id}/compare`)
+
+    PlanComparisonMetric:
+      type: string
+      enum: [engineers_used, total_distance_km]
+      description: >-
+        Обязательная метрика, участвующая в сравнении плана с baseline;
+        idle_time не сравнивается (метрика только для отображения)
+
+    PlanComparisonEntry:
+      type: object
+      additionalProperties: false
+      required: [metric, main, baseline, delta]
+      properties:
+        metric:
+          $ref: "#/components/schemas/PlanComparisonMetric"
+        main:
+          type: number
+          description: Значение метрики у плана из пути запроса
+        baseline:
+          type: number
+          description: Значение той же метрики у baseline-плана
+        delta:
+          type: number
+          description: main минус baseline; отрицательное значение — план лучше baseline
+
     Plan:
       type: object
       additionalProperties: false
@@ -825,6 +951,11 @@ components:
             - type: "null"
           description: >-
             Неназначенные заявки, по возрастанию ticket_id; null, если status не done
+        metrics:
+          anyOf:
+            - $ref: "#/components/schemas/PlanMetrics"
+            - type: "null"
+          description: Обязательные метрики плана; null, если status не done
         failed_reason:
           anyOf:
             - $ref: "#/components/schemas/PlanFailedReason"

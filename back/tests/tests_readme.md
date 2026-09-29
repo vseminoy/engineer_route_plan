@@ -760,14 +760,34 @@
 | Test | Scenario | Expected result |
 |---|---|---|
 | `test_plan_not_found` | `get_plan` возвращает `None` | `NotFound(reason="plan_not_found")` |
-| `test_running_plan_has_no_routes` | `status="running"` | `engineers`/`unassigned` — `None` |
-| `test_failed_plan_carries_reason` | `status="failed"`, `failed_reason` задан | тот же `failed_reason` в ответе; `engineers`/`unassigned` — `None` |
+| `test_running_plan_has_no_routes` | `status="running"` | `engineers`/`unassigned`/`metrics` — `None` |
+| `test_failed_plan_carries_reason` | `status="failed"`, `failed_reason` задан | тот же `failed_reason` в ответе; `engineers`/`unassigned`/`metrics` — `None` |
 | `test_done_plan_lists_every_region_engineer` | 2 бригады региона, назначение только у одной | обе в ответе, по возрастанию `engineer_id`; у незадействованной — пустой маршрут |
 | `test_visit_fields_and_distance_rounding` | визит с `travel_distance_m=1234` | `travel_distance_km == 1.2` (округление до 0.1 км), остальные поля визита как в строке |
 | `test_idle_time_is_shift_minus_travel_and_duration` | смена 120 мин, 2 визита (15+5 мин переезда, 30+20 мин на объекте) | `idle_time_min == 120 - 20 - 50` |
 | `test_visits_sorted_by_sequence_no` | строки назначений в БД в произвольном порядке | маршрут отсортирован по `sequence_no` |
 | `test_engineer_without_assignments_has_full_shift_idle` | у бригады нет ни одного назначения | `idle_time_min` — вся смена, `total_travel_time_min`/`total_distance_km` — 0 |
 | `test_get_plan_dependency_unavailable_propagates` | `get_plan` поднимает `DependencyUnavailable` | ошибка поднята как есть |
+| `test_metrics_engineers_used_counts_used_only` | 2 бригады региона, у одной 1 визит, у другой ни одного | `metrics.engineers_used == 1` |
+| `test_metrics_total_distance_km_sums_all_routes` | 2 бригады с маршрутами по 21.4 и 14.0 км | `metrics.total_distance_km == 35.4` |
+| `test_metrics_distance_and_idle_by_engineer_cover_every_engineer` | 2 бригады региона, у одной нет визитов | `distance_by_engineer` и `idle_time_by_engineer_min` содержат ключ каждой бригады (`engineer_id`), включая незадействованную — с 0 км и полной сменой простоя |
+| `test_metrics_assigned_and_unassigned_counts` | 2 назначенные заявки одной бригаде, 1 неназначенная | `assigned_count == 2`, `unassigned_count == 1` |
+
+### `compare`
+
+> Каждый план читается тем же путём, что и в `get` (`FakeRepo`, ключ — `plan_id`); синтетический
+> вход — 2 плана с разными `metrics`, не сами построение или бригады.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_compare_returns_engineers_used_and_total_distance_km` | план (`engineers_used=2, total_distance_km=30.0`), baseline (`engineers_used=3, total_distance_km=40.0`), оба `done` | список из 2 записей, `metric` по порядку `engineers_used`, `total_distance_km`; `main`/`baseline` — значения соответствующего плана |
+| `test_compare_delta_is_main_minus_baseline` | `total_distance_km`: main 30.0, baseline 40.0 | `delta == -10.0` у записи `total_distance_km` |
+| `test_compare_excludes_idle_time` | оба плана `done` | среди `metric` двух записей ответа нет `idle_time` |
+| `test_compare_main_not_found` | `get_plan(plan_id)` вернул `None` | `NotFound(reason="plan_not_found", params={"plan_id": ...})`; план-baseline не читается |
+| `test_compare_baseline_not_found` | план из пути `done`, `get_plan(baseline_plan_id)` вернул `None` | `NotFound(reason="plan_not_found", params={"plan_id": <baseline_plan_id>})` |
+| `test_compare_main_not_ready` (параметризован: `status="running"`, `status="failed"`) | план из пути не `done` | `InvalidInput(reason="plan_not_ready")`; план-baseline не читается |
+| `test_compare_baseline_not_ready` (параметризован: `status="running"`, `status="failed"`) | план из пути `done`, план-baseline не `done` | `InvalidInput(reason="plan_not_ready")` |
+| `test_compare_dependency_unavailable_propagates` | `get_plan` любого из двух планов поднимает `DependencyUnavailable` | ошибка поднята как есть |
 
 ## `src/clients/nominatim.py` — клиент Nominatim
 
@@ -1049,15 +1069,16 @@
 | `test_change_ticket_status_too_large` | тело больше предела 1024 байта | `413` без тела; сервис не вызван |
 | `test_ticket_status_get_not_implemented` | `GET /api/v1/tickets/87/status` | `501` без тела (метода нет у операции); сервис не вызван |
 
-## `api` — POST /api/v1/plan/build, GET /api/v1/plan/{plan_id}
+## `api` — POST /api/v1/plan/build, GET /api/v1/plan/{plan_id}, GET /api/v1/plan/{plan_id}/compare
 
 Файл: `tests/api/test_plan.py`.
 
 > Замена стабами: `PlanBuilder`/`PlanReader` — фейки через `app.dependency_overrides`
 > (`FakePlanBuilder`/`FakePlanReader` в `tests/api/region_fakes.py`), которые запоминают
-> вызовы и возвращают заданный результат или поднимают заданное исключение; БД, OSRM и
-> солвер не участвуют. `background_tasks.add_task` в `TestClient` выполняется до
-> возврата ответа клиенту, так что `build_calls` фейка проверяется сразу после запроса.
+> вызовы (включая `compare`) и возвращают заданный результат или поднимают заданное
+> исключение; БД, OSRM и солвер не участвуют. `background_tasks.add_task` в `TestClient`
+> выполняется до возврата ответа клиенту, так что `build_calls` фейка проверяется сразу
+> после запроса.
 
 | Test | Scenario | Expected result |
 |---|---|---|
@@ -1068,11 +1089,18 @@
 | `test_build_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `enqueue` поднимает эту ошибку | `503` \| `500` без тела |
 | `test_get_running_plan` | `PlanRead(status="running", ...)` | `200`, `engineers`/`unassigned`/`failed_reason` — `null` |
 | `test_get_failed_plan` | `PlanRead(status="failed", failed_reason=...)` | `200`, тот же `failed_reason`; `engineers`/`unassigned` — `null` |
-| `test_get_done_plan` | `PlanRead(status="done", ...)` с одной бригадой и одним визитом, одной неназначенной заявкой | `200`, тело `Plan` с `engineers`/`unassigned`, все поля контракта (`Visit`, `EngineerRoute`, `UnassignedTicket`) заполнены как в `PlanRead` |
+| `test_get_done_plan` | `PlanRead(status="done", ...)` с одной бригадой и одним визитом, одной неназначенной заявкой, заполненным `metrics` | `200`, тело `Plan` с `engineers`/`unassigned`/`metrics`, все поля контракта (`Visit`, `EngineerRoute`, `UnassignedTicket`, `PlanMetrics`) заполнены как в `PlanRead` |
 | `test_get_plan_not_found` | `reader.get` поднимает `NotFound` | `404` без тела |
 | `test_get_plan_invalid_id` | `plan_id=0` | `400` |
 | `test_get_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `reader.get` поднимает эту ошибку | `503` \| `500` без тела |
 | `test_build_and_get_failed_events_logged` | `enqueue`/`reader.get` поднимают `InvalidInput`/`NotFound` | записи `plan_build_failed`/`plan_get_failed` уровня `warning` с `reason` |
+| `test_compare_plan_returns_entries` | `reader.compare` возвращает 2 записи (`engineers_used`, `total_distance_km`) | `200`, тело — массив `PlanComparisonEntry` в том же порядке, поля `metric`/`main`/`baseline`/`delta` как вернул сервис |
+| `test_compare_plan_invalid_ids` (параметризован: `plan_id=0`, `baseline_plan_id=0`) | путь или query-параметр вне 1..2^63−1 | `400` |
+| `test_compare_plan_missing_baseline_query` | запрос без `baseline_plan_id` | `400` |
+| `test_compare_plan_not_found` | `reader.compare` поднимает `NotFound` | `404` без тела |
+| `test_compare_plan_not_ready` | `reader.compare` поднимает `InvalidInput(reason="plan_not_ready", message=...)` | `400`, `{"message": ...}` |
+| `test_compare_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `reader.compare` поднимает эту ошибку | `503` \| `500` без тела |
+| `test_compare_plan_failed_logged` | `reader.compare` поднимает `NotFound`/`InvalidInput` | запись `plan_compare_failed` уровня `warning` с `reason`, `plan_id`, `baseline_plan_id` |
 
 ## `api` — POST /api/v1/data/upload, POST /api/v1/data/demo
 
@@ -1213,7 +1241,9 @@
 > заявка с запрошенным статусом; построение плана — план в очереди с той же бригадой и
 > заявкой; чтение плана — план `done` без маршрутов и неназначенных), а на неизвестный
 > регион поднимают `InvalidInput` — так позитивные кейсы проверяют форму успешных ответов
-> без БД.
+> без БД. Чтение плана возвращает `metrics`, заполненный по той же схеме, что и
+> `engineers`/`unassigned`; сравнение планов (`compare`) возвращает фиксированный список из
+> двух корректных записей независимо от переданных `plan_id`/`baseline_plan_id`.
 
 | Test | Scenario | Expected result |
 |---|---|---|

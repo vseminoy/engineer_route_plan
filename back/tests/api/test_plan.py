@@ -4,8 +4,17 @@ import pytest
 
 from src.errors import AppError, DatabaseFailure, DependencyUnavailable, InvalidInput, NotFound
 from src.service.plan_builder import QueuedPlan
-from src.service.plan_reader import EngineerRouteRead, PlanRead, UnassignedRead, VisitRead
+from src.service.plan_reader import (
+    ComparisonEntryRead,
+    EngineerRouteRead,
+    MetricsRead,
+    PlanRead,
+    UnassignedRead,
+    VisitRead,
+)
 from tests.api.region_fakes import ENGINEER, TICKET, FakePlanBuilder, FakePlanReader, client
+
+COMPARE_URL = "/api/v1/plan/1/compare"
 
 BUILD_URL = "/api/v1/plan/build"
 
@@ -29,6 +38,7 @@ def test_build_plan_returns_202_running() -> None:
         "status": "running",
         "engineers": None,
         "unassigned": None,
+        "metrics": None,
         "failed_reason": None,
     }
     assert builder.enqueue_calls == [("east", date(2026, 9, 1), "or_tools")]
@@ -92,6 +102,7 @@ def test_get_running_plan() -> None:
             failed_reason=None,
             engineers=None,
             unassigned=None,
+            metrics=None,
         )
     )
     response = client(plan_reader=reader).get("/api/v1/plan/1")
@@ -103,6 +114,7 @@ def test_get_running_plan() -> None:
         "status": "running",
         "engineers": None,
         "unassigned": None,
+        "metrics": None,
         "failed_reason": None,
     }
 
@@ -116,6 +128,7 @@ def test_get_failed_plan() -> None:
             failed_reason="osrm_unavailable",
             engineers=None,
             unassigned=None,
+            metrics=None,
         )
     )
     response = client(plan_reader=reader).get("/api/v1/plan/1")
@@ -128,6 +141,7 @@ def test_get_failed_plan() -> None:
         "failed_reason": "osrm_unavailable",
         "engineers": None,
         "unassigned": None,
+        "metrics": None,
     }
 
 
@@ -159,6 +173,14 @@ def test_get_done_plan() -> None:
         unassigned=(
             UnassignedRead(ticket_id=22, reason_code="no_skill", explanation="нет навыка"),
         ),
+        metrics=MetricsRead(
+            engineers_used=1,
+            total_distance_km=5.4,
+            distance_by_engineer={11: 5.4},
+            assigned_count=1,
+            unassigned_count=1,
+            idle_time_by_engineer_min={11: 100},
+        ),
     )
     response = client(plan_reader=FakePlanReader(plan)).get("/api/v1/plan/1")
 
@@ -187,6 +209,14 @@ def test_get_done_plan() -> None:
             }
         ],
         "unassigned": [{"ticket_id": 22, "reason_code": "no_skill", "explanation": "нет навыка"}],
+        "metrics": {
+            "engineers_used": 1,
+            "total_distance_km": 5.4,
+            "distance_by_engineer": {"11": 5.4},
+            "assigned_count": 1,
+            "unassigned_count": 1,
+            "idle_time_by_engineer_min": {"11": 100},
+        },
         "failed_reason": None,
     }
 
@@ -233,3 +263,91 @@ def test_build_and_get_failed_events_logged(capsys: pytest.CaptureFixture[str]) 
     (record,) = events(capsys, "plan_get_failed")
     assert record["level"] == "warning"
     assert record["reason"] == "plan_not_found"
+
+
+def test_compare_plan_returns_entries() -> None:
+    reader = FakePlanReader(
+        compare_result=(
+            ComparisonEntryRead(metric="engineers_used", main=9, baseline=13, delta=-4),
+            ComparisonEntryRead(
+                metric="total_distance_km", main=187.3, baseline=244.9, delta=-57.6
+            ),
+        )
+    )
+
+    response = client(plan_reader=reader).get(COMPARE_URL, params={"baseline_plan_id": 2})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"metric": "engineers_used", "main": 9, "baseline": 13, "delta": -4},
+        {"metric": "total_distance_km", "main": 187.3, "baseline": 244.9, "delta": -57.6},
+    ]
+    assert reader.compare_calls == [(1, 2)]
+
+
+@pytest.mark.parametrize(
+    ("path", "params"),
+    [
+        ("/api/v1/plan/0/compare", {"baseline_plan_id": 2}),
+        ("/api/v1/plan/1/compare", {"baseline_plan_id": 0}),
+    ],
+    ids=["plan_id", "baseline_plan_id"],
+)
+def test_compare_plan_invalid_ids(path: str, params: dict[str, int]) -> None:
+    response = client().get(path, params=params)
+
+    assert response.status_code == 400
+
+
+def test_compare_plan_missing_baseline_query() -> None:
+    response = client().get(COMPARE_URL)
+
+    assert response.status_code == 400
+
+
+def test_compare_plan_not_found() -> None:
+    reader = FakePlanReader(compare_error=NotFound("plan_not_found", params={"plan_id": 2}))
+
+    response = client(plan_reader=reader).get(COMPARE_URL, params={"baseline_plan_id": 2})
+
+    assert response.status_code == 404
+    assert response.content == b""
+
+
+def test_compare_plan_not_ready() -> None:
+    reader = FakePlanReader(
+        compare_error=InvalidInput(
+            "plan_not_ready", message="План ещё не готов для сравнения", params={"plan_id": 1}
+        )
+    )
+
+    response = client(plan_reader=reader).get(COMPARE_URL, params={"baseline_plan_id": 2})
+
+    assert response.status_code == 400
+    assert response.json() == {"message": "План ещё не готов для сравнения"}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [DependencyUnavailable(reason="db_unavailable"), DatabaseFailure(reason="db_query_failed")],
+)
+def test_compare_plan_dependency_failure(error: AppError) -> None:
+    response = client(plan_reader=FakePlanReader(compare_error=error)).get(
+        COMPARE_URL, params={"baseline_plan_id": 2}
+    )
+
+    assert response.status_code == {DependencyUnavailable: 503, DatabaseFailure: 500}[type(error)]
+    assert response.content == b""
+
+
+def test_compare_plan_failed_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    from tests.log_records import events, json_logs
+
+    json_logs()
+    reader = FakePlanReader(compare_error=NotFound("plan_not_found", params={"plan_id": 2}))
+    client(plan_reader=reader).get(COMPARE_URL, params={"baseline_plan_id": 2})
+
+    (record,) = events(capsys, "plan_compare_failed")
+    assert record["level"] == "warning"
+    assert record["reason"] == "plan_not_found"
+    assert (record["plan_id"], record["baseline_plan_id"]) == (1, 2)

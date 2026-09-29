@@ -282,12 +282,16 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 процесс backend перезапускается во время расчёта, план так и остаётся в `running`: за это
 отвечает вызывающий (повторный `POST /plan/build`), отдельного механизма восстановления нет.
 
-`GET /plan/{plan_id}/compare?baseline_plan_id=...` — сравнение метрик двух планов:
+`GET /plan/{plan_id}/compare?baseline_plan_id=...` — сравнение обязательных метрик плана
+из пути (`plan_id`) с baseline-планом (`baseline_plan_id`), по одной записи на метрику,
+`delta` = план минус baseline (отрицательное значение — план лучше baseline). Оба плана
+должны быть `status=done`, иначе — `400`; план из пути проверяется первым, и если он ещё
+не готов, baseline вообще не читается.
 ```json
-{
-  "metric": "engineers_used", "main": 9, "baseline": 13, "delta": -4,
-  "metric_2": "total_distance_km", "main": 187.3, "baseline": 244.9, "delta": -57.6
-}
+[
+  {"metric": "engineers_used", "main": 9, "baseline": 13, "delta": -4},
+  {"metric": "total_distance_km", "main": 187.3, "baseline": 244.9, "delta": -57.6}
+]
 ```
 
 ### 4.3. Перепланирование

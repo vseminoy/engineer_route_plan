@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
+from typing_extensions import TypeAliasType
 
 
 class Status(StrEnum):
@@ -389,6 +390,60 @@ class PlanFailedReason(StrEnum):
     build_error = "build_error"
 
 
+DistanceByEngineerAdditionalProperty = TypeAliasType(
+    "DistanceByEngineerAdditionalProperty", Annotated[float, Field(ge=0.0)]
+)
+
+
+IdleTimeByEngineerMinAdditionalProperty = TypeAliasType(
+    "IdleTimeByEngineerMinAdditionalProperty", Annotated[int, Field(ge=0)]
+)
+
+
+class PlanMetrics(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    engineers_used: Annotated[
+        int, Field(description="Число бригад региона хотя бы с одним визитом в плане", ge=0)
+    ]
+    total_distance_km: Annotated[
+        float, Field(description="Суммарное расстояние всех маршрутов плана, километры", ge=0.0)
+    ]
+    distance_by_engineer: Annotated[
+        dict[str, DistanceByEngineerAdditionalProperty],
+        Field(
+            description="Расстояние маршрута каждой бригады региона (ключ — engineer_id строкой), километры; 0 у бригады без визитов"
+        ),
+    ]
+    assigned_count: Annotated[int, Field(description="Число назначенных заявок плана", ge=0)]
+    unassigned_count: Annotated[int, Field(description="Число неназначенных заявок плана", ge=0)]
+    idle_time_by_engineer_min: Annotated[
+        dict[str, IdleTimeByEngineerMinAdditionalProperty],
+        Field(
+            description="Простой каждой бригады региона (ключ — engineer_id строкой), минуты; то же значение, что и `EngineerRoute.idle_time_min`, только для отображения — не входит ни в целевую функцию построения плана, ни в сравнение (`GET /plan/{plan_id}/compare`)"
+        ),
+    ]
+
+
+class PlanComparisonMetric(StrEnum):
+    engineers_used = "engineers_used"
+    total_distance_km = "total_distance_km"
+
+
+class PlanComparisonEntry(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    metric: PlanComparisonMetric
+    main: Annotated[float, Field(description="Значение метрики у плана из пути запроса")]
+    baseline: Annotated[float, Field(description="Значение той же метрики у baseline-плана")]
+    delta: Annotated[
+        float,
+        Field(description="main минус baseline; отрицательное значение — план лучше baseline"),
+    ]
+
+
 class Plan(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -407,6 +462,10 @@ class Plan(BaseModel):
         Field(
             description="Неназначенные заявки, по возрастанию ticket_id; null, если status не done"
         ),
+    ] = None
+    metrics: Annotated[
+        PlanMetrics | None,
+        Field(description="Обязательные метрики плана; null, если status не done"),
     ] = None
     failed_reason: Annotated[
         PlanFailedReason | None, Field(description="Причина отказа; null, если status не failed")
