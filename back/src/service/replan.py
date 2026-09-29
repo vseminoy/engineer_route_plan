@@ -29,6 +29,7 @@ from src.repository.plans import AssignmentRow, AssignmentWrite, PlanRow
 from src.service.explain import UnassignedReason
 from src.service.loader import Connect
 from src.service.plan_builder import TableClient
+from src.service.ticket_types import Classification, TicketTypes
 
 logger = get_logger(__name__)
 
@@ -73,12 +74,35 @@ class NewUrgentTicketEvent:
 
 
 @dataclass(frozen=True)
+class RegularTicketInput:
+    """The client's input for `new_ticket`; `required_skill`/`priority`/`duration_min`
+    come from the ticket-type table (`type_bk`/`type_hd`), as at file load, not from this
+    input — unlike `IncidentInput`'s window, this one's window is the client's own."""
+
+    external_id: str
+    type_bk: str | None
+    type_hd: str
+    district: str | None
+    address: str
+    location: Point
+    required_vehicle: VehicleType | None
+    window_start: datetime
+    window_end: datetime
+
+
+@dataclass(frozen=True)
+class NewTicketEvent:
+    triggered_at: datetime
+    ticket: RegularTicketInput
+
+
+@dataclass(frozen=True)
 class TicketCancelledEvent:
     triggered_at: datetime
     ticket_id: int
 
 
-ReplanEvent = NewUrgentTicketEvent | TicketCancelledEvent
+ReplanEvent = NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent
 
 
 @dataclass(frozen=True)
@@ -161,6 +185,18 @@ class _Bid:
 
 
 @dataclass(frozen=True)
+class _FreeSlot:
+    """A `new_ticket` candidate's winning gap: `position` is where it goes in `tail`
+    (`0..len(tail)`); nothing in `tail` is recomputed, so `result` is the only new time."""
+
+    engineer: Engineer
+    frozen: list[AssignmentRow]
+    tail: list[AssignmentRow]
+    position: int
+    result: _StopResult
+
+
+@dataclass(frozen=True)
 class Replanner:
     connect: Connect
     get_plan: GetPlan
@@ -170,6 +206,7 @@ class Replanner:
     insert_ticket: InsertTicket
     insert_replanned_plan: InsertReplannedPlan
     osrm: TableClient
+    ticket_types: TicketTypes
     clock: Callable[[], datetime] = datetime.now
 
     async def replan(self, plan_id: int, event: ReplanEvent) -> ReplanOutcome:
@@ -203,6 +240,21 @@ class Replanner:
                 plan, event, new_ticket, engineers, tickets_by_id, parent_rows
             )
             event_type = "new_urgent_ticket"
+        elif isinstance(event, NewTicketEvent):
+            _validate_regular_ticket_window(plan.plan_date, event.ticket)
+            classification = self.ticket_types.classify(event.ticket.type_bk, event.ticket.type_hd)
+            if classification is None:
+                raise InvalidInput(
+                    "ticket_type_unknown",
+                    message="Пара типов заявки (type_bk, type_hd) не найдена в таблице соответствия",
+                )
+            draft = _regular_draft(event, classification)
+            new_ticket = _ticket_from_draft(_PLACEHOLDER_TICKET_ID, draft)
+            tickets_by_id[_PLACEHOLDER_TICKET_ID] = new_ticket
+            writes = await self._new_ticket(
+                plan, event, new_ticket, engineers, tickets_by_id, parent_rows
+            )
+            event_type = "new_ticket"
         else:
             ticket = tickets_by_id.get(event.ticket_id)
             if ticket is None:
@@ -348,6 +400,74 @@ class Replanner:
             )
         return _assemble(parent_rows, touched, unassigned_writes)
 
+    async def _new_ticket(
+        self,
+        plan: PlanRow,
+        event: NewTicketEvent,
+        new_ticket: Ticket,
+        engineers: Sequence[Engineer],
+        tickets_by_id: Mapping[int, Ticket],
+        parent_rows: Sequence[AssignmentRow],
+    ) -> list[AssignmentWrite]:
+        """No announce, no eviction: a candidate only offers a gap in its actual
+        route that the new ticket fits into without moving anything already there —
+        `tail` itself is never recomputed, only copied forward with a shifted
+        `sequence_no`."""
+        rows_by_engineer = _rows_by_engineer(parent_rows)
+        target = _stop_def(new_ticket)
+        ticket_id = new_ticket.id
+
+        skilled = [e for e in engineers if new_ticket.required_skill in e.skills]
+        candidates = [e for e in skilled if new_ticket.required_vehicle in (None, e.vehicle_type)]
+        if not candidates:
+            reason = UnassignedReason.NO_SKILL if not skilled else UnassignedReason.NO_VEHICLE
+            write = _unassigned_write(ticket_id, reason, _regular_unassigned_text(reason))
+            return _assemble(parent_rows, {}, [write])
+
+        best: _FreeSlot | None = None
+        for engineer in candidates:
+            anchor_point, anchor_time, frozen, tail = _state_at(
+                rows_by_engineer.get(engineer.id, ()), tickets_by_id, engineer, event.triggered_at
+            )
+            points = [anchor_point, *(tickets_by_id[r.ticket_id].location for r in tail), target.location]
+            matrix = await self.osrm.table(engineer.vehicle_type, points)
+            shift_end = datetime.combine(plan.plan_date, engineer.shift_end)
+            found = _free_slot_position(matrix, anchor_time, tail, tickets_by_id, target, shift_end)
+            if found is None:
+                continue
+            position, result = found
+            if best is None or result.arrival < best.result.arrival:
+                best = _FreeSlot(
+                    engineer=engineer, frozen=frozen, tail=tail, position=position, result=result
+                )
+
+        if best is None:
+            reason = UnassignedReason.ALL_ELIGIBLE_ENGINEERS_BOOKED_ELSEWHERE
+            write = _unassigned_write(ticket_id, reason, _regular_unassigned_text(reason))
+            return _assemble(parent_rows, {}, [write])
+
+        offset = len(best.frozen)
+        before = [
+            _copy_write(best.engineer, r, offset + i)
+            for i, r in enumerate(best.tail[: best.position], start=1)
+        ]
+        new_write = AssignmentWrite(
+            ticket_id=best.result.ticket_id,
+            engineer_id=best.engineer.id,
+            sequence_no=offset + best.position + 1,
+            planned_arrival=best.result.arrival,
+            travel_time_min=best.result.travel_min,
+            travel_distance_m=round(best.result.distance_m),
+            unassigned_reason=None,
+            explanation=_regular_assigned_text(best.engineer, best.result.arrival),
+        )
+        after = [
+            _copy_write(best.engineer, r, offset + best.position + 1 + i)
+            for i, r in enumerate(best.tail[best.position :], start=1)
+        ]
+        touched = {best.engineer.id: _frozen_writes(best.engineer, best.frozen) + before + [new_write] + after}
+        return _assemble(parent_rows, touched, [])
+
     async def _ticket_cancelled(
         self,
         plan: PlanRow,
@@ -412,6 +532,36 @@ def _incident_draft(plan_date: date, event: NewUrgentTicketEvent) -> TicketDraft
         window_start=event.triggered_at,
         window_end=day_end,
         duration_min=_INCIDENT_DURATION_MIN,
+        status=TicketStatus.SENT,
+        received_at=event.triggered_at,
+    )
+
+
+def _validate_regular_ticket_window(plan_date: date, ticket: RegularTicketInput) -> None:
+    if ticket.window_start >= ticket.window_end:
+        raise InvalidInput(
+            "window_order", message="Начало окна заявки должно быть раньше конца"
+        )
+    if ticket.window_start.date() != plan_date or ticket.window_end.date() != plan_date:
+        raise InvalidInput(
+            "window_date_mismatch", message="Окно заявки не приходится на дату плана"
+        )
+
+
+def _regular_draft(event: NewTicketEvent, classification: Classification) -> TicketDraft:
+    return TicketDraft(
+        external_id=event.ticket.external_id,
+        type_bk=event.ticket.type_bk,
+        type_hd=event.ticket.type_hd,
+        required_skill=classification.skill,
+        required_vehicle=event.ticket.required_vehicle,
+        priority=classification.priority,
+        district=event.ticket.district,
+        address=event.ticket.address,
+        location=event.ticket.location,
+        window_start=event.ticket.window_start,
+        window_end=event.ticket.window_end,
+        duration_min=classification.duration_min,
         status=TicketStatus.SENT,
         received_at=event.triggered_at,
     )
@@ -534,6 +684,83 @@ def _walk(
         time_ = end
         from_node = node
     return results
+
+
+def _free_slot_position(
+    matrix: TravelMatrix,
+    anchor_time: datetime,
+    tail: Sequence[AssignmentRow],
+    tickets_by_id: Mapping[int, Ticket],
+    target: _StopDef,
+    shift_end: datetime,
+) -> tuple[int, _StopResult] | None:
+    """The gap (`0..len(tail)`) with the earliest arrival on `target` that fits without
+    moving anything already in `tail`: arriving in `target`'s own window, and — unless
+    it is the last gap, checked against `shift_end` instead — not later at the next
+    already-promised visit than that visit's own stored `planned_arrival`. Point `i`
+    of `matrix` is `tail[i - 1]` for `1 <= i <= len(tail)`, the anchor is point `0`, and
+    `target` is point `len(tail) + 1` — the same layout `_candidate_state` builds."""
+    k = len(tail)
+    best: tuple[int, _StopResult] | None = None
+    for p in range(k + 1):
+        prev_time = anchor_time if p == 0 else _visit_end(tail[p - 1], tickets_by_id)
+        duration_s = matrix.durations_s[p][k + 1]
+        distance_m = matrix.distances_m[p][k + 1]
+        if duration_s is None or distance_m is None:
+            continue
+        travel_min = math.ceil(duration_s / 60)
+        arrival = prev_time + timedelta(minutes=travel_min)
+        start = max(arrival, target.window_start)
+        if start > target.window_end:
+            continue
+        end = start + timedelta(minutes=target.duration_min)
+        if p < k:
+            next_duration_s = matrix.durations_s[k + 1][p + 1]
+            if next_duration_s is None:
+                continue
+            next_arrival = end + timedelta(minutes=math.ceil(next_duration_s / 60))
+            next_planned_arrival = tail[p].planned_arrival
+            assert next_planned_arrival is not None
+            if next_arrival > next_planned_arrival:
+                continue
+        elif end > shift_end:
+            continue
+        result = _StopResult(
+            ticket_id=target.ticket_id,
+            arrival=arrival,
+            start=start,
+            end=end,
+            travel_min=travel_min,
+            distance_m=distance_m,
+        )
+        if best is None or result.arrival < best[1].arrival:
+            best = (p, result)
+    return best
+
+
+def _visit_end(row: AssignmentRow, tickets_by_id: Mapping[int, Ticket]) -> datetime:
+    """A brigade that arrives before a ticket's window opens waits for it (as `_walk` and
+    `baseline.py` both do) — `row.planned_arrival` is the raw arrival, not the start of
+    service, so skipping this `max()` would understate how long the visit actually took."""
+    assert row.planned_arrival is not None
+    window_start = tickets_by_id[row.ticket_id].window_start
+    start = max(row.planned_arrival, window_start)
+    return start + timedelta(minutes=row.duration_min)
+
+
+def _copy_write(engineer: Engineer, row: AssignmentRow, sequence_no: int) -> AssignmentWrite:
+    """`row` unchanged but for `sequence_no` — a `new_ticket` gap insertion never
+    recomputes an existing visit's time, so this is a copy, not a recomputation."""
+    return AssignmentWrite(
+        ticket_id=row.ticket_id,
+        engineer_id=engineer.id,
+        sequence_no=sequence_no,
+        planned_arrival=row.planned_arrival,
+        travel_time_min=row.travel_time_min,
+        travel_distance_m=row.travel_distance_m,
+        unassigned_reason=None,
+        explanation=row.explanation,
+    )
 
 
 async def _candidate_state(
@@ -733,6 +960,21 @@ def _evicted_unassigned_text(reason: UnassignedReason) -> str:
     if reason is UnassignedReason.NO_VEHICLE:
         return "Заявка снята вытеснением: ни одна другая бригада не располагает нужным транспортом."
     return "Заявка снята вытеснением и не нашла места среди остальных бригад без нарушения окон."
+
+
+def _regular_assigned_text(engineer: Engineer, arrival: datetime) -> str:
+    return (
+        f"Бригада «{engineer.name}», прибытие {arrival:%H:%M} — вставлена в свободный "
+        "интервал маршрута, без сдвига уже стоящих заявок."
+    )
+
+
+def _regular_unassigned_text(reason: UnassignedReason) -> str:
+    if reason is UnassignedReason.NO_SKILL:
+        return "Ни одна бригада региона с нужным навыком не найдена."
+    if reason is UnassignedReason.NO_VEHICLE:
+        return "Ни одна бригада с нужным навыком не располагает нужным транспортом."
+    return "Свободного интервала без сдвига уже стоящих заявок не нашлось ни у одной бригады."
 
 
 def _remap_ticket_id(writes: Sequence[AssignmentWrite], old: int, new: int) -> list[AssignmentWrite]:

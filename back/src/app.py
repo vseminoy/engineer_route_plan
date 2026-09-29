@@ -64,12 +64,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             nominatim = create_nominatim_client(
                 app_settings.nominatim_url, app_settings.nominatim_user_agent
             )
-            app.state.loader, app.state.region_lists = create_data_services(
+            app.state.loader, app.state.region_lists, ticket_types = create_data_services(
                 app_settings, db_pool, nominatim
             )
             app.state.ticket_statuses = create_ticket_statuses(db_pool)
             app.state.plan_builder, app.state.plan_reader, app.state.replanner = create_plan_services(
-                app_settings, db_pool, app.state.region_lists.regions, osrm_client, plan_pool
+                app_settings,
+                db_pool,
+                app.state.region_lists.regions,
+                osrm_client,
+                plan_pool,
+                ticket_types,
             )
             logger.info("app_started", mode=app_settings.app_mode)
             yield

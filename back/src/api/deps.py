@@ -53,9 +53,11 @@ async def get_db_connection(request: Request) -> AsyncIterator[AsyncConnection[A
 
 def create_data_services(
     settings: Settings, db_pool: AsyncConnectionPool, nominatim: NominatimClient | None
-) -> tuple[Loader, RegionLists]:
+) -> tuple[Loader, RegionLists, TicketTypes]:
     """Reads the region, ticket type and geocache files; a malformed one stops the
-    startup instead of failing the first request."""
+    startup instead of failing the first request. `TicketTypes` is also returned for
+    `create_plan_services`: `replan`'s `new_ticket` event classifies a ticket by the same
+    table the loader uses, not a second copy of it."""
     regions = Regions.from_file(DATA_DIR / "regions.toml")
     geocoder = Geocoder(
         GeoCache.from_file(DATA_DIR / "geocache.csv"),
@@ -63,15 +65,10 @@ def create_data_services(
         regions.remote_towns,
         settings.nominatim_max_lookups,
     )
-    loader = Loader(
-        regions,
-        TicketTypes.from_file(DATA_DIR / "ticket_types.toml"),
-        geocoder,
-        db_pool.connection,
-        replace_region_data,
-    )
+    ticket_types = TicketTypes.from_file(DATA_DIR / "ticket_types.toml")
+    loader = Loader(regions, ticket_types, geocoder, db_pool.connection, replace_region_data)
     lists = RegionLists(regions, db_pool.connection, get_region_id, list_engineers, list_tickets)
-    return loader, lists
+    return loader, lists, ticket_types
 
 
 def create_ticket_statuses(db_pool: AsyncConnectionPool) -> TicketStatuses:
@@ -84,6 +81,7 @@ def create_plan_services(
     regions: Regions,
     osrm: OsrmClient,
     pool: ProcessPoolExecutor,
+    ticket_types: TicketTypes,
 ) -> tuple[PlanBuilder, PlanReader, Replanner]:
     builder = PlanBuilder(
         regions=regions,
@@ -114,6 +112,7 @@ def create_plan_services(
         insert_ticket=insert_ticket,
         insert_replanned_plan=insert_replanned_plan,
         osrm=osrm,
+        ticket_types=ticket_types,
     )
     return builder, reader, replanner
 

@@ -21,8 +21,10 @@ from src.service.plan_reader import (
 from src.service.replan import (
     AssignmentChange,
     IncidentInput,
+    NewTicketEvent,
     NewUrgentTicketEvent,
     PlanDiff,
+    RegularTicketInput,
     ReplanEvent,
     Replanner,
     TicketCancelledEvent,
@@ -180,15 +182,19 @@ async def compare_plan(
     return [_comparison_entry(e) for e in entries]
 
 
-def _triggered_at(value: api.LocalDateTime) -> datetime:
+def _field_datetime(value: api.LocalDateTime, field: str) -> datetime:
     """As `_plan_date`: the contract's pattern already rejects a malformed grouping, only
     a non-existent calendar date/time (2026-02-30) still needs rejecting here."""
     try:
         return datetime.fromisoformat(value.root)
     except ValueError:
         raise InvalidInput(
-            "triggered_at_invalid", fields=[("triggered_at", "Несуществующие дата или время")]
+            "datetime_invalid", fields=[(field, "Несуществующие дата или время")]
         ) from None
+
+
+def _triggered_at(value: api.LocalDateTime) -> datetime:
+    return _field_datetime(value, "triggered_at")
 
 
 def _incident_input(t: api.IncidentTicketInput) -> IncidentInput:
@@ -203,6 +209,20 @@ def _incident_input(t: api.IncidentTicketInput) -> IncidentInput:
     )
 
 
+def _regular_ticket_input(t: api.RegularTicketInput) -> RegularTicketInput:
+    return RegularTicketInput(
+        external_id=t.external_id,
+        type_bk=t.type_bk,
+        type_hd=t.type_hd,
+        district=t.district,
+        address=t.address,
+        location=Point(lat=t.location.lat, lon=t.location.lon),
+        required_vehicle=VehicleType(t.required_vehicle.value) if t.required_vehicle else None,
+        window_start=_field_datetime(t.window_start, "ticket.window_start"),
+        window_end=_field_datetime(t.window_end, "ticket.window_end"),
+    )
+
+
 def _replan_event(body: api.ReplanEventRequest) -> ReplanEvent:
     event = body.root
     if isinstance(event, api.NewUrgentTicketEvent):
@@ -210,6 +230,11 @@ def _replan_event(body: api.ReplanEventRequest) -> ReplanEvent:
             triggered_at=_triggered_at(event.triggered_at),
             ticket=_incident_input(event.ticket),
             reaction_min=event.reaction_min if event.reaction_min is not None else 120,
+        )
+    if isinstance(event, api.NewTicketEvent):
+        return NewTicketEvent(
+            triggered_at=_triggered_at(event.triggered_at),
+            ticket=_regular_ticket_input(event.ticket),
         )
     return TicketCancelledEvent(
         triggered_at=_triggered_at(event.triggered_at), ticket_id=event.ticket_id

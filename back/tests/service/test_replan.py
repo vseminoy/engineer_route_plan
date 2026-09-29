@@ -1,7 +1,8 @@
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,10 +13,15 @@ from src.errors import Conflict, InvalidInput, NotFound
 from src.repository.plans import AssignmentRow, AssignmentWrite, PlanRow
 from src.service.replan import (
     IncidentInput,
+    NewTicketEvent,
     NewUrgentTicketEvent,
+    RegularTicketInput,
     Replanner,
     TicketCancelledEvent,
 )
+from src.service.ticket_types import TicketTypes
+
+TICKET_TYPES = TicketTypes.from_file(Path(__file__).resolve().parents[2] / "data" / "ticket_types.toml")
 
 DAY = date(2026, 9, 1)
 TRIGGERED_AT = datetime(2026, 9, 1, 12, 0)
@@ -187,6 +193,7 @@ def _replanner(repo: FakeRepo, osrm: FakeOsrm) -> Replanner:
         insert_ticket=repo.insert_ticket,
         insert_replanned_plan=repo.insert_replanned_plan,
         osrm=osrm,
+        ticket_types=TICKET_TYPES,
         clock=lambda: datetime(2026, 9, 1, 12, 0),
     )
 
@@ -448,6 +455,182 @@ async def test_ticket_cancelled_ticket_not_yet_cancelled() -> None:
     with pytest.raises(Conflict) as e:
         await replanner.replan(10, event)
     assert e.value.reason == "ticket_not_cancelled"
+
+
+# --- new_ticket: free-interval insertion (no announce, no eviction) -----------------------
+
+REGULAR_TICKET = RegularTicketInput(
+    external_id="REG1",
+    type_bk="Локальная заявка",
+    type_hd="Нет линка",
+    district=None,
+    address="ул. Обычная",
+    location=OTHER_POINT,
+    required_vehicle=None,
+    window_start=datetime(2026, 9, 1, 9, 0),
+    window_end=datetime(2026, 9, 1, 20, 0),
+)
+
+
+async def test_new_ticket_fits_free_interval_after_last_visit() -> None:
+    engineer = _engineer(1, (Skill.LOCAL_WORK,))
+    existing = _ticket(
+        50,
+        required_skill=Skill.LOCAL_WORK,
+        window_start=datetime(2026, 9, 1, 9, 0),
+        window_end=datetime(2026, 9, 1, 12, 0),
+        duration_min=20,
+    )
+    repo = FakeRepo(
+        plan=_plan(),
+        engineers=[engineer],
+        tickets=[existing],
+        assignments=[_row(50, 1, 1, duration_min=20, planned_arrival=datetime(2026, 9, 1, 9, 5))],
+    )
+    replanner = _replanner(repo, FakeOsrm())
+    event = NewTicketEvent(triggered_at=TRIGGERED_AT, ticket=REGULAR_TICKET)
+
+    outcome = await replanner.replan(10, event)
+
+    writes = _writes_of(repo)
+    existing_write = _by_ticket(writes, 50)
+    assert existing_write.sequence_no == 1
+    assert existing_write.planned_arrival == datetime(2026, 9, 1, 9, 5)
+    assert existing_write.explanation == "назначено"
+    new_write = _by_ticket(writes, 100)
+    assert new_write.engineer_id == 1
+    assert new_write.sequence_no == 2
+    assert new_write.planned_arrival == datetime(2026, 9, 1, 9, 30)
+    assert "свободный интервал" in new_write.explanation
+    assert repo.inserted_tickets[0].required_skill == Skill.LOCAL_WORK
+    assert repo.inserted_tickets[0].priority == 3
+    assert repo.inserted_tickets[0].duration_min == 30
+    assert outcome.diff.newly_assigned == [100]
+    assert not any(c.ticket_id == 50 for c in outcome.diff.changed_assignments)
+    assert outcome.diff.plan_stability == 1
+
+
+async def test_new_ticket_middle_gap_anchors_on_service_start_not_raw_arrival() -> None:
+    """A tail visit that arrived early waits for its own window before starting service —
+    the next gap's anchor must be the true end of that wait, not `planned_arrival +
+    duration_min` alone (that would understate an early arrival's real finish time)."""
+    engineer = _engineer(1, (Skill.LOCAL_WORK,))
+    early_arrival = _ticket(
+        50,
+        required_skill=Skill.LOCAL_WORK,
+        window_start=datetime(2026, 9, 1, 9, 0),
+        window_end=datetime(2026, 9, 1, 20, 0),
+        duration_min=10,
+    )
+    later = _ticket(
+        51,
+        required_skill=Skill.LOCAL_WORK,
+        window_start=datetime(2026, 9, 1, 9, 0),
+        window_end=datetime(2026, 9, 1, 20, 0),
+        duration_min=15,
+    )
+    repo = FakeRepo(
+        plan=_plan(),
+        engineers=[engineer],
+        tickets=[early_arrival, later],
+        assignments=[
+            _row(50, 1, 1, duration_min=10, planned_arrival=datetime(2026, 9, 1, 8, 10)),
+            _row(51, 1, 2, duration_min=15, planned_arrival=datetime(2026, 9, 1, 10, 30)),
+        ],
+    )
+    replanner = _replanner(repo, FakeOsrm())
+    event = NewTicketEvent(triggered_at=TRIGGERED_AT, ticket=REGULAR_TICKET)
+
+    outcome = await replanner.replan(10, event)
+
+    writes = _writes_of(repo)
+    first = _by_ticket(writes, 50)
+    assert first.sequence_no == 1
+    new_write = _by_ticket(writes, 100)
+    assert new_write.sequence_no == 2
+    second = _by_ticket(writes, 51)
+    assert second.sequence_no == 3
+    # 08:10 arrival waits for the 09:00 window, service ends 09:10; +5 min travel = 09:15.
+    # The bug under test anchored on 08:10 + 10 = 08:20 instead, giving 08:25.
+    assert new_write.planned_arrival == datetime(2026, 9, 1, 9, 15)
+    assert outcome.diff.newly_assigned == [100]
+
+
+async def test_new_ticket_no_skilled_engineer_is_unassigned() -> None:
+    engineer = _engineer(1, (Skill.EMERGENCY,))
+    repo = FakeRepo(plan=_plan(), engineers=[engineer], tickets=[], assignments=[])
+    replanner = _replanner(repo, FakeOsrm())
+    event = NewTicketEvent(triggered_at=TRIGGERED_AT, ticket=REGULAR_TICKET)
+
+    outcome = await replanner.replan(10, event)
+
+    write = _by_ticket(_writes_of(repo), 100)
+    assert write.engineer_id is None
+    assert write.unassigned_reason == "no_skill"
+    assert outcome.diff.plan_stability == 0
+
+
+async def test_new_ticket_no_free_interval_is_unassigned() -> None:
+    engineer = _engineer(1, (Skill.LOCAL_WORK,), shift_start=time(8, 0), shift_end=time(11, 0))
+    existing = _ticket(
+        50,
+        required_skill=Skill.LOCAL_WORK,
+        window_start=datetime(2026, 9, 1, 9, 0),
+        window_end=datetime(2026, 9, 1, 9, 10),
+        duration_min=100,
+    )
+    repo = FakeRepo(
+        plan=_plan(),
+        engineers=[engineer],
+        tickets=[existing],
+        assignments=[_row(50, 1, 1, duration_min=100, planned_arrival=datetime(2026, 9, 1, 9, 5))],
+    )
+    replanner = _replanner(repo, FakeOsrm())
+    event = NewTicketEvent(triggered_at=TRIGGERED_AT, ticket=REGULAR_TICKET)
+
+    outcome = await replanner.replan(10, event)
+
+    write = _by_ticket(_writes_of(repo), 100)
+    assert write.engineer_id is None
+    assert write.unassigned_reason == "all_eligible_engineers_booked_elsewhere"
+    assert outcome.diff.plan_stability == 0
+
+
+async def test_new_ticket_window_order_is_rejected() -> None:
+    repo = FakeRepo(plan=_plan(), engineers=[], tickets=[], assignments=[])
+    replanner = _replanner(repo, FakeOsrm())
+    bad = replace(REGULAR_TICKET, window_start=datetime(2026, 9, 1, 12, 0), window_end=datetime(2026, 9, 1, 12, 0))
+    event = NewTicketEvent(triggered_at=TRIGGERED_AT, ticket=bad)
+
+    with pytest.raises(InvalidInput) as e:
+        await replanner.replan(10, event)
+    assert e.value.reason == "window_order"
+
+
+async def test_new_ticket_window_date_mismatch_is_rejected() -> None:
+    repo = FakeRepo(plan=_plan(), engineers=[], tickets=[], assignments=[])
+    replanner = _replanner(repo, FakeOsrm())
+    bad = replace(
+        REGULAR_TICKET,
+        window_start=datetime(2026, 9, 2, 9, 0),
+        window_end=datetime(2026, 9, 2, 20, 0),
+    )
+    event = NewTicketEvent(triggered_at=TRIGGERED_AT, ticket=bad)
+
+    with pytest.raises(InvalidInput) as e:
+        await replanner.replan(10, event)
+    assert e.value.reason == "window_date_mismatch"
+
+
+async def test_new_ticket_unknown_type_is_rejected() -> None:
+    repo = FakeRepo(plan=_plan(), engineers=[], tickets=[], assignments=[])
+    replanner = _replanner(repo, FakeOsrm())
+    bad = replace(REGULAR_TICKET, type_bk=None, type_hd="Совершенно неизвестный тип")
+    event = NewTicketEvent(triggered_at=TRIGGERED_AT, ticket=bad)
+
+    with pytest.raises(InvalidInput) as e:
+        await replanner.replan(10, event)
+    assert e.value.reason == "ticket_type_unknown"
 
 
 # --- validation ------------------------------------------------------------------------

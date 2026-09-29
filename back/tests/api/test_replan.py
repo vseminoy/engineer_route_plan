@@ -9,7 +9,13 @@ from src.errors import (
     NotFound,
 )
 from src.service.plan_reader import MetricsRead, PlanRead
-from src.service.replan import AssignmentChange, NewUrgentTicketEvent, PlanDiff, ReplanOutcome
+from src.service.replan import (
+    AssignmentChange,
+    NewTicketEvent,
+    NewUrgentTicketEvent,
+    PlanDiff,
+    ReplanOutcome,
+)
 from tests.api.region_fakes import FakePlanReader, FakeReplanner, client
 
 REPLAN_URL = "/api/v1/plan/1/replan"
@@ -27,6 +33,22 @@ NEW_URGENT_TICKET_BODY = {
         "required_vehicle": None,
     },
     "reaction_min": 90,
+}
+
+NEW_TICKET_BODY = {
+    "event_type": "new_ticket",
+    "triggered_at": "2026-09-01T12:00:00",
+    "ticket": {
+        "external_id": "REG1",
+        "type_bk": "Локальная заявка",
+        "type_hd": "Нет линка",
+        "district": None,
+        "address": "ул. Обычная, 1",
+        "location": {"lat": 55.7, "lon": 37.7},
+        "required_vehicle": None,
+        "window_start": "2026-09-01T09:00:00",
+        "window_end": "2026-09-01T20:00:00",
+    },
 }
 
 TICKET_CANCELLED_BODY = {
@@ -115,6 +137,50 @@ def test_replan_ticket_cancelled_reaches_the_service() -> None:
     assert event.ticket_id == 21  # type: ignore[union-attr]
 
 
+def test_replan_new_ticket_reaches_the_service() -> None:
+    replanner = FakeReplanner()
+    response = client(replanner=replanner).post(REPLAN_URL, json=NEW_TICKET_BODY)
+
+    assert response.status_code == 200
+    [(plan_id, event)] = replanner.calls
+    assert plan_id == 1
+    assert isinstance(event, NewTicketEvent)
+    assert event.ticket.external_id == "REG1"
+    assert event.ticket.window_start.isoformat() == "2026-09-01T09:00:00"
+    assert event.ticket.window_end.isoformat() == "2026-09-01T20:00:00"
+
+
+def test_replan_new_ticket_invalid_window_date() -> None:
+    body = {
+        **NEW_TICKET_BODY,
+        "ticket": {**NEW_TICKET_BODY["ticket"], "window_start": "2026-02-30T09:00:00"},  # type: ignore[dict-item]
+    }
+    response = client().post(REPLAN_URL, json=body)
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "fields": [{"name": "ticket.window_start", "message": "Несуществующие дата или время"}]
+    }
+
+
+def test_replan_new_ticket_window_order_rejected_by_service() -> None:
+    replanner = FakeReplanner(error=InvalidInput("window_order", message="Окно некорректно"))
+    response = client(replanner=replanner).post(REPLAN_URL, json=NEW_TICKET_BODY)
+
+    assert response.status_code == 400
+    assert response.json() == {"message": "Окно некорректно"}
+
+
+def test_replan_new_ticket_unknown_type_rejected_by_service() -> None:
+    replanner = FakeReplanner(
+        error=InvalidInput("ticket_type_unknown", message="Неизвестный тип заявки")
+    )
+    response = client(replanner=replanner).post(REPLAN_URL, json=NEW_TICKET_BODY)
+
+    assert response.status_code == 400
+    assert response.json() == {"message": "Неизвестный тип заявки"}
+
+
 def test_replan_default_reaction_min_is_120() -> None:
     body = {**NEW_URGENT_TICKET_BODY}
     del body["reaction_min"]
@@ -133,6 +199,8 @@ def test_replan_default_reaction_min_is_120() -> None:
         {"event_type": "unknown_event", "triggered_at": "2026-09-01T12:00:00"},
         {**NEW_URGENT_TICKET_BODY, "extra": 1},
         {**TICKET_CANCELLED_BODY, "ticket_id": 0},
+        {**NEW_TICKET_BODY, "ticket": {**NEW_TICKET_BODY["ticket"], "window_end": None}},  # type: ignore[dict-item]
+        {**NEW_TICKET_BODY, "extra": 1},
     ],
 )
 def test_replan_rejects_malformed_body(body: dict[str, object]) -> None:

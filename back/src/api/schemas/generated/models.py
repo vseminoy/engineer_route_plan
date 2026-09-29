@@ -504,7 +504,67 @@ class IncidentTicketInput(BaseModel):
     ]
 
 
+class RegularTicketInput(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    external_id: Annotated[
+        str,
+        Field(description="Номер заявки во внешней системе (HD/BK); не уникален", max_length=200),
+    ]
+    type_bk: Annotated[
+        str | None,
+        Field(
+            description="Тип заявки BK; вместе с type_hd определяет required_skill/priority/duration_min",
+            max_length=200,
+        ),
+    ]
+    type_hd: Annotated[
+        str,
+        Field(
+            description="Тип заявки HD; вместе с type_bk определяет required_skill/priority/duration_min",
+            max_length=200,
+        ),
+    ]
+    district: Annotated[
+        str | None, Field(description="Район; null, если не указан", max_length=200)
+    ]
+    address: Annotated[str, Field(description="Адрес выезда", max_length=300)]
+    location: Point
+    required_vehicle: Annotated[
+        VehicleType | None,
+        Field(description="Транспорт, который требует заявка; null — подходит любой"),
+    ]
+    window_start: Annotated[
+        LocalDateTime, Field(description="Начало окна, в которое бригада должна прибыть")
+    ]
+    window_end: Annotated[
+        LocalDateTime, Field(description="Конец окна прибытия; строго позже начала")
+    ]
+
+
 class EventType(StrEnum):
+    new_ticket = "new_ticket"
+
+
+class NewTicketEvent(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    event_type: Annotated[
+        EventType,
+        Field(description="Тип события — новая обычная заявка, поступившая в течение дня"),
+    ]
+    triggered_at: Annotated[
+        LocalDateTime,
+        Field(
+            description="Момент поступления заявки; план перестраивается от состояния бригад на этот момент"
+        ),
+    ]
+    ticket: RegularTicketInput
+
+
+class EventType1(StrEnum):
     new_urgent_ticket = "new_urgent_ticket"
 
 
@@ -512,7 +572,7 @@ class NewUrgentTicketEvent(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    event_type: Annotated[EventType, Field(description="Тип события — новая аварийная заявка")]
+    event_type: Annotated[EventType1, Field(description="Тип события — новая аварийная заявка")]
     triggered_at: Annotated[
         LocalDateTime,
         Field(
@@ -530,7 +590,7 @@ class NewUrgentTicketEvent(BaseModel):
     ] = 120
 
 
-class EventType1(StrEnum):
+class EventType2(StrEnum):
     ticket_cancelled = "ticket_cancelled"
 
 
@@ -538,7 +598,7 @@ class TicketCancelledEvent(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    event_type: Annotated[EventType1, Field(description="Тип события — заявка отменена")]
+    event_type: Annotated[EventType2, Field(description="Тип события — заявка отменена")]
     triggered_at: Annotated[
         LocalDateTime, Field(description="Момент отмены; определяет состояние бригад на пересчёте")
     ]
@@ -547,9 +607,9 @@ class TicketCancelledEvent(BaseModel):
     ]
 
 
-class ReplanEventRequest(RootModel[NewUrgentTicketEvent | TicketCancelledEvent]):
+class ReplanEventRequest(RootModel[NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent]):
     root: Annotated[
-        NewUrgentTicketEvent | TicketCancelledEvent,
+        NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent,
         Field(description="Одно событие перепланирования; тип определяет event_type."),
     ]
 

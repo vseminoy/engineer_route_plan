@@ -770,6 +770,11 @@ sequenceDiagram
             API->>API: лог plan_replan_failed (warning, reason=window_order)
             API->>H: InvalidInput
             H-->>Client: 400 {message}
+        else event_type = new_ticket и window_start/window_end не на дату плана
+            Svc-->>API: InvalidInput(window_date_mismatch)
+            API->>API: лог plan_replan_failed (warning, reason=window_date_mismatch)
+            API->>H: InvalidInput
+            H-->>Client: 400 {message}
         else event_type = new_ticket и пара (type_bk, type_hd) не найдена в таблице соответствия типов
             Svc-->>API: InvalidInput(ticket_type_unknown)
             API->>API: лог plan_replan_failed (warning, reason=ticket_type_unknown)
