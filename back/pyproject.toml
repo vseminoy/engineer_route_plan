@@ -14,6 +14,8 @@ dependencies = [
     "aiosql>=13,<16",
     # Starlette parses multipart forms (the data file upload) with it.
     "python-multipart>=0.0.22,<0.1",
+    # The routing solver: RoutingModel with time windows, allowed vehicles, disjunctions.
+    "ortools>=9.15,<10",
 ]
 
 [project.optional-dependencies]
@@ -51,3 +53,8 @@ known-third-party = ["alembic"]
 python_version = "3.11"
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# OR-Tools ships `.pyi` stubs without a `py.typed` marker.
+module = ["ortools.*"]
+ignore_missing_imports = true

@@ -286,6 +286,42 @@ async def test_table_url_too_long(capsys: pytest.CaptureFixture[str]) -> None:
         ),
         (httpx.Response(502, text="Bad Gateway"), "http_error"),
         (httpx.Response(200, text="[" * 200_000), "malformed_response"),
+        (
+            httpx.Response(
+                200,
+                json={"code": "Ok", "durations": [[0, -1], [1, 0]], "distances": [[0, 1], [1, 0]]},
+            ),
+            "malformed_response",
+        ),
+        (
+            httpx.Response(
+                200,
+                json={"code": "Ok", "durations": [[0, 1], [1, 0]], "distances": [[0, -1], [1, 0]]},
+            ),
+            "malformed_response",
+        ),
+        (
+            httpx.Response(
+                200,
+                json={
+                    "code": "Ok",
+                    "durations": [[0, 100_000], [1, 0]],
+                    "distances": [[0, 1], [1, 0]],
+                },
+            ),
+            "malformed_response",
+        ),
+        (
+            httpx.Response(
+                200,
+                json={
+                    "code": "Ok",
+                    "durations": [[0, None], [1, 0]],
+                    "distances": [[0, 1], [1, 0]],
+                },
+            ),
+            "malformed_response",
+        ),
     ],
     ids=[
         "not-json",
@@ -297,6 +333,10 @@ async def test_table_url_too_long(capsys: pytest.CaptureFixture[str]) -> None:
         "number-overflow",
         "non-json-error-status",
         "deep-nesting",
+        "negative-duration",
+        "negative-distance",
+        "duration-over-a-day",
+        "no-route-disagreement",
     ],
 )
 async def test_table_malformed_response(

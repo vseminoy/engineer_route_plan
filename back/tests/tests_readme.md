@@ -20,6 +20,7 @@
 - [`src/service/loader.py` — загрузка данных региона](#srcserviceloaderpy--загрузка-данных-региона)
 - [`src/service/region_lists.py` — регионы, бригады и заявки региона](#srcserviceregion_listspy--регионы-бригады-и-заявки-региона)
 - [`src/service/ticket_status.py` — переходы статусов заявки](#srcserviceticket_statuspy--переходы-статусов-заявки)
+- [`src/service/solver.py` — модель солвера (один проход)](#srcservicesolverpy--модель-солвера-один-проход)
 - [`src/clients/nominatim.py` — клиент Nominatim](#srcclientsnominatimpy--клиент-nominatim)
 - [`src/clients/osrm.py` — клиент OSRM](#srcclientsosrmpy--клиент-osrm)
 - [`scripts/build_geocache.py` — сборка гео-кэша](#scriptsbuild_geocachepy--сборка-гео-кэша)
@@ -465,6 +466,95 @@
 | `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; запись `db_query_failed` с `query = change_ticket_status` |
 | `test_commit_failure_is_dependency_unavailable` | статус записан, фиксация транзакции поднимает `OperationalError` | `DependencyUnavailable(reason="db_unavailable")`; одна запись `db_query_failed` с `query = change_ticket_status`; записи `ticket_status_changed` нет |
 
+## `src/service/solver.py` — модель солвера (один проход)
+
+Файл: `tests/service/test_solver.py`.
+
+> Мок не нужен: солвер — чистая функция, OR-Tools не мокается. Вход — маленький
+> синтетический: 1–3 бригады, 1–8 заявок, матрицы времени и расстояния задаются в тесте по
+> типам транспорта (секунды и метры), день плана — `2026-09-01`. Каждый результат проверяет
+> независимая проверка допустимости `assert_feasible` (в тестовом модуле): каждая заявка —
+> не больше одного раза и либо в маршруте, либо в неназначенных; у бригады маршрута есть
+> навык заявки и требуемый транспорт; прибытие — точно самое раннее, что позволяет переезд
+> по матрице профиля бригады (секунды вверх до минуты); начало работ — точно самое раннее из
+> прибытия и начала окна; выезд не раньше начала смены; окончание последней работы не позже
+> конца смены. `SolveWithParameters` подменяется дважды: возвращает `None` в тесте ветки
+> «решение не найдено», и вызовом, который поднимает исключение, если его вообще вызвали, —
+> там, где заявка должна быть отсеяна раньше модели. Логи — разбором JSON-строк stderr
+> (`capsys`, `tests/log_records.py`).
+
+### Допустимость: навык и транспорт
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_skill_required` | заявка `emergency`; бригада A без `emergency` ближе, бригада B с `emergency` дальше | заявка у B; `assert_feasible` проходит |
+| `test_no_engineer_with_skill` | заявка `emergency`, ни у одной бригады нет `emergency` | заявка в неназначенных; маршрутов с визитами нет |
+| `test_required_vehicle` | заявка требует `foot`; бригада с `car` ближе, бригада с `foot` дальше, обе с навыком | заявка у бригады с `foot` |
+| `test_no_engineer_with_vehicle` | заявка требует `bike`; бригады с навыком — только `car` и `foot`; бригада с `bike` без навыка | заявка в неназначенных |
+| `test_skill_and_vehicle_together` | 3 бригады: навык без транспорта, транспорт без навыка, навык и транспорт | заявка у третьей бригады |
+
+### Время: окна, смены, переезды
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_early_arrival_waits_for_window` | бригада со сменой с 10:00 доезжает за 10 мин, окно 12:00–14:00 | прибытие 10:10, начало работ 12:00, окончание — 12:00 + длительность |
+| `test_arrival_inside_window` | окно 10:30–11:00, переезд 20 мин, смена с 10:00 | прибытие 10:20, начало работ 10:30 — не раньше начала окна |
+| `test_window_unreachable` | окно 10:00–10:15, переезд 30 мин, смена с 10:00 | заявка в неназначенных |
+| `test_window_outside_plan_day` | окно заявки на следующий день | заявка в неназначенных, OR-Tools её не получает |
+| `test_window_starts_the_day_before` | окно открылось накануне 22:00, закрывается 11:00 | внутри дня окно зажато с полуночи; начало работ — не раньше выезда бригады |
+| `test_window_ends_the_day_after` | окно закрывается в 1:00 следующих суток, смена до 23:59, работа 30/70 мин | 30 мин — назначена; 70 мин — в неназначенных: не успевает до конца суток |
+| `test_window_with_seconds_rounds_up` | окно открывается в 10:00:30 | начало работ — 10:01, не раньше 10:00:30 |
+| `test_departure_not_before_shift` | смена с 15:30, окно 10:00–16:00, переезд 10 мин | прибытие не раньше 15:40, начало работ 15:40 |
+| `test_work_ends_within_shift` | смена до 18:00, окно 17:00–17:30, работа 70 мин | заявка в неназначенных: работа закончилась бы в 18:10 |
+| `test_return_trip_not_counted` | смена до 18:00, работа заканчивается в 17:55, обратный путь к старту 60 мин | заявка назначена: маршрут открытый |
+| `test_shift_capacity` | 1 бригада, смена 10:00–12:00, 4 заявки по 50 мин с широкими окнами и переездом 5 мин | назначены 2, остальные в неназначенных; окончание последней работы не позже 12:00 |
+| `test_travel_by_engineer_profile` | 2 бригады с одним навыком, `car` и `foot`, из одной точки; по матрице `car` 10 мин, по `foot` 60 мин; окно 10:00–10:30 | заявка у бригады с `car`; прибытие 10:10 |
+| `test_no_route_between_points` | в матрице профиля бригады A между её стартом и заявкой нет маршрута (`None`), у B маршрут есть | заявка у B; при единственной бригаде A — в неназначенных |
+| `test_travel_rounded_up_to_minute` | переезд 61 с | переезд 2 мин; прибытие = выезд + 2 мин |
+| `test_times_naive_whole_minutes` | любой план | все моменты — наивные `datetime` дня плана с нулевыми секундами |
+
+### Целевая функция
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_emergency_over_any_lower` | 1 бригада, в смене помещается только одно из: 1 авария или 3 подключения | назначена авария, 3 подключения в неназначенных |
+| `test_connection_over_repairs` | 1 бригада, помещается только одно из: 1 подключение или 2 ремонта | назначено подключение |
+| `test_fewer_engineers_preferred` | 2 одинаковые бригады, 3 заявки умещаются в смену одной | все 3 назначены одной бригаде; у второй нет визитов |
+| `test_coverage_over_engineers` | 3 заявки умещаются только у двух бригад | назначены все 3, задействованы 2 бригады |
+| `test_shorter_order_chosen` | 1 бригада, 3 заявки на прямой, окна на весь день | порядок посещения по прямой от старта; суммарный переезд минимален |
+
+### Бригада — одна «машина»; результат
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_route_per_engineer` | 3 бригады, 8 заявок | по одному маршруту на каждую бригаду, в порядке бригад входа; каждая заявка ровно один раз — в маршруте или в неназначенных |
+| `test_visit_fields` | 1 бригада, 2 заявки | у визита: id заявки, прибытие, начало и окончание работ, переезд в минутах и метрах из матриц профиля бригады |
+| `test_random_instances_feasible` | 20 случайных входов (seed 0–19): 3 бригады со случайными навыками, транспортом и сменами, 8 заявок со случайными окнами | `assert_feasible` проходит на каждом |
+| `test_no_engineers` | ноль бригад, 2 заявки | `OPTIMAL`, маршрутов нет, обе заявки в неназначенных; OR-Tools не вызван |
+| `test_no_tickets` | 2 бригады, ноль заявок | `OPTIMAL`, маршруты обеих бригад без визитов |
+| `test_matrix_size_mismatch` | число точек матрицы не равно бригады + заявки | `ValueError` |
+| `test_missing_matrix_for_vehicle` | у бригады `bike`, матрицы `bike` нет | `ValueError` |
+| `test_shift_start_not_before_end_rejected` | у бригады смена задана с 20:00 по 10:00 | `ValueError`, проверка до вызова OR-Tools |
+
+### Статус решения и логи
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_penalties_reject_too_many_ranks` | сумма штрафов приближается к переполнению int64 | `ValueError` |
+| `test_penalties_dominate_strictly` | 3 ранга приоритета с разным числом заявок | штраф более срочного ранга больше суммы штрафов всех менее срочных вместе |
+| `test_status_feasible_or_optimal` | обычный вход | статус `OPTIMAL` или `FEASIBLE`; запись `solver_finished` уровня `info` со `status`, `duration_ms`, `vehicles`, `nodes`, `dropped` |
+| `test_no_solution` | `SolveWithParameters` возвращает `None` | статус `INFEASIBLE`, маршрутов нет; запись `solver_finished` уровня `warning` со `status = INFEASIBLE` |
+| `test_logs_no_ticket_data` | план с назначенными и неназначенными заявками | в записях лога нет id заявок, точек и адресов — только статус и счётчики |
+
+### Проверка допустимости `assert_feasible` ловит нарушение
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_checker_fails_on_skill` | план, где заявка у бригады без её навыка | `AssertionError` |
+| `test_checker_fails_on_vehicle` | заявка с требуемым транспортом у бригады с другим | `AssertionError` |
+| `test_checker_fails_on_window` | начало работ после окончания окна; прибытие раньше, чем позволяет переезд | `AssertionError` |
+| `test_checker_fails_on_shift` | выезд раньше начала смены; окончание работ позже конца смены | `AssertionError` |
+
 ## `src/clients/nominatim.py` — клиент Nominatim
 
 Файл: `tests/clients/test_nominatim.py`.
@@ -509,7 +599,7 @@
 | `test_table_error_code` (параметризован: `TooBig`, `NoSegment`, `InvalidQuery`) | ответ `400 {code: <код>, message: …}` | `DependencyUnavailable(reason="osrm_unavailable")`; `osrm_request_failed` со `status = 400`, `error = <код>` |
 | `test_table_timeout_and_network_error` | транспорт поднимает `httpx.ReadTimeout` и `httpx.ConnectError` | `DependencyUnavailable`; `osrm_request_failed` без `status`, `error` — класс исключения |
 | `test_table_url_too_long` | `table(car, …)` по 4000 точкам (`max_table_size = 4000`) — URL длиннее предела httpx | `DependencyUnavailable`, а не `httpx.InvalidURL`; `osrm_request_failed` с `error = InvalidURL`, `points = 4000` |
-| `test_table_malformed_response` (параметризован: тело не JSON при `200`; `200 {code: Ok}` без `durations`; строк меньше, чем точек; `code` ≠ `Ok` при `200`; ячейка `Infinity`; ячейка `NaN`; целое вне диапазона `float`; `502` с текстовым телом; тело `200` глубже стека парсера JSON) | ответ графа, лог на уровне `debug` | `DependencyUnavailable`; одна запись `osrm_request_failed` с `duration_ms` и `error = malformed_response` (для `code` ≠ `Ok` — `error = <код>`, для `502` без JSON — `error = http_error`); записи `osrm_request_finished` нет — отвергнутый ответ не считается выполненным запросом |
+| `test_table_malformed_response` (параметризован: тело не JSON при `200`; `200 {code: Ok}` без `durations`; строк меньше, чем точек; `code` ≠ `Ok` при `200`; ячейка `Infinity`; ячейка `NaN`; целое вне диапазона `float`; `502` с текстовым телом; тело `200` глубже стека парсера JSON; ячейка времени в пути отрицательна; ячейка расстояния отрицательна; ячейка времени в пути больше суток; `null` в `durations`, но не в `distances` той же пары) | ответ графа, лог на уровне `debug` | `DependencyUnavailable`; одна запись `osrm_request_failed` с `duration_ms` и `error = malformed_response` (для `code` ≠ `Ok` — `error = <код>`, для `502` без JSON — `error = http_error`); записи `osrm_request_finished` нет — отвергнутый ответ не считается выполненным запросом |
 | `test_graph_failure_does_not_affect_other_graphs` | граф `foot` отвечает `503`, граф `car` — `200` | `table(foot, …)` — `DependencyUnavailable`; следующий `table(car, …)` возвращает матрицу |
 
 ### Маршрут `route`

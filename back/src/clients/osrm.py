@@ -111,10 +111,25 @@ class OsrmClient:
                 found = body["durations"], body["distances"]
                 if any(len(m) != count or any(len(row) != n for row in m) for m in found):
                     raise ValueError("matrix size differs from the request")
-                return (
-                    [[_cell(v) for v in row] for row in found[0]],
-                    [[_cell(v) for v in row] for row in found[1]],
-                )
+                durations = [
+                    [_cell(v, ceiling=_MAX_TABLE_SECONDS) for v in row] for row in found[0]
+                ]
+                distances = [
+                    [_cell(v, ceiling=_MAX_TABLE_DISTANCE_M) for v in row] for row in found[1]
+                ]
+                # `osrm-routed` marks an unreachable pair `null` in both matrices together; a
+                # cell missing in one but not the other is not a travel time or a distance,
+                # only a malformed answer — and a caller that reads one matrix as the other's
+                # "no route" flag must never see them disagree.
+                if any(
+                    (d is None) != (m is None)
+                    for drow, mrow in zip(durations, distances, strict=True)
+                    for d, m in zip(drow, mrow, strict=True)
+                ):
+                    raise ValueError(
+                        "durations and distances disagree on which pairs have no route"
+                    )
+                return durations, distances
 
             strip_durations, strip_distances = await self._get(graph, "table", points, params, rows)
             durations += strip_durations
@@ -239,8 +254,19 @@ def _number(value: object) -> float:
     return number
 
 
-def _cell(value: object) -> float | None:
-    return None if value is None else _number(value)
+# A day's matrix is at most ~530 points, and even the slowest of them is inside a region; a
+# cell this far outside that range is a malformed answer, not a real travel time or distance.
+_MAX_TABLE_SECONDS = 24 * 3600
+_MAX_TABLE_DISTANCE_M = 2_000_000.0
+
+
+def _cell(value: object, *, ceiling: float) -> float | None:
+    if value is None:
+        return None
+    number = _number(value)
+    if not (0 <= number <= ceiling):
+        raise ValueError("table cell out of range")
+    return number
 
 
 def create_osrm_client(settings: Settings) -> OsrmClient:

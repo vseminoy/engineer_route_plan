@@ -28,6 +28,7 @@ back/.env.*.local
 /docs/ideas.md
 /docs/application.md
 AGENTS.md
+CLAUDE.md
 .DS_Store
 home.md
 server.md

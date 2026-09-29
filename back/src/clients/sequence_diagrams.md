@@ -75,7 +75,8 @@ sequenceDiagram
             O-->>C: ответ с ошибкой
             C->>C: лог osrm_request_failed (status, error=code или http_error)
             C-->>S: DependencyUnavailable(osrm_unavailable)
-        else 200, но нет durations/distances, размер не тот, ячейка не число или не конечна
+        else 200, но нет durations/distances, размер не тот, ячейка не число, не конечна,
+             отрицательна или больше суток
             O-->>C: 200 {code: Ok, …}
             C->>C: лог osrm_request_failed (status=200, error=malformed_response)
             C-->>S: DependencyUnavailable(osrm_unavailable)
