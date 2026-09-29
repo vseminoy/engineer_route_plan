@@ -695,14 +695,15 @@ sequenceDiagram
 
 Синхронная операция — ответ `200` уже несёт готовый план, очереди и фоновой задачи, в
 отличие от `POST /api/v1/plan/build`, здесь нет. Тело — одно событие
-(`ReplanEventRequest`, `oneOf` по `event_type`): `new_urgent_ticket` или
-`ticket_cancelled`; ещё два вида события бизнес-процесса (обычная новая заявка —
-changeset 17, недоступность бригады — вне текущей декомпозиции) контрактом не описаны
-и здесь не принимаются — неизвестное значение `event_type` проваливает `oneOf` и
-уходит по общей ветке `400 {fields}`. Сам механизм Contract Net (объявление задания
-бригадам-кандидатам, ставки, победитель, каскад вытеснения глубиной 1 для аварии) — в
-разделе сервисного слоя «Перепланирование: Contract Net»; здесь — только HTTP-ветки
-маршрута и персист. Новый план хранит полный набор
+(`ReplanEventRequest`, `oneOf` по `event_type`): `new_urgent_ticket`, `new_ticket` или
+`ticket_cancelled`; ещё один вид события бизнес-процесса (недоступность бригады — вне
+текущей декомпозиции) контрактом не описан и здесь не принимается — неизвестное
+значение `event_type` проваливает `oneOf` и уходит по общей ветке `400 {fields}`. Сам
+механизм Contract Net для `new_urgent_ticket` (объявление задания бригадам-кандидатам,
+ставки, победитель, каскад вытеснения глубиной 1) и вставка `new_ticket` в свободный
+интервал маршрута (без объявления и без вытеснения) — в разделе сервисного слоя
+«Перепланирование: Contract Net»; здесь — только HTTP-ветки маршрута и персист. Новый
+план хранит полный набор
 `assignments` региона (как и построение с нуля), а не только строки затронутых
 Contract Net бригад: `GET /api/v1/plan/{plan_id}` читает `assignments` целиком по
 `plan_id` и не знает о `parent_plan_id` — частичный персист оставил бы незатронутые
@@ -764,6 +765,16 @@ sequenceDiagram
             API->>API: лог plan_replan_failed (warning, reason=triggered_at_out_of_range)
             API->>H: InvalidInput
             H-->>Client: 400 {message}
+        else event_type = new_ticket и window_start ≥ window_end
+            Svc-->>API: InvalidInput(window_order)
+            API->>API: лог plan_replan_failed (warning, reason=window_order)
+            API->>H: InvalidInput
+            H-->>Client: 400 {message}
+        else event_type = new_ticket и пара (type_bk, type_hd) не найдена в таблице соответствия типов
+            Svc-->>API: InvalidInput(ticket_type_unknown)
+            API->>API: лог plan_replan_failed (warning, reason=ticket_type_unknown)
+            API->>H: InvalidInput
+            H-->>Client: 400 {message}
         else
             Svc->>Svc: state_at(plan, triggered_at) — заморозка in_progress, исключение completed/cancelled
             alt event_type = new_urgent_ticket
@@ -778,10 +789,22 @@ sequenceDiagram
                     OSRM-->>Svc: время в пути по кандидатам
                     Svc->>Svc: contract_net(ticket, кандидаты) → победитель или eviction-каскад глубиной 1 (см. service-диаграмму)
                 end
+            else event_type = new_ticket
+                Svc->>OSRM: время в пути между точкой освобождения/визитами каждого кандидата (навык+транспорт заявки) и новой заявкой
+                alt OSRM недоступен
+                    OSRM-->>Svc: DependencyUnavailable
+                    Svc-->>API: DependencyUnavailable
+                    API->>API: лог plan_replan_failed (error, reason=osrm_unavailable)
+                    API->>H: DependencyUnavailable
+                    H-->>Client: 503 без тела
+                else
+                    OSRM-->>Svc: время в пути по кандидатам
+                    Svc->>Svc: свободный интервал у кандидата (без объявления, без вытеснения) → бригада+позиция или unassigned (см. service-диаграмму)
+                end
             else event_type = ticket_cancelled
                 Svc->>Svc: снять заявку с маршрута бригады, сдвинуть последующие визиты
             end
-            Svc->>PlanRepo: BEGIN; [new_urgent_ticket] INSERT tickets (авария, серверные required_skill/priority/duration_min/received_at/окно); INSERT plans (parent_plan_id=42, status='done'); INSERT assignments — по одной строке на каждую открытую заявку региона: у незатронутых бригад копия строки parent_plan_id, у затронутых — новое назначение (или unassigned); COMMIT
+            Svc->>PlanRepo: BEGIN; [new_urgent_ticket, new_ticket] INSERT tickets (серверные required_skill/priority/duration_min/received_at, у new_ticket — из таблицы соответствия типов); INSERT plans (parent_plan_id=42, status='done'); INSERT assignments — по одной строке на каждую открытую заявку региона: у незатронутых бригад копия строки parent_plan_id, у затронутых — новое назначение (или unassigned); COMMIT
             alt БД отклонила запрос или недоступна
                 PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
                 Svc-->>API: DependencyUnavailable | DatabaseFailure

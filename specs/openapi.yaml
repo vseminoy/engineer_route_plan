@@ -1085,6 +1085,71 @@ components:
             - $ref: "#/components/schemas/VehicleType"
             - type: "null"
 
+    RegularTicketInput:
+      type: object
+      additionalProperties: false
+      required:
+        - external_id
+        - type_bk
+        - type_hd
+        - district
+        - address
+        - location
+        - required_vehicle
+        - window_start
+        - window_end
+      properties:
+        external_id:
+          type: string
+          maxLength: 200
+          description: Номер заявки во внешней системе (HD/BK); не уникален
+        type_bk:
+          type: [string, "null"]
+          maxLength: 200
+          description: Тип заявки BK; вместе с type_hd определяет required_skill/priority/duration_min
+        type_hd:
+          type: string
+          maxLength: 200
+          description: Тип заявки HD; вместе с type_bk определяет required_skill/priority/duration_min
+        district:
+          type: [string, "null"]
+          maxLength: 200
+          description: Район; null, если не указан
+        address:
+          type: string
+          maxLength: 300
+          description: Адрес выезда
+        location:
+          $ref: "#/components/schemas/Point"
+        required_vehicle:
+          description: Транспорт, который требует заявка; null — подходит любой
+          anyOf:
+            - $ref: "#/components/schemas/VehicleType"
+            - type: "null"
+        window_start:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+          description: Начало окна, в которое бригада должна прибыть
+        window_end:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+          description: Конец окна прибытия; строго позже начала
+
+    NewTicketEvent:
+      type: object
+      additionalProperties: false
+      required: [event_type, triggered_at, ticket]
+      properties:
+        event_type:
+          type: string
+          enum: [new_ticket]
+          description: Тип события — новая обычная заявка, поступившая в течение дня
+        triggered_at:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+          description: >-
+            Момент поступления заявки; план перестраивается от состояния
+            бригад на этот момент
+        ticket:
+          $ref: "#/components/schemas/RegularTicketInput"
+
     NewUrgentTicketEvent:
       type: object
       additionalProperties: false
@@ -1132,6 +1197,7 @@ components:
       description: Одно событие перепланирования; тип определяет event_type.
       oneOf:
         - $ref: "#/components/schemas/NewUrgentTicketEvent"
+        - $ref: "#/components/schemas/NewTicketEvent"
         - $ref: "#/components/schemas/TicketCancelledEvent"
 
     AssignmentChange:
