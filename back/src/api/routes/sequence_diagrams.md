@@ -256,41 +256,301 @@ sequenceDiagram
     end
 ```
 
-## `GET /api/v1/engineers`, `GET /api/v1/tickets`
+## `GET /api/v1/engineer-sets`
 
-Списки бригад и заявок одного региона, по возрастанию `id`, без постраничной выдачи: в
-регионе не больше 500 заявок (предел файла). Сервис сначала проверяет код по
-конфигурации регионов, потом находит id региона в БД по коду и читает строки по `region_id`.
-Строк других регионов в ответе не бывает: запрос отбирает строки по id региона. Регион из конфигурации без загруженных
-данных — пустой список, не ошибка. Репозиторий переводит геометрию в точку
-`{lat, lon}`, время смены — в `ЧЧ:ММ`, окна заявок — в местное время без пояса.
-Назначений заявок в списке нет, они в плане. Бизнес-ошибку маршрут логирует как
-`list_engineers_failed` / `list_tickets_failed`.
+Наборы бригад одного региона: всегда есть `default` (создан первой загрузкой данных
+региона), может быть несколько `generated`. Сервис проверяет код региона по конфигурации,
+затем читает строки `engineer_sets` по `region_id`; региона без загруженных данных (нет
+строки региона, значит нет и наборов) — пустой список. `description` каждого набора
+собирается из его же строки (`engineers`, `morning_share`, `evening_share`, `seed`), не
+хранится отдельно.
 
 ```mermaid
 sequenceDiagram
     participant Client
-    participant API as api (маршрут engineers | tickets)
+    participant API as api (маршрут engineer-sets)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (наборы бригад)
+    participant Repo as queries (регионы/наборы)
+    participant DB as PostgreSQL
+
+    Client->>API: GET /api/v1/engineer-sets?region=east
+    alt region не по шаблону или нет параметра
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [region]}
+    else
+        API->>Svc: list(region)
+        alt регион не из конфигурации
+            Svc-->>API: InvalidInput(fields: region)
+            API->>API: лог list_engineer_sets_failed (warning, reason=unknown_region)
+            API->>H: InvalidInput
+            H-->>Client: 400 {fields: [region]}
+        else нет свободного соединения в пуле или БД недоступна
+            Svc->>Svc: лог db_query_failed
+            Svc-->>API: DependencyUnavailable
+            API->>API: лог list_engineer_sets_failed (error)
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела
+        else регион не загружен
+            Svc->>Repo: id региона по коду
+            Repo->>DB: SELECT id FROM regions WHERE code
+            DB-->>Repo: нет строки
+            Repo-->>Svc: None
+            Svc-->>API: []
+            API-->>Client: 200 []
+        else
+            Repo->>DB: SELECT ... FROM engineer_sets WHERE region_id ORDER BY id
+            DB-->>Repo: строки наборов
+            Repo-->>Svc: EngineerSet[] (description собран из параметров каждой строки)
+            Svc-->>API: EngineerSet[]
+            API-->>Client: 200 [EngineerSet]
+        end
+    end
+```
+
+## `POST /api/v1/engineer-sets`
+
+Создаёт дополнительный набор (`kind=generated`) тем же генератором, что и `default`:
+проверяет регион, границы параметров и уникальность `name` в регионе, затем генерирует
+бригады набора (`office`/удалённые города — из уже загруженных данных региона) и
+сохраняет набор и его бригады в одной транзакции. Бизнес-проверка «бригад на весь день
+после разбивки по долям смен не меньше 4» не выражается схемой контракта — считается
+здесь тем же способом, что при загрузке файла (`Shifts.split`, с `engineers`,
+`morning_share`, `evening_share` из тела запроса вместо конфигурации региона).
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут engineer-sets)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (наборы бригад)
+    participant Repo as queries (регионы/наборы)
+    participant DB as PostgreSQL
+
+    Client->>API: POST /api/v1/engineer-sets {region, name, engineers, morning_share, evening_share, seed}
+    alt тело больше MAX_REQUEST_BODY_BYTES
+        API->>H: исключение предела тела
+        H-->>Client: 413 без тела
+    else тело не JSON, поле нет/не по формату/вне предела, лишнее поле
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [...]}
+    else
+        API->>Svc: create(region, name, engineers, morning_share, evening_share, seed)
+        alt region не из конфигурации
+            Svc-->>API: InvalidInput(fields: region)
+            API->>API: лог engineer_set_create_failed (warning, reason=unknown_region)
+            API->>H: InvalidInput
+            H-->>Client: 400 {fields: [region]}
+        else нет свободного соединения в пуле или БД недоступна
+            Svc->>Svc: лог db_query_failed
+            Svc-->>API: DependencyUnavailable
+            API->>API: лог engineer_set_create_failed (error)
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела (набор не создан)
+        else регион не загружен
+            Svc->>Repo: id региона по коду
+            Repo-->>Svc: None
+            Svc-->>API: InvalidInput(fields: region)
+            API->>API: лог engineer_set_create_failed (warning, reason=region_not_loaded)
+            API->>H: InvalidInput
+            H-->>Client: 400 {fields: [region]}
+        else бригад на весь день после разбивки меньше 4
+            Svc->>Svc: split(engineers, morning_share, evening_share)
+            Svc-->>API: InvalidInput(insufficient_full_day_engineers)
+            API->>API: лог engineer_set_create_failed (warning, reason=insufficient_full_day_engineers)
+            API->>H: InvalidInput
+            H-->>Client: 400 {message}
+        else
+            Svc->>Svc: generate_engineers(engineers, morning_share, evening_share, seed, office, удалённые города, районы заявок)
+            Svc->>Repo: BEGIN; INSERT engineer_sets (region_id, name, kind='generated', ...) RETURNING id
+            alt name уже занято в регионе (в т.ч. "default")
+                DB-->>Repo: нарушение уникальности
+                Repo-->>Svc: Conflict → ROLLBACK
+                Svc-->>API: Conflict
+                API->>API: лог engineer_set_create_failed (warning, reason=name_taken)
+                API->>H: Conflict
+                H-->>Client: 409 без тела
+            else БД отклонила запрос
+                DB-->>Repo: ошибка → ROLLBACK
+                Repo-->>Svc: DatabaseFailure
+                Svc-->>API: DatabaseFailure
+                API->>API: лог engineer_set_create_failed (error)
+                API->>H: DatabaseFailure
+                H-->>Client: 500 без тела (набор не создан)
+            else
+                Repo->>DB: INSERT engineers (engineer_set_id, ...) ×engineers; COMMIT
+                Repo-->>Svc: EngineerSet
+                Svc->>Svc: лог engineer_set_created (region, engineer_set_id, engineers)
+                Svc-->>API: EngineerSet
+                API-->>Client: 201 EngineerSet
+            end
+        end
+    end
+```
+
+## `DELETE /api/v1/engineer-sets/{engineer_set_id}`
+
+Удаляет набор `generated` вместе с его бригадами, планами (визитами и событиями
+перепланирования этих планов) — в одном порядке и одной транзакции, что и удаление
+региона при загрузке новых данных (`delete_region_replan_events` →
+`delete_region_assignments` → `delete_region_plans` → бригады → сам набор), только по
+`engineer_set_id`, а не по `region_id`. Набор `default` не найден по этому пути в
+удаляемом виде — операция отклоняет его раньше, чем начнёт удалять что-либо.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут engineer-sets)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (наборы бригад)
+    participant Repo as queries (наборы/планы/бригады)
+    participant DB as PostgreSQL
+
+    Client->>API: DELETE /api/v1/engineer-sets/7
+    alt engineer_set_id не целое или вне 1..2^63−1
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [engineer_set_id]}
+    else
+        API->>Svc: delete(engineer_set_id)
+        alt нет свободного соединения в пуле или БД недоступна
+            Svc->>Svc: лог db_query_failed
+            Svc-->>API: DependencyUnavailable
+            API->>API: лог engineer_set_delete_failed (error)
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела (набор не удалён)
+        else
+            Svc->>Repo: набор engineer_set_id (kind)
+            alt набора нет
+                Repo-->>Svc: None
+                Svc-->>API: NotFound
+                API->>API: лог engineer_set_delete_failed (warning, reason=engineer_set_not_found)
+                API->>H: NotFound
+                H-->>Client: 404 без тела
+            else kind = demo
+                Repo-->>Svc: EngineerSet (kind=demo)
+                Svc-->>API: Conflict
+                API->>API: лог engineer_set_delete_failed (warning, reason=demo_set)
+                API->>H: Conflict
+                H-->>Client: 409 без тела
+            else kind = generated
+                Repo-->>Svc: EngineerSet (kind=generated)
+                Svc->>Repo: BEGIN; DELETE replan_events, assignments, plans, engineers, engineer_sets WHERE engineer_set_id
+                alt БД отклонила запрос
+                    DB-->>Repo: ошибка → ROLLBACK
+                    Repo-->>Svc: DatabaseFailure
+                    Svc-->>API: DatabaseFailure
+                    API->>API: лог engineer_set_delete_failed (error)
+                    API->>H: DatabaseFailure
+                    H-->>Client: 500 без тела (набор не удалён)
+                else
+                    DB-->>Repo: COMMIT
+                    Repo-->>Svc: OK
+                    Svc->>Svc: лог engineer_set_deleted (engineer_set_id)
+                    Svc-->>API: OK
+                    API-->>Client: 204 без тела
+                end
+            end
+        end
+    end
+```
+
+## `GET /api/v1/engineers`
+
+Бригады одного набора бригад региона, по возрастанию `id`. Без `engineer_set_id` —
+бригады набора `default`; с `engineer_set_id` — бригады этого набора, если он
+принадлежит региону из query. Сервис сначала проверяет код региона по конфигурации,
+затем (без параметра) находит `default`-набор региона, либо (с параметром) проверяет,
+что набор `engineer_set_id` принадлежит региону, и только потом читает бригады по
+`engineer_set_id`. Регион без загруженных данных (нет и `default`-набора) — пустой
+список, не ошибка.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут engineers)
     participant H as api (единый обработчик ошибок)
     participant Svc as service
     participant Repo as queries (репозиторий)
     participant DB as PostgreSQL
 
-    Client->>API: GET /api/v1/engineers?region=east | /api/v1/tickets?region=east
+    Client->>API: GET /api/v1/engineers?region=east[&engineer_set_id=7]
+    alt region не по шаблону/нет, либо engineer_set_id не целое или вне 1..2^63−1
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [region | engineer_set_id]}
+    else
+        API->>Svc: list(region, engineer_set_id)
+        alt регион не из конфигурации
+            Svc-->>API: InvalidInput(fields: region)
+            API->>API: лог list_engineers_failed (warning, reason=unknown_region)
+            API->>H: InvalidInput
+            H-->>Client: 400 {fields: [region]}
+        else нет свободного соединения в пуле или БД недоступна
+            Svc->>Svc: лог db_query_failed
+            Svc-->>API: DependencyUnavailable
+            API->>API: лог list_engineers_failed (error)
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела
+        else регион не загружен (нет region_id, нет default-набора)
+            Svc->>Repo: id региона по коду
+            Repo-->>Svc: None
+            Svc-->>API: []
+            API-->>Client: 200 []
+        else engineer_set_id передан и не принадлежит региону
+            Svc->>Repo: region_id набора engineer_set_id
+            Repo-->>Svc: region_id набора ≠ region_id региона, либо набора нет
+            Svc-->>API: InvalidInput(fields: engineer_set_id)
+            API->>API: лог list_engineers_failed (warning, reason=engineer_set_not_in_region)
+            API->>H: InvalidInput
+            H-->>Client: 400 {fields: [engineer_set_id]}
+        else
+            alt engineer_set_id не передан
+                Svc->>Repo: id набора default региона
+                Repo-->>Svc: engineer_set_id
+            else
+                Svc->>Svc: engineer_set_id уже проверен выше
+            end
+            Repo->>DB: SELECT ... FROM engineers WHERE engineer_set_id ORDER BY id
+            DB-->>Repo: строки
+            Repo-->>API: модели (Point, время смены, окна)
+            API-->>Client: 200 [Engineer]
+        end
+    end
+```
+
+## `GET /api/v1/tickets`
+
+Заявки одного региона, по возрастанию `id`, без постраничной выдачи: в регионе не больше
+500 заявок (предел файла). Сервис сначала проверяет код по конфигурации регионов, потом
+находит id региона в БД по коду и читает строки по `region_id`. Строк других регионов в
+ответе не бывает. Регион из конфигурации без загруженных данных — пустой список, не
+ошибка. Репозиторий переводит геометрию в точку `{lat, lon}`, окна заявок — в местное
+время без пояса. Назначений заявок в списке нет, они в плане. Бизнес-ошибку маршрут
+логирует как `list_tickets_failed`.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут tickets)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service
+    participant Repo as queries (репозиторий)
+    participant DB as PostgreSQL
+
+    Client->>API: GET /api/v1/tickets?region=east
     alt region не по шаблону или нет параметра
         API->>H: RequestValidationError
         H-->>Client: 400 {fields: [region]}
     else
-        API->>Svc: список (region)
+        API->>Svc: list_tickets(region)
         alt регион не из конфигурации
             Svc-->>API: InvalidInput(fields: region)
-            API->>API: лог list_engineers_failed | list_tickets_failed (warning, reason=unknown_region)
+            API->>API: лог list_tickets_failed (warning, reason=unknown_region)
             API->>H: InvalidInput
             H-->>Client: 400 {fields: [region]}
         else нет свободного соединения в пуле
-            Svc->>Svc: лог db_query_failed (query=list_engineers | list_tickets)
+            Svc->>Svc: лог db_query_failed (query=list_tickets)
             Svc-->>API: DependencyUnavailable
-            API->>API: лог list_engineers_failed | list_tickets_failed (error)
+            API->>API: лог list_tickets_failed (error)
             API->>H: DependencyUnavailable
             H-->>Client: 503 без тела
         else
@@ -301,7 +561,7 @@ sequenceDiagram
                 Repo->>Repo: лог db_query_failed
                 Repo-->>Svc: DependencyUnavailable
                 Svc-->>API: DependencyUnavailable
-                API->>API: лог list_engineers_failed | list_tickets_failed (error)
+                API->>API: лог list_tickets_failed (error)
                 API->>H: DependencyUnavailable
                 H-->>Client: 503 без тела
             else регион не загружен (строки региона нет)
@@ -312,8 +572,8 @@ sequenceDiagram
             else
                 Repo->>DB: SELECT ... WHERE region_id ORDER BY id
                 DB-->>Repo: строки
-                Repo-->>API: модели (Point, время смены, окна)
-                API-->>Client: 200 [Engineer] | [Ticket]
+                Repo-->>API: модели (Point, окна)
+                API-->>Client: 200 [Ticket]
             end
         end
     end
@@ -477,15 +737,15 @@ sequenceDiagram
     participant Pool as отдельный процесс (солвер)
     participant Explain as service (атрибуция и тексты)
 
-    Client->>API: POST /api/v1/plan/build {region, plan_date, algorithm}
+    Client->>API: POST /api/v1/plan/build {region, plan_date, algorithm[, engineer_set_id]}
     alt тело больше MAX_REQUEST_BODY_BYTES
         API->>H: исключение предела тела
         H-->>Client: 413 без тела
-    else тело не JSON, region/plan_date/algorithm нет или не по формату, лишнее поле
+    else тело не JSON, region/plan_date/algorithm нет или не по формату, engineer_set_id вне 1..2^63−1, лишнее поле
         API->>H: RequestValidationError
         H-->>Client: 400 {fields: [...]}
     else
-        API->>Svc: enqueue(region, plan_date, algorithm)
+        API->>Svc: enqueue(region, plan_date, algorithm, engineer_set_id)
         alt region не из конфигурации
             Svc-->>API: InvalidInput(unknown_region)
             API->>H: InvalidInput
@@ -497,9 +757,20 @@ sequenceDiagram
                 Svc-->>API: InvalidInput(region_not_loaded)
                 API->>H: InvalidInput
                 H-->>Client: 400 {message}
+            else engineer_set_id передан и не принадлежит региону
+                Repo-->>Svc: region_id
+                Svc->>Repo: region_id набора engineer_set_id
+                Repo-->>Svc: region_id набора ≠ region_id региона, либо набора нет
+                Svc-->>API: InvalidInput(fields: engineer_set_id)
+                API->>H: InvalidInput
+                H-->>Client: 400 {fields: [engineer_set_id]}
             else
                 Repo-->>Svc: region_id
-                Svc->>Repo: открытые заявки и бригады региона
+                alt engineer_set_id не передан
+                    Svc->>Repo: id набора default региона
+                    Repo-->>Svc: engineer_set_id
+                end
+                Svc->>Repo: открытые заявки региона и бригады набора engineer_set_id
                 Repo-->>Svc: tickets, engineers
                 alt окно хотя бы одной заявки не на plan_date
                     Svc-->>API: InvalidInput(plan_date_mismatch)
@@ -510,7 +781,7 @@ sequenceDiagram
                     API->>H: InvalidInput
                     H-->>Client: 400 {message}
                 else
-                    Svc->>PlanRepo: INSERT plans (region_id, plan_date, algorithm, status=running, created_at) RETURNING id
+                    Svc->>PlanRepo: INSERT plans (region_id, engineer_set_id, plan_date, algorithm, status=running, created_at) RETURNING id
                     alt БД отклонила запрос или недоступна
                         PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
                         Svc-->>API: DependencyUnavailable | DatabaseFailure
@@ -518,10 +789,10 @@ sequenceDiagram
                         H-->>Client: 503 | 500 без тела (план не создан)
                     else
                         PlanRepo-->>Svc: plan_id
-                        Svc->>Svc: лог plan_enqueued (plan_id, region, algorithm)
-                        Svc-->>API: QueuedPlan (plan_id, algorithm, tickets, engineers)
+                        Svc->>Svc: лог plan_enqueued (plan_id, region, engineer_set_id, algorithm)
+                        Svc-->>API: QueuedPlan (plan_id, algorithm, engineer_set_id, tickets, engineers)
                         API->>BG: build(plan_id, tickets, engineers, plan_date, algorithm)
-                        API-->>Client: 202 Plan (plan_id, status=running)
+                        API-->>Client: 202 Plan (plan_id, engineer_set_id, status=running)
                         par на каждый тип транспорта бригад региона
                             BG->>OSRM: table(vehicle, старты бригад + точки заявок)
                         end
@@ -579,7 +850,10 @@ sequenceDiagram
   `failed_reason`, `engineers` и `unassigned` отсутствуют.
 
 Клиент опрашивает этот эндпоинт с паузой между запросами, пока `status` не
-станет `done` или `failed`.
+станет `done` или `failed`. `engineer_set_id` — набор бригад, для которого план
+построен (тот же, что был передан или подставлен по умолчанию в `POST /plan/build`) —
+в ответе всегда, независимо от `status`: он часть самой строки плана, а не результата
+расчёта.
 
 ```mermaid
 sequenceDiagram
@@ -596,7 +870,7 @@ sequenceDiagram
         H-->>Client: 400 {fields: [plan_id]}
     else
         API->>Svc: get(plan_id)
-        Svc->>PlanRepo: план, его статус и (если есть) назначения и бригады региона
+        Svc->>PlanRepo: план, его статус и (если есть) назначения и бригады набора плана
         alt нет свободного соединения в пуле или БД недоступна
             PlanRepo->>PlanRepo: лог db_query_failed
             PlanRepo-->>Svc: DependencyUnavailable
@@ -619,7 +893,7 @@ sequenceDiagram
             Svc-->>API: Plan (status=failed, без engineers и unassigned)
             API-->>Client: 200 Plan
         else status=done
-            PlanRepo-->>Svc: план (status=done), назначения, бригады региона
+            PlanRepo-->>Svc: план (status=done), назначения, бригады набора плана
             Svc->>Svc: собрать маршруты (idle_time_min из смены и визитов) и metrics из них, без лога
             Svc-->>API: Plan (status=done, engineers, unassigned, metrics)
             API-->>Client: 200 Plan
@@ -635,9 +909,11 @@ query) по каждой обязательной метрике — `engineers_
 `GET /api/v1/plan/{plan_id}` (`Svc.get`), по одному за раз: сперва `plan_id`,
 и только если он готов — `baseline_plan_id`, так что проблема с главным
 планом никогда не трогает baseline вовсе. План не готов к сравнению, если у
-него ещё нет `metrics` (`status` не `done`). Разница считается тем же
-сервисом, а не маршрутом — маршрут только переводит доменный результат в
-контракт.
+него ещё нет `metrics` (`status` не `done`). Оба плана должны быть одного
+`engineer_set_id` — сравнение планов разных наборов бессмысленно (разное
+число бригад), эта проверка идёт после того, как оба плана прочитаны и оба
+`done`. Разница считается тем же сервисом, а не маршрутом — маршрут только
+переводит доменный результат в контракт.
 
 ```mermaid
 sequenceDiagram
@@ -655,7 +931,7 @@ sequenceDiagram
     else
         API->>Svc: compare(plan_id, baseline_plan_id)
         Svc->>Svc: get(plan_id)
-        Svc->>PlanRepo: план, его статус и (если есть) назначения и бригады региона
+        Svc->>PlanRepo: план, его статус и (если есть) назначения и бригады набора плана
         alt нет свободного соединения в пуле или БД недоступна
             PlanRepo->>PlanRepo: лог db_query_failed
             PlanRepo-->>Svc: DependencyUnavailable
@@ -682,7 +958,12 @@ sequenceDiagram
                 API->>API: лог plan_compare_failed
                 API->>H: та же ошибка
                 H-->>Client: 503 | 404 | 400
-            else оба плана done
+            else оба плана done, но engineer_set_id разный
+                Svc-->>API: InvalidInput(engineer_set_mismatch)
+                API->>API: лог plan_compare_failed (warning, reason=engineer_set_mismatch)
+                API->>H: InvalidInput
+                H-->>Client: 400 {message}
+            else оба плана done, тот же engineer_set_id
                 Svc->>Svc: [engineers_used, total_distance_km] с delta = main − baseline
                 Svc-->>API: (PlanComparisonEntry, PlanComparisonEntry)
                 API-->>Client: 200 [PlanComparisonEntry, PlanComparisonEntry]
@@ -728,7 +1009,7 @@ sequenceDiagram
         H-->>Client: 400 {fields}
     else
         API->>Svc: replan(plan_id, event)
-        Svc->>PlanRepo: план plan_id (статус, algorithm, engineers, assignments)
+        Svc->>PlanRepo: план plan_id (статус, algorithm, engineer_set_id, assignments)
         alt нет свободного соединения в пуле или БД недоступна
             PlanRepo-->>Svc: DependencyUnavailable
             Svc-->>API: DependencyUnavailable
@@ -781,7 +1062,8 @@ sequenceDiagram
             API->>H: InvalidInput
             H-->>Client: 400 {message}
         else
-            Svc->>Svc: state_at(plan, triggered_at) — заморозка in_progress, исключение completed/cancelled
+            Svc->>PlanRepo: бригады набора engineer_set_id плана
+            Svc->>Svc: state_at(plan, бригады набора, triggered_at) — заморозка in_progress, исключение completed/cancelled
             alt event_type = new_urgent_ticket
                 Svc->>OSRM: время в пути от точек-кандидатов до заявки (профиль каждой бригады с навыком emergency)
                 alt OSRM недоступен
@@ -809,7 +1091,7 @@ sequenceDiagram
             else event_type = ticket_cancelled
                 Svc->>Svc: снять заявку с маршрута бригады, сдвинуть последующие визиты
             end
-            Svc->>PlanRepo: BEGIN#59; [new_urgent_ticket, new_ticket] INSERT tickets (серверные required_skill/priority/duration_min/received_at, у new_ticket — из таблицы соответствия типов)#59; INSERT plans (parent_plan_id=42, status='done')#59; INSERT assignments — по одной строке на каждую открытую заявку региона: у незатронутых бригад копия строки parent_plan_id, у затронутых — новое назначение (или unassigned)#59; COMMIT
+            Svc->>PlanRepo: BEGIN#59; [new_urgent_ticket, new_ticket] INSERT tickets (серверные required_skill/priority/duration_min/received_at, у new_ticket — из таблицы соответствия типов)#59; INSERT plans (parent_plan_id=42, engineer_set_id — тот же, что у parent_plan_id, status='done')#59; INSERT assignments — по одной строке на каждую открытую заявку региона: у незатронутых бригад копия строки parent_plan_id, у затронутых — новое назначение (или unassigned)#59; COMMIT
             alt БД отклонила запрос или недоступна
                 PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
                 Svc-->>API: DependencyUnavailable | DatabaseFailure
@@ -818,7 +1100,7 @@ sequenceDiagram
                 H-->>Client: 503 | 500
             else
                 PlanRepo-->>Svc: новый plan_id
-                Svc-->>API: PlanReplanResult (engineers, unassigned, metrics, diff)
+                Svc-->>API: PlanReplanResult (engineer_set_id, engineers, unassigned, metrics, diff)
                 API->>API: лог plan_replan_finished (info, plan_id, parent_plan_id, event_type)
                 API-->>Client: 200 PlanReplanResult
             end
