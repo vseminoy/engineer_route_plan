@@ -15,6 +15,8 @@ export * from './engineerSet';
 export * from './engineerSetCreateRequest';
 export * from './engineerSetIdQueryParameter';
 export * from './engineerSetKind';
+export * from './engineerUnavailableEvent';
+export * from './engineerUnavailableEventEventType';
 export * from './fieldError';
 export * from './fieldErrors';
 export * from './healthStatus';

@@ -13,7 +13,7 @@ export interface PlanDiff {
   newly_assigned: number[];
   /** Заявки, назначенные в plan_id, а этим событием ушедшие в unassigned, по возрастанию ticket_id */
   newly_unassigned: number[];
-  /** Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable; это событие в API не реализовано, поле всегда пустое */
+  /** Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable; сервер пока не обрабатывает это событие, поле всегда пустое */
   reassigned_from_unavailable_engineer: number[];
   /**
      * Число бригад, чей маршрут изменило это событие

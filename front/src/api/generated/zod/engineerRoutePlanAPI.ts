@@ -623,6 +623,8 @@ export const ComparePlanResponse = zod.array(ComparePlanResponseItem)
  * `new_ticket` — новая обычная заявка в течение дня (необязательная возможность): только вставка в свободный интервал маршрута бригады-кандидата, без объявления задания и без вытеснения. `required_skill`, `priority` и `duration_min` определяются парой (`type_bk`, `type_hd`) по той же таблице соответствия типов, что и при загрузке файла — неизвестная пара типов отклоняется `400` ещё до поиска бригады. Кандидаты — бригады с этим навыком (и транспортом, если задан); среди их фактических маршрутов ищется свободный интервал, где прибытие на новую заявку попадает в её окно и не отодвигает ни один уже стоящий визит бригады; побеждает интервал с минимальным временем прибытия. Не найдено ни одного интервала — заявка уходит в `unassigned`, план остальных бригад не меняется.
  *
  * `ticket_cancelled` — заявка уже отменена (`PATCH /tickets/{ticket_id}/status`, `status=cancelled`) и убирается из маршрута бригады, на которую была назначена; последующие визиты этой бригады сдвигаются по времени; остальные бригады не пересчитываются.
+ *
+ * `engineer_unavailable` — бригада стала недоступна. С её маршрута снимаются все ещё не начатые визиты (`en_route` и позже не начатые; визит `in_progress` — как и у остальных событий — зафиксирован). Для каждой снятой заявки ищется свободный интервал в маршруте другой бригады региона — так же, как у `new_ticket`: без объявления задания и без вытеснения, побеждает интервал с минимальным временем прибытия. Не нашлось интервала ни у одной бригады — заявка уходит в `unassigned`. Сама ставшая недоступной бригада остаётся в ответе без визитов; последующие события снова могут назначать ей заявки.
  * @summary Перепланировать бригады по одному событию дня
  */
 export const replanPlanPathPlanIdMax = 9223372036854776000;
@@ -696,6 +698,13 @@ export const replanPlanBodyThreeTriggeredAtMax = 19;
 export const replanPlanBodyThreeTriggeredAtRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
 export const replanPlanBodyThreeTicketIdMax = 9223372036854776000;
 
+export const replanPlanBodyFourTriggeredAtMin = 19;
+export const replanPlanBodyFourTriggeredAtMax = 19;
+
+
+export const replanPlanBodyFourTriggeredAtRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+export const replanPlanBodyFourEngineerIdMax = 9223372036854776000;
+
 
 
 export const ReplanPlanBody = zod.union([zod.strictObject({
@@ -735,6 +744,10 @@ export const ReplanPlanBody = zod.union([zod.strictObject({
   "event_type": zod.enum(['ticket_cancelled']).describe('Тип события — заявка отменена'),
   "triggered_at": zod.string().min(replanPlanBodyThreeTriggeredAtMin).max(replanPlanBodyThreeTriggeredAtMax).regex(replanPlanBodyThreeTriggeredAtRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
   "ticket_id": zod.int().min(1).max(replanPlanBodyThreeTicketIdMax).describe('Отменённая заявка (status=cancelled)')
+}),zod.strictObject({
+  "event_type": zod.enum(['engineer_unavailable']).describe('Тип события — бригада стала недоступна'),
+  "triggered_at": zod.string().min(replanPlanBodyFourTriggeredAtMin).max(replanPlanBodyFourTriggeredAtMax).regex(replanPlanBodyFourTriggeredAtRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
+  "engineer_id": zod.int().min(1).max(replanPlanBodyFourEngineerIdMax).describe('Бригада, ставшая недоступной')
 })]).describe('Одно событие перепланирования; тип определяет event_type.')
 
 
@@ -815,7 +828,7 @@ export const ReplanPlanResponse = zod.strictObject({
 })).describe('Заявки, у которых сменилась бригада и/или порядковый номер визита'),
   "newly_assigned": zod.array(zod.int()).describe('Заявки, назначенные впервые этим событием, по возрастанию ticket_id'),
   "newly_unassigned": zod.array(zod.int()).describe('Заявки, назначенные в plan_id, а этим событием ушедшие в unassigned, по возрастанию ticket_id'),
-  "reassigned_from_unavailable_engineer": zod.array(zod.int()).describe('Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable; это событие в API не реализовано, поле всегда пустое'),
+  "reassigned_from_unavailable_engineer": zod.array(zod.int()).describe('Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable; сервер пока не обрабатывает это событие, поле всегда пустое'),
   "plan_stability": zod.int().min(replanPlanResponseDiffPlanStabilityMin).describe('Число бригад, чей маршрут изменило это событие')
 })
 })

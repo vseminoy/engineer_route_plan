@@ -162,3 +162,40 @@ describe('ReplanTab — ticket_cancelled', () => {
     expect(await screen.findByText('Заявка ещё не отмечена отменённой — сначала измените её статус')).toBeInTheDocument();
   });
 });
+
+describe('ReplanTab — engineer_unavailable', () => {
+  it('rejects submitting with no engineer selected, and does not call replan', () => {
+    renderTab();
+    fireEvent.click(screen.getByRole('radio', { name: 'Недоступность бригады' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Перестроить план' }));
+
+    expect(screen.getByText('Invalid input: expected number, received NaN')).toBeInTheDocument();
+    expect(replanMock).not.toHaveBeenCalled();
+  });
+
+  it('submits a valid engineer_unavailable event for the selected engineer', async () => {
+    replanMock.mockResolvedValue(donePlanResult(58));
+    const { onReplanned } = renderTab();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Недоступность бригады' }));
+    fireEvent.change(screen.getByLabelText('Бригада недоступна'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Перестроить план' }));
+
+    await waitFor(() => expect(onReplanned).toHaveBeenCalledWith(58));
+    expect(replanMock).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ eventType: 'engineer_unavailable', engineerId: 3 })
+    );
+  });
+
+  it('shows a 404 as "not found" when the engineer does not exist', async () => {
+    replanMock.mockRejectedValue(new ApiError(404, 'req-3'));
+    renderTab();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Недоступность бригады' }));
+    fireEvent.change(screen.getByLabelText('Бригада недоступна'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Перестроить план' }));
+
+    expect(await screen.findByText('Не найдено')).toBeInTheDocument();
+  });
+});

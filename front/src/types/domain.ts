@@ -124,9 +124,9 @@ export interface PlanCompare {
   totalDistanceKm: { main: number; baseline: number; delta: number };
 }
 
-// The two replan events the dispatcher can raise from the UI. The contract
-// allows a third, new_ticket (a non-urgent ticket arriving mid-day), with no
-// form for it here — nothing in the app needs it yet.
+// The three replan events the dispatcher can raise from the UI. The contract
+// also allows new_ticket (a non-urgent ticket arriving mid-day), with no form
+// for it here — nothing in the app needs it yet.
 export type ReplanEvent =
   | {
       eventType: 'new_urgent_ticket';
@@ -136,7 +136,8 @@ export type ReplanEvent =
       lon: number;
       reactionMin?: number;
     }
-  | { eventType: 'ticket_cancelled'; triggeredAt: string; ticketId: number };
+  | { eventType: 'ticket_cancelled'; triggeredAt: string; ticketId: number }
+  | { eventType: 'engineer_unavailable'; triggeredAt: string; engineerId: number };
 
 // From GET /engineers — roster data the /plan responses don't carry
 // themselves (skills for the skill-icon chips, shift bounds for the

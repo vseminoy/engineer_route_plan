@@ -109,6 +109,8 @@ export function replanEventToRequest(event: ReplanEvent): ReplanEventRequest {
       };
     case 'ticket_cancelled':
       return { event_type: 'ticket_cancelled', triggered_at: event.triggeredAt, ticket_id: event.ticketId };
+    case 'engineer_unavailable':
+      return { event_type: 'engineer_unavailable', triggered_at: event.triggeredAt, engineer_id: event.engineerId };
   }
 }
 

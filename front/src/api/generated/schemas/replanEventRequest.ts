@@ -4,6 +4,7 @@
  * Engineer Route Plan API
  * OpenAPI spec version: 0.1.0
  */
+import type { EngineerUnavailableEvent } from './engineerUnavailableEvent';
 import type { NewTicketEvent } from './newTicketEvent';
 import type { NewUrgentTicketEvent } from './newUrgentTicketEvent';
 import type { TicketCancelledEvent } from './ticketCancelledEvent';
@@ -11,4 +12,4 @@ import type { TicketCancelledEvent } from './ticketCancelledEvent';
 /**
  * Одно событие перепланирования; тип определяет event_type.
  */
-export type ReplanEventRequest = NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent;
+export type ReplanEventRequest = NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent | EngineerUnavailableEvent;

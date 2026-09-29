@@ -19,10 +19,12 @@ interface Props {
 
 const ENDPOINT = 'POST /plan/{id}/replan';
 
-// The two schema members this form raises — the contract's oneOf order is
-// [new_urgent_ticket, new_ticket, ticket_cancelled]; new_ticket has no form.
+// The three schema members this form raises — the contract's oneOf order is
+// [new_urgent_ticket, new_ticket, ticket_cancelled, engineer_unavailable];
+// new_ticket has no form.
 const NEW_URGENT_TICKET_SCHEMA = ReplanPlanBody.options[0];
 const TICKET_CANCELLED_SCHEMA = ReplanPlanBody.options[2];
+const ENGINEER_UNAVAILABLE_SCHEMA = ReplanPlanBody.options[3];
 
 function nowNaive(): Date {
   return new Date();
@@ -40,6 +42,7 @@ export function ReplanTab({ plan, ticketById, onReplanned }: Props) {
   const [lon, setLon] = useState('');
   const [reactionMin, setReactionMin] = useState('');
   const [cancelTicketId, setCancelTicketId] = useState<number | ''>('');
+  const [unavailableEngineerId, setUnavailableEngineerId] = useState<number | ''>('');
   const [fieldErrors, setFieldErrors] = useState<FieldErrorMap>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
@@ -48,6 +51,10 @@ export function ReplanTab({ plan, ticketById, onReplanned }: Props) {
   const assignedTickets = plan.engineers.flatMap((e) =>
     e.route.map((s) => ({ ticketId: s.ticketId, label: `${ticketById.get(s.ticketId)?.address ?? `№${s.ticketId}`} — ${e.name}` }))
   );
+
+  // plan.engineers already lists every engineer of the region (even ones with
+  // an empty route), so it doubles as the roster for this picker.
+  const engineerOptions = plan.engineers.map((e) => ({ engineerId: e.engineerId, name: e.name }));
 
   function selectKind(next: EventKind) {
     setKind(next);
@@ -68,7 +75,14 @@ export function ReplanTab({ plan, ticketById, onReplanned }: Props) {
         ...(reaction !== undefined ? { reactionMin: reaction } : {})
       };
     }
-    return { eventType: 'ticket_cancelled', triggeredAt, ticketId: cancelTicketId === '' ? NaN : cancelTicketId };
+    if (kind === 'ticket_cancelled') {
+      return { eventType: 'ticket_cancelled', triggeredAt, ticketId: cancelTicketId === '' ? NaN : cancelTicketId };
+    }
+    return {
+      eventType: 'engineer_unavailable',
+      triggeredAt,
+      engineerId: unavailableEngineerId === '' ? NaN : unavailableEngineerId
+    };
   }
 
   function handleReplanError(err: unknown) {
@@ -99,7 +113,12 @@ export function ReplanTab({ plan, ticketById, onReplanned }: Props) {
     setFormError(null);
     const event = buildEvent();
     const request = replanEventToRequest(event);
-    const schema = event.eventType === 'new_urgent_ticket' ? NEW_URGENT_TICKET_SCHEMA : TICKET_CANCELLED_SCHEMA;
+    const schema =
+      event.eventType === 'new_urgent_ticket'
+        ? NEW_URGENT_TICKET_SCHEMA
+        : event.eventType === 'ticket_cancelled'
+          ? TICKET_CANCELLED_SCHEMA
+          : ENGINEER_UNAVAILABLE_SCHEMA;
     const parsed = schema.safeParse(request);
     if (!parsed.success) {
       setFieldErrors(fieldErrorsFromZod(parsed.error));
@@ -125,6 +144,14 @@ export function ReplanTab({ plan, ticketById, onReplanned }: Props) {
         <label className="replan-radio">
           <input type="radio" checked={kind === 'ticket_cancelled'} onChange={() => selectKind('ticket_cancelled')} />
           Отмена заявки
+        </label>
+        <label className="replan-radio">
+          <input
+            type="radio"
+            checked={kind === 'engineer_unavailable'}
+            onChange={() => selectKind('engineer_unavailable')}
+          />
+          Недоступность бригады
         </label>
       </div>
 
@@ -186,6 +213,28 @@ export function ReplanTab({ plan, ticketById, onReplanned }: Props) {
           </label>
           {fieldErrors.ticket_id && (
             <span style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>{fieldErrors.ticket_id}</span>
+          )}
+        </div>
+      )}
+
+      {kind === 'engineer_unavailable' && (
+        <div className="replan-fields">
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
+            Бригада недоступна
+            <select
+              value={unavailableEngineerId}
+              onChange={(e) => setUnavailableEngineerId(e.target.value ? Number(e.target.value) : '')}
+            >
+              <option value="">Выберите бригаду…</option>
+              {engineerOptions.map((e) => (
+                <option key={e.engineerId} value={e.engineerId}>
+                  {e.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {fieldErrors.engineer_id && (
+            <span style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>{fieldErrors.engineer_id}</span>
           )}
         </div>
       )}

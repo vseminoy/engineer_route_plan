@@ -617,6 +617,17 @@ paths:
         /tickets/{ticket_id}/status`, `status=cancelled`) и убирается из
         маршрута бригады, на которую была назначена; последующие визиты этой
         бригады сдвигаются по времени; остальные бригады не пересчитываются.
+
+
+        `engineer_unavailable` — бригада стала недоступна. С её маршрута
+        снимаются все ещё не начатые визиты (`en_route` и позже не начатые;
+        визит `in_progress` — как и у остальных событий — зафиксирован).
+        Для каждой снятой заявки ищется свободный интервал в маршруте другой
+        бригады региона — так же, как у `new_ticket`: без объявления задания
+        и без вытеснения, побеждает интервал с минимальным временем прибытия.
+        Не нашлось интервала ни у одной бригады — заявка уходит в
+        `unassigned`. Сама ставшая недоступной бригада остаётся в ответе без
+        визитов; последующие события снова могут назначать ей заявки.
       parameters:
         - name: plan_id
           in: path
@@ -655,7 +666,8 @@ paths:
           $ref: "./common.yaml#/components/responses/NotFound"
           description: >-
             Плана с таким plan_id нет, либо (для ticket_cancelled) заявки с
-            таким ticket_id нет.
+            таким ticket_id нет, либо (для engineer_unavailable) бригады с
+            таким engineer_id нет.
         "409":
           $ref: "./common.yaml#/components/responses/Conflict"
           description: (ticket_cancelled) заявка ещё не в статусе cancelled.
@@ -1455,12 +1467,33 @@ components:
           maximum: 9223372036854775807
           description: Отменённая заявка (status=cancelled)
 
+    EngineerUnavailableEvent:
+      type: object
+      additionalProperties: false
+      required: [event_type, triggered_at, engineer_id]
+      properties:
+        event_type:
+          type: string
+          enum: [engineer_unavailable]
+          description: Тип события — бригада стала недоступна
+        triggered_at:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+          description: >-
+            Момент, когда бригада стала недоступна; план перестраивается от
+            состояния бригад на этот момент
+        engineer_id:
+          type: integer
+          minimum: 1
+          maximum: 9223372036854775807
+          description: Бригада, ставшая недоступной
+
     ReplanEventRequest:
       description: Одно событие перепланирования; тип определяет event_type.
       oneOf:
         - $ref: "#/components/schemas/NewUrgentTicketEvent"
         - $ref: "#/components/schemas/NewTicketEvent"
         - $ref: "#/components/schemas/TicketCancelledEvent"
+        - $ref: "#/components/schemas/EngineerUnavailableEvent"
 
     AssignmentChange:
       type: object
@@ -1524,8 +1557,8 @@ components:
             type: integer
           description: >-
             Заявки, переставленные с бригады, ставшей недоступной событием
-            engineer_unavailable; это событие в API не реализовано, поле
-            всегда пустое
+            engineer_unavailable; сервер пока не обрабатывает это событие,
+            поле всегда пустое
         plan_stability:
           type: integer
           minimum: 0

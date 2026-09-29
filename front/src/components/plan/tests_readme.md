@@ -36,3 +36,6 @@
 | `rejects submitting with no ticket selected, and does not call replan` | Событие «Отмена заявки», заявка не выбрана | Ошибка схемы под полем выбора заявки, `replan` не вызван |
 | `submits a valid cancel event for the selected ticket` | Выбрана назначенная заявка | `replan(42, {eventType: 'ticket_cancelled', ticketId: 101})`, `onReplanned` вызван |
 | `shows the conflict message when the ticket is not yet marked cancelled` | `replan` отклоняется `ApiError(409)` | Текст «Заявка ещё не отмечена отменённой — сначала измените её статус» |
+| `rejects submitting with no engineer selected, and does not call replan` | Событие «Недоступность бригады», бригада не выбрана | Ошибка схемы под полем выбора бригады, `replan` не вызван |
+| `submits a valid engineer_unavailable event for the selected engineer` | Выбрана бригада из `plan.engineers` | `replan(42, {eventType: 'engineer_unavailable', engineerId: 3})`, `onReplanned` вызван |
+| `shows a 404 as "not found" when the engineer does not exist` | `replan` отклоняется `ApiError(404)` | Общий текст «Не найдено» (у операции нет отдельного словаря на этот код) |
