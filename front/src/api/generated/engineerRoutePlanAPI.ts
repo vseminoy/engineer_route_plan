@@ -11,6 +11,8 @@ import type {
   HealthStatus,
   ListEngineersParams,
   ListTicketsParams,
+  Plan,
+  PlanBuildRequest,
   Region,
   RegionDataUpload,
   Ticket,
@@ -494,6 +496,153 @@ const res = await fetch(getChangeTicketStatusUrl(ticketId),
 
   const data: changeTicketStatusResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as changeTicketStatusResponse
+}
+
+
+
+export type buildPlanResponse202 = {
+  data: Plan
+  status: 202
+}
+
+export type buildPlanResponse400 = {
+  data: ValidationError
+  status: 400
+}
+
+export type buildPlanResponse413 = {
+  data: void
+  status: 413
+}
+
+export type buildPlanResponse500 = {
+  data: void
+  status: 500
+}
+
+export type buildPlanResponse503 = {
+  data: void
+  status: 503
+}
+
+export type buildPlanResponseSuccess = (buildPlanResponse202) & {
+  headers: Headers;
+};
+export type buildPlanResponseError = (buildPlanResponse400 | buildPlanResponse413 | buildPlanResponse500 | buildPlanResponse503) & {
+  headers: Headers;
+};
+
+export type buildPlanResponse = (buildPlanResponseSuccess | buildPlanResponseError)
+
+export const getBuildPlanUrl = () => {
+
+
+
+
+  return `/api/v1/plan/build`
+}
+
+/**
+ * Ставит построение плана в очередь и отвечает не дожидаясь его конца: назначение открытых (не completed и не cancelled) заявок региона на дату plan_date бригадам региона — основным алгоритмом (RoutingModel, трёхфазная лексикографическая оптимизация) или независимым baseline (FCFS, для сравнения) — и атрибуция причин отказа идут в фоне после ответа. Клиент получает plan_id сразу и узнаёт результат, опрашивая `GET /plan/{plan_id}`, пока status не станет done или failed. Каждый вызов — новый план (новый plan_id); построение не заменяет и не удаляет более ранние планы того же региона и даты.
+ *
+ * Регион должен иметь загруженные данные (`POST /data/upload` или `POST /data/demo`) — иначе 400. Каждая открытая заявка региона должна приходиться на дату plan_date (окно заявки — из файла одной загрузки, все заявки на один день) — несовпадение хотя бы одной заявки отклоняет весь запрос 400, план не ставится в очередь.
+ *
+ * Число точек будущей маршрутной матрицы (бригады + заявки) проверяется до постановки в очередь — больше предела OSRM отклоняет запрос 400. Время в пути и расстояние считаются по дорожному графу (OSRM) уже в фоне, отдельно для каждого типа транспорта бригад региона. Основной алгоритм выполняется в одном процессе на весь сервер — конкурентное построение встаёт в очередь исполнителя, а не запускается параллельно вторым процессом.
+ *
+ * Плановое прибытие — расчётное время в пути от предыдущей точки маршрута (или от точки старта бригады) плюс текущее время; норматив «дорога 20 минут» здесь не используется. Причина каждой неназначенной заявки определяется процедурой атрибуции (навык → транспорт → окно/смена → «все подходящие бригады заняты»), а не первой проваленной проверкой.
+ * @summary Поставить построение плана выездов региона на дату в очередь
+ */
+export const buildPlan = async (planBuildRequest: PlanBuildRequest, options?: RequestInit): Promise<buildPlanResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getBuildPlanUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(planBuildRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: buildPlanResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as buildPlanResponse
+}
+
+
+
+export type getPlanResponse200 = {
+  data: Plan
+  status: 200
+}
+
+export type getPlanResponse404 = {
+  data: void
+  status: 404
+}
+
+export type getPlanResponse500 = {
+  data: void
+  status: 500
+}
+
+export type getPlanResponse503 = {
+  data: void
+  status: 503
+}
+
+export type getPlanResponseSuccess = (getPlanResponse200) & {
+  headers: Headers;
+};
+export type getPlanResponseError = (getPlanResponse404 | getPlanResponse500 | getPlanResponse503) & {
+  headers: Headers;
+};
+
+export type getPlanResponse = (getPlanResponseSuccess | getPlanResponseError)
+
+export const getGetPlanUrl = (planId: number,) => {
+
+
+
+
+  return `/api/v1/plan/${planId}`
+}
+
+/**
+ * Возвращает план в любом из трёх состояний status без обращения к OSRM или солверу: running — план поставлен в очередь, маршрутов ещё нет; done — маршруты, объяснения и причины неназначенных заявок читаются из сохранённых данных построения; failed — построение не закончилось, причина — в failed_reason. Клиент опрашивает эту операцию, пока status не перестанет быть running.
+ * @summary Получить план — построенный, ещё считающийся или не сложившийся
+ */
+export const getPlan = async (planId: number, options?: RequestInit): Promise<getPlanResponse> => {
+
+  const res = await fetch(getGetPlanUrl(planId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getPlanResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getPlanResponse
 }
 
 
