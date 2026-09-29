@@ -46,6 +46,25 @@ class ProcessSolverPool:
         return self._executor
 
     def restart(self) -> None:
+        self._kill_workers()
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._executor = ProcessPoolExecutor(max_workers=self._max_workers)
+
+    def shutdown(self, *, cancel_futures: bool = False) -> None:
+        # Kills a busy worker exactly as `restart()` does: `ProcessPoolExecutor` has not
+        # marked its workers as daemon processes since Python 3.9 (to allow a pool nested
+        # inside another), so one left running past its parent's exit is reparented to
+        # init and keeps running — for as long as its `or_tools` call does, unbounded if
+        # that call is the very hang this watchdog exists to end. `wait=False` always: a
+        # caller asking to exit fast (`app.py`'s `finally`, which must not outlive the
+        # orchestrator's own shutdown grace period) would otherwise block on
+        # `Executor.shutdown`'s default `wait=True` until the current solve finishes — up
+        # to `SOLVER_TIME_LIMIT_S`, defeating the point of calling this at all instead of
+        # just letting the process exit.
+        self._kill_workers()
+        self._executor.shutdown(wait=False, cancel_futures=cancel_futures)
+
+    def _kill_workers(self) -> None:
         # `_processes` (the `multiprocessing.Process` objects backing the executor) is
         # not part of `ProcessPoolExecutor`'s public surface, but there is no other way
         # to end a worker that is already running a submitted call. A future Python
@@ -54,17 +73,12 @@ class ProcessSolverPool:
         try:
             processes = list(self._executor._processes.values())  # type: ignore[attr-defined]
         except AttributeError:
-            processes = []
+            # No worker is killed on this path: `restart()` still recreates the executor
+            # (a fresh pool for the next build), and `shutdown()` still tells it not to
+            # wait — the degradation is silent to the caller, so it must not be silent
+            # here: whatever worker was running keeps running, unsupervised, until it
+            # finishes on its own.
             logger.error("solver_pool_restart_missing_processes")
+            return
         for process in processes:
             process.kill()
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        self._executor = ProcessPoolExecutor(max_workers=self._max_workers)
-
-    def shutdown(self, *, cancel_futures: bool = False) -> None:
-        # `wait=False` always: a caller asking to exit fast (`app.py`'s `finally`, which
-        # must not outlive the orchestrator's own shutdown grace period) would otherwise
-        # block on `Executor.shutdown`'s default `wait=True` until the current solve
-        # finishes — up to `SOLVER_TIME_LIMIT_S`, defeating the point of calling this at
-        # all instead of just letting the process exit.
-        self._executor.shutdown(wait=False, cancel_futures=cancel_futures)

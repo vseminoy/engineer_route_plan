@@ -68,19 +68,30 @@ def test_shutdown_does_not_wait_for_a_busy_worker() -> None:
         started = manager.Event()
         pool.executor.submit(_signal_then_sleep_forever, started)
         assert started.wait(timeout=10), "worker did not start in time"
-        processes = list(pool.executor._processes.values())  # type: ignore[attr-defined]
 
-        try:
-            started_at = time.monotonic()
-            pool.shutdown(cancel_futures=True)
-            elapsed = time.monotonic() - started_at
+        started_at = time.monotonic()
+        pool.shutdown(cancel_futures=True)
+        elapsed = time.monotonic() - started_at
 
-            assert elapsed < 5, f"shutdown() waited {elapsed:.1f}s for a worker sleeping 3600s"
-        finally:
-            # `shutdown(wait=False)` does not kill a worker already running a call, only
-            # stops taking new ones — left alone, this one would sleep for the full 3600s.
-            for process in processes:
-                process.kill()
+        assert elapsed < 5, f"shutdown() waited {elapsed:.1f}s for a worker sleeping 3600s"
+
+
+def test_shutdown_kills_a_busy_worker() -> None:
+    """Without this, a worker mid-`or_tools`-call is not a daemon process
+    (`ProcessPoolExecutor` stopped marking them as such in Python 3.9) and would outlive
+    `shutdown()` — reparented to init on the host, running unsupervised for as long as its
+    call does, unbounded if that call is exactly the hang the watchdog exists to end."""
+    pool = ProcessSolverPool(max_workers=1)
+    with multiprocessing.Manager() as manager:
+        started = manager.Event()
+        pool.executor.submit(_signal_then_sleep_forever, started)
+        assert started.wait(timeout=10), "worker did not start in time"
+        process = next(iter(pool.executor._processes.values()))  # type: ignore[attr-defined]
+
+        pool.shutdown(cancel_futures=True)
+
+        process.join(timeout=5)
+        assert not process.is_alive(), f"worker pid {process.pid} still alive after shutdown()"
 
 
 def test_process_solver_pool_is_a_process_pool_executor_underneath() -> None:

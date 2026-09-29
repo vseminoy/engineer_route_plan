@@ -804,6 +804,7 @@
 | `test_restart_replaces_the_executor_instance` | вызов `restart()` | `.executor` до и после — разные объекты `ProcessPoolExecutor` |
 | `test_shutdown_stops_accepting_new_work` | `shutdown()`, затем `submit` на `.executor` | `RuntimeError` («cannot schedule new futures after shutdown») |
 | `test_shutdown_does_not_wait_for_a_busy_worker` | воркер занят (сигналит старт, затем спит 3600с); `shutdown(cancel_futures=True)` засечён по времени | возврат меньше чем за 5с — `shutdown()` не наследует `Executor.shutdown`'s `wait=True` по умолчанию, иначе `app.py`'s `finally` ждал бы текущий солв вместо быстрого выхода |
+| `test_shutdown_kills_a_busy_worker` | воркер занят тем же образом; после `shutdown(cancel_futures=True)` — `process.join(timeout=5)` | воркер не `is_alive()` — `shutdown()` убивает занятый процесс так же, как `restart()`, а не оставляет его пережившим `backend`'ом-сиротой (не демон с Python 3.9) |
 
 ## `src/service/plan_reader.py` — чтение плана
 

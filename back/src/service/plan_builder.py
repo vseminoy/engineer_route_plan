@@ -92,7 +92,13 @@ class PlanBuilder:
     watchdog's `restart()` would cancel it along with the wedged future it was meant to
     kill — its `CancelledError` is a `BaseException`, uncaught anywhere in `build`, and
     that plan would stay `running` forever. With the lock, at most one future ever exists
-    on the executor, so `restart()` only ever touches the one it is meant to."""
+    on the executor, so `restart()` only ever touches the one it is meant to.
+
+    Not a guard against every cancellation: `app.py`'s own shutdown can still cancel a
+    build waiting on this lock or on `wait_for` inside it (`SolverPool.shutdown()`, unlike
+    `restart()`, is not lock-aware). Harmless in practice: the process is exiting anyway,
+    and the plan that build was for is exactly what the next startup's `sweep_running_plans`
+    closes as `failed_reason='shutdown'`."""
 
     async def enqueue(self, region_code: str, plan_date: date, algorithm: str) -> QueuedPlan:
         """Validates and queues a build. Raises `InvalidInput` before touching OSRM or the

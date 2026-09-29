@@ -687,7 +687,10 @@ sequenceDiagram
 закрываться, а сам процесс может быть добит `SIGKILL` оркестратора по истечении его
 grace period раньше, чем запись успеет пройти. Поэтому `finally` лишь просит
 `SolverPool` завершиться быстро (`shutdown(cancel_futures=True)`, без ожидания и без
-попытки писать в БД) и выходит; планы, не успевшие дойти до `done`/`failed`, остаются
+попытки писать в БД) и выходит; занятый воркер `shutdown()` убивает тем же `kill()`,
+что и `restart()` — иначе, не будучи демоном (`ProcessPoolExecutor` перестал их
+помечать демонами начиная с Python 3.9), он пережил бы родителя и остался сиротой,
+работающим неограниченно. Планы, не успевшие дойти до `done`/`failed`, остаются
 `running` в БД.
 
 `sweep_running_plans` закрывает их при следующем старте — **до** `yield` в `lifespan`,
@@ -709,10 +712,10 @@ sequenceDiagram
     Sweep->>Repo: UPDATE plans SET status='failed', failed_reason='shutdown'#59; WHERE status='running'
     alt БД недоступна
         Repo-->>Sweep: DependencyUnavailable
-        Sweep-->>Lifespan: лог startup_sweep_failed (warning)#59; не поднимает исключение
+        Sweep-->>Lifespan: лог plan_startup_sweep_failed (warning)#59; не поднимает исключение
     else
         Repo-->>Sweep: id закрытых планов
-        Sweep-->>Lifespan: лог startup_sweep_finished (info, count) — только если count > 0
+        Sweep-->>Lifespan: лог plan_startup_sweep_finished (info, count) — только если count > 0
     end
     Lifespan->>Lifespan: yield (приложение начинает принимать запросы)
 ```
