@@ -5,11 +5,13 @@
 ## 1. Модель данных (логическая)
 
 ```
-Region 1──* Engineer
+Region 1──* EngineerSet   (default — демо-набор, всегда один; generated — любое число)
 Region 1──* Ticket
+EngineerSet 1──* Engineer
+EngineerSet 1──* Plan      (план и baseline строятся и сравниваются в пределах набора)
 Engineer *──* Skill        (1..3 навыка на инженера, BR-06)
 Engineer 1──1 VehicleType
-Engineer 1──* EquipmentStock (опционально, доп. возможность)
+Engineer 1──* EquipmentStock (опционально, доп. возможность FR-20, в MVP отсутствует)
 Ticket   *──1 Skill        (ровно один требуемый навык)
 Ticket   *──0..1 VehicleType (требуемый транспорт, если задан)
 Ticket   1──1 Priority     (ранг типа работ: 1 — авария, 2 — подключение, 3 — ремонт/дозаказ; BR-12)
@@ -37,133 +39,145 @@ Plan     1──* ReplanEvent (история событий, приведших
 
 ## 3. Схема БД (DDL, диалект PostgreSQL; применяется через Alembic raw-SQL миграции, без ORM-моделей)
 
+Ниже — актуальная схема (после миграций `5d23f2956ce7`, `cb3db41d521a`, `c124884e0c63`,
+`1b0ce84eb128`, `46c1bba9efff`); точные типы, ограничения и комментарии колонок — в
+`back/alembic/versions/`, это единственный источник истины при расхождении. Координаты —
+PostGIS `geometry(Point, 4326)`, а не отдельные `lat`/`lon`. Учёт оборудования
+(`equipment_stock`, `ticket.required_equipment`) — доп. возможность FR-20/BR-11, в
+обязательный MVP не входит и в схеме отсутствует.
+
 ```sql
-CREATE TABLE region (
-    id            SERIAL PRIMARY KEY,
-    code          TEXT NOT NULL UNIQUE,      -- 'east' | 'south_east' | 'south_center'
-    name          TEXT NOT NULL,
-    timezone      TEXT NOT NULL DEFAULT 'Europe/Moscow',
-    office_lat    DOUBLE PRECISION NOT NULL,
-    office_lon    DOUBLE PRECISION NOT NULL,
-    office_address TEXT NOT NULL
+CREATE TABLE regions (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    code            TEXT NOT NULL UNIQUE,      -- 'east' | 'south_east' | 'south_center'
+    name            TEXT NOT NULL,
+    office_address  TEXT NOT NULL,
+    office_geom     geometry(Point, 4326) NOT NULL
 );
 
-CREATE TABLE engineer (
-    id            SERIAL PRIMARY KEY,
-    region_id     INTEGER NOT NULL REFERENCES region(id),
+CREATE TABLE engineer_sets (                  -- набор бригад региона: demo (default) | generated
+    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    region_id      BIGINT NOT NULL REFERENCES regions(id),
+    name           TEXT NOT NULL,             -- уникально в регионе; у demo всегда 'default'
+    kind           TEXT NOT NULL,             -- 'demo' | 'generated'
+    engineers      INTEGER NOT NULL,          -- параметр генератора, 1..30
+    morning_share  DOUBLE PRECISION NOT NULL, -- параметр генератора, 0..1
+    evening_share  DOUBLE PRECISION NOT NULL, -- параметр генератора, 0..1
+    seed           TEXT NOT NULL              -- зерно генератора
+);
+
+CREATE TABLE engineers (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    engineer_set_id BIGINT NOT NULL REFERENCES engineer_sets(id), -- регион бригады — регион её набора
     name          TEXT NOT NULL,
-    start_lat     DOUBLE PRECISION NOT NULL,
-    start_lon     DOUBLE PRECISION NOT NULL,
+    start_geom    geometry(Point, 4326) NOT NULL,
     shift_start   TIME NOT NULL,
     shift_end     TIME NOT NULL,
-    vehicle_type  TEXT NOT NULL,             -- Skill enum
-    skills        JSONB NOT NULL             -- JSON-массив, 1..3 значений Skill
+    vehicle_type  TEXT NOT NULL,
+    skills        TEXT[] NOT NULL            -- 1..3 значений Skill
 );
 
-CREATE TABLE equipment_stock (               -- доп. возможность (FR-20)
-    id            SERIAL PRIMARY KEY,
-    engineer_id   INTEGER NOT NULL REFERENCES engineer(id),
-    equipment_type TEXT NOT NULL,
-    quantity      INTEGER NOT NULL DEFAULT 0
+CREATE TABLE tickets (
+    id                        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    region_id                 BIGINT NOT NULL REFERENCES regions(id),
+    external_id               TEXT NOT NULL,  -- поле "Заявка" из исходных данных
+    type_bk                   TEXT,           -- исходное поле "Тип заявки BK"; NULL — поле пусто
+    type_hd                   TEXT NOT NULL,  -- исходное поле "Тип заявки HD"
+    required_skill            TEXT NOT NULL,  -- выведено маппингом BK/HD -> Skill
+    required_vehicle          TEXT,           -- NULL, если не задано
+    priority                  SMALLINT NOT NULL, -- ранг BR-12, >= 1
+    district                  TEXT,
+    address                   TEXT NOT NULL,
+    geom                      geometry(Point, 4326) NOT NULL,
+    window_start              TIMESTAMP NOT NULL, -- naive datetime, пояс региона
+    window_end                TIMESTAMP NOT NULL,
+    duration_min              INTEGER NOT NULL,   -- из Нормативы.xlsx по типу работы
+    status                    TEXT NOT NULL,
+    received_at               TIMESTAMP NOT NULL, -- момент фактического появления заявки (BR-14, BR-33)
+    cancelled_after_dispatch  BOOLEAN NOT NULL DEFAULT FALSE -- BR-23
 );
 
-CREATE TABLE ticket (
-    id                SERIAL PRIMARY KEY,
-    external_id       TEXT NOT NULL,          -- поле "Заявка" из исходных данных
-    region_id         INTEGER NOT NULL REFERENCES region(id),
-    type_bk           TEXT,                   -- исходное поле "Тип заявки BK"
-    type_hd            TEXT,                   -- исходное поле "Тип заявки HD"
-    required_skill    TEXT NOT NULL,          -- выведено маппингом BK/HD -> Skill
-    required_vehicle  TEXT,                   -- NULL, если не задано
-    priority          SMALLINT NOT NULL,      -- ранг BR-12, >= 1: 1 авария, 2 подключение, 3 ремонт/дозаказ
-    district          TEXT,
-    address           TEXT NOT NULL,
-    lat               DOUBLE PRECISION,
-    lon               DOUBLE PRECISION,
-    window_start      TIMESTAMP NOT NULL,     -- naive datetime, пояс региона
-    window_end        TIMESTAMP NOT NULL,
-    duration_min      INTEGER NOT NULL,       -- из Нормативы.xlsx по типу работы
-    required_equipment JSONB,                 -- опционально
-    status            TEXT NOT NULL DEFAULT 'sent',
-    created_at_sim    TIMESTAMP NOT NULL,     -- момент фактического появления заявки (для аварий — отсчёт норматива и времени реакции, BR-14, BR-33)
-    cancelled_after_dispatch BOOLEAN NOT NULL DEFAULT FALSE -- BR-23
+CREATE TABLE plans (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    region_id       BIGINT NOT NULL REFERENCES regions(id),
+    engineer_set_id BIGINT NOT NULL REFERENCES engineer_sets(id), -- набор, для которого построен план
+    plan_date       DATE NOT NULL,
+    algorithm       TEXT NOT NULL,           -- 'or_tools' | 'baseline_fcfs'
+    parent_plan_id  BIGINT REFERENCES plans(id), -- ссылка на план до перепланирования
+    status          TEXT NOT NULL,           -- 'running' | 'done' | 'failed'
+    failed_reason   TEXT,                    -- заполнено только при status = 'failed'
+    created_at      TIMESTAMP NOT NULL
 );
 
-CREATE TABLE plan (
-    id            SERIAL PRIMARY KEY,
-    region_id     INTEGER NOT NULL REFERENCES region(id),
-    plan_date     DATE NOT NULL,
-    algorithm     TEXT NOT NULL,              -- 'or_tools' | 'baseline_fcfs'
-    parent_plan_id INTEGER REFERENCES plan(id), -- ссылка на план до перепланирования
-    created_at    TIMESTAMP NOT NULL
+CREATE TABLE assignments (
+    id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    plan_id            BIGINT NOT NULL REFERENCES plans(id),
+    ticket_id          BIGINT NOT NULL REFERENCES tickets(id),
+    engineer_id        BIGINT REFERENCES engineers(id), -- NULL — заявка не назначена
+    sequence_no        INTEGER,               -- порядок посещения у бригады; NULL у неназначенной
+    planned_arrival    TIMESTAMP,             -- с точностью до минуты; NULL у неназначенной
+    travel_time_min    INTEGER,               -- минуты, округление вверх; NULL у неназначенной
+    travel_distance_m  INTEGER,               -- метры по дорожной сети; NULL у неназначенной
+    unassigned_reason  TEXT,                  -- UnassignedReason enum; NULL у назначенной
+    explanation        TEXT NOT NULL          -- готовый человекочитаемый текст
 );
 
-CREATE TABLE assignment (
-    id            SERIAL PRIMARY KEY,
-    plan_id       INTEGER NOT NULL REFERENCES plan(id),
-    ticket_id     INTEGER REFERENCES ticket(id),      -- NULL невозможен: для неназначенных отдельная строка ниже
-    engineer_id   INTEGER REFERENCES engineer(id),
-    sequence_no   INTEGER,                    -- порядок посещения у бригады
-    planned_arrival TIMESTAMP,                -- с точностью до минуты
-    travel_time_min INTEGER,                  -- минуты, округление вверх до целой минуты
-    travel_distance_km DOUBLE PRECISION,
-    is_unassigned BOOLEAN NOT NULL DEFAULT FALSE,
-    unassigned_reason TEXT,                   -- UnassignedReason enum
-    explanation   TEXT NOT NULL                -- готовый человекочитаемый текст
-);
-
-CREATE TABLE replan_event (
-    id            SERIAL PRIMARY KEY,
-    plan_id       INTEGER NOT NULL REFERENCES plan(id),  -- план, к которому применено событие
-    event_type    TEXT NOT NULL,              -- 'new_urgent_ticket' | 'new_ticket' | 'ticket_cancelled' | 'engineer_unavailable'
-    payload       JSONB NOT NULL,             -- детали события
-    triggered_at  TIMESTAMP NOT NULL,
-    result_plan_id INTEGER REFERENCES plan(id) -- итоговый план после обработки события
+CREATE TABLE replan_events (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    plan_id         BIGINT NOT NULL REFERENCES plans(id),  -- план, к которому применено событие
+    event_type      TEXT NOT NULL,           -- 'new_urgent_ticket' | 'new_ticket' | 'ticket_cancelled' | 'engineer_unavailable'
+    payload         JSONB NOT NULL,          -- детали события
+    triggered_at    TIMESTAMP NOT NULL,
+    result_plan_id  BIGINT REFERENCES plans(id) -- итоговый план после обработки события
 );
 ```
 
-Индексы: `ticket(region_id, window_start)`, `assignment(plan_id, engineer_id, sequence_no)`.
+Индексы: `tickets(region_id, window_start)`, `tickets(region_id, status)`, GiST на всех
+геометриях, `assignments(ticket_id)`, `assignments(engineer_id)`,
+`engineers(engineer_set_id)`, `plans(engineer_set_id)` и внешние ключи — полный список и
+`COMMENT ON` каждой колонки в `back/alembic/versions/`.
 
 ## 3.1. Слой доступа к данным (aiosql)
 
 Доступ к БД — без ORM. SQL-запросы живут в `.sql`-файлах, сгруппированных по агрегату, и подключаются как объект `queries` с методами, имя которых берётся из аннотации `-- name:`.
 
 ```
-backend/
-  db/
-    schema/                # Alembic-миграции (raw SQL, DDL из раздела 3)
-    queries/
-      regions.sql
-      engineers.sql
-      tickets.sql
-      plans.sql
-      assignments.sql
-      replan_events.sql
+back/
+  alembic/
+    versions/               # Alembic-миграции (raw SQL, DDL из раздела 3)
+  queries/
+    regions.sql
+    engineers.sql
+    engineer_sets.sql
+    tickets.sql
+    plans.sql
+    assignments.sql
+    replan_events.sql
 ```
 
-Пример `db/queries/tickets.sql`:
+Пример `queries/tickets.sql`:
 
 ```sql
 -- name: get_ticket^
 -- Одна заявка по id, или None
-SELECT * FROM ticket WHERE id = :ticket_id;
+SELECT * FROM tickets WHERE id = :ticket_id;
 
 -- name: list_open_tickets_by_region
 -- Заявки региона, ещё не закрытые (участвуют в (пере)планировании)
-SELECT * FROM ticket
+SELECT * FROM tickets
 WHERE region_id = :region_id
   AND status NOT IN ('completed', 'cancelled');
 
 -- name: set_ticket_status!
-UPDATE ticket SET status = :status WHERE id = :ticket_id;
+UPDATE tickets SET status = :status WHERE id = :ticket_id;
 
 -- name: insert_ticket<!
-INSERT INTO ticket (external_id, region_id, type_bk, type_hd, required_skill,
-                     required_vehicle, priority, district, address, lat, lon,
-                     window_start, window_end, duration_min, status, created_at_sim)
+INSERT INTO tickets (external_id, region_id, type_bk, type_hd, required_skill,
+                      required_vehicle, priority, district, address, geom,
+                      window_start, window_end, duration_min, status, received_at)
 VALUES (:external_id, :region_id, :type_bk, :type_hd, :required_skill,
-        :required_vehicle, :priority, :district, :address, :lat, :lon,
-        :window_start, :window_end, :duration_min, :status, :created_at_sim)
+        :required_vehicle, :priority, :district, :address, :geom,
+        :window_start, :window_end, :duration_min, :status, :received_at)
 RETURNING id;
 ```
 
@@ -173,7 +187,7 @@ RETURNING id;
 import aiosql
 import psycopg
 
-queries = aiosql.from_path("db/queries", "psycopg")
+queries = aiosql.from_path("queries", "psycopg")
 conn = psycopg.connect("postgresql://user:password@localhost:5432/plan")
 
 ticket = queries.get_ticket(conn, ticket_id=101)          # вызов как метод
@@ -195,11 +209,31 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 | `POST` | `/data/demo` | Загрузить встроенный демо-набор региона; тело — JSON `{"region": "east"}`; заявки заменяются, бригады сохраняются, планы удаляются так же, как при загрузке файла. `POST`, потому что операция удаляет данные: `GET` клиенты и прокси вправе повторять сами |
 | `GET` | `/regions` | Список регионов из конфигурации backend: код и название |
 | `GET` | `/tickets?region=east` | Все заявки региона: адрес, точка, окно, навык, транспорт, приоритет, длительность, статус. Назначения заявок бригадам — в плане (`GET /plan/{plan_id}`) |
-| `GET` | `/engineers?region=east` | Бригады региона: навыки, транспорт, смена, точка старта |
+| `GET` | `/engineers?region=east&engineer_set_id=...` | Бригады региона или одного набора бригад: навыки, транспорт, смена, точка старта. Без `engineer_set_id` — бригады набора `default` |
 
 Код региона — из `GET /regions`; код, которого нет в конфигурации, — `400` у параметра `region`.
 Регион без загруженных данных — пустой список заявок и бригад. Точный контракт операций —
 `specs/openapi.yaml`.
+
+### 4.1.1. Наборы бригад региона
+
+Регион может держать несколько наборов бригад одновременно — набор `default` (создаётся
+первой загрузкой данных региона тем же генератором, что и раньше, и обновляется вместе с
+ней; удалить нельзя) и любое число дополнительных наборов, которые пользователь создаёт
+своими параметрами генератора (см. врезку «Наборы бригад региона» в
+[`01_business_requirements.md`](01_business_requirements.md#5-функциональные-требования)).
+План и baseline строятся по конкретному набору и сравниваются только внутри него.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| `GET` | `/engineer-sets?region=east` | Наборы бригад региона: id, название, вид (`demo`/`generated`), параметры генератора, число бригад |
+| `POST` | `/engineer-sets` | Создать дополнительный набор: `region`, `name`, `engineers`, `morning_share`, `evening_share`, `seed`; `201` с созданным набором; `409`, если `name` занято в регионе |
+| `DELETE` | `/engineer-sets/{engineer_set_id}` | Удалить дополнительный набор вместе с его планами; `204`; `409` при попытке удалить `default` |
+
+`POST /plan/build` принимает необязательный `engineer_set_id` (без него — набор `default`);
+ответ плана и `POST /plan/{plan_id}/replan` всегда возвращают `engineer_set_id` набора, по
+которому план построен; `GET /plan/{plan_id}/compare` сравнивает только планы одного набора,
+иначе — `400`.
 
 ### 4.2. Планирование
 
@@ -214,7 +248,8 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 {
   "region": "east",
   "plan_date": "2026-08-17",
-  "algorithm": "or_tools"       // "or_tools" | "baseline_fcfs"
+  "algorithm": "or_tools",      // "or_tools" | "baseline_fcfs"
+  "engineer_set_id": null       // необязательное; без него — набор default
 }
 ```
 
@@ -223,7 +258,8 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 {
   "plan_id": 42,
   "algorithm": "or_tools",
-  "status": "running"
+  "status": "running",
+  "engineer_set_id": 7
 }
 ```
 
@@ -236,6 +272,7 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
   "plan_id": 42,
   "algorithm": "or_tools",
   "status": "done",
+  "engineer_set_id": 7,
   "engineers": [
     {
       "engineer_id": 3,
@@ -272,8 +309,11 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
   }
 }
 ```
-- **`failed`** — расчёт не закончился (OSRM или БД недоступны на самом построении):
-  `{"plan_id": 42, "algorithm": "or_tools", "status": "failed", "failed_reason": "osrm_unavailable"}`.
+- **`failed`** — расчёт не закончился: `osrm_unavailable`/`db_unavailable` — OSRM или БД
+  недоступны, `build_error` — непредусмотренная ошибка, `timeout` — солвер не уложился в
+  бюджет времени и был прерван вотчдогом, `shutdown` — план остался `running` при остановке
+  сервера и закрыт стартовой чисткой:
+  `{"plan_id": 42, "algorithm": "or_tools", "status": "failed", "engineer_set_id": 7, "failed_reason": "osrm_unavailable"}`.
 
 `idle_time_min` / `idle_time_by_engineer_min` (FR-23, M) — простой бригады = длина смены минус (суммарное время визитов + суммарное время в пути); поле **обязательно** к возврату API, но участвует только в отображении — не влияет на целевую функцию солвера (раздел 5) и не входит в сравнение с baseline в `/plan/{plan_id}/compare`.
 
@@ -286,7 +326,8 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 из пути (`plan_id`) с baseline-планом (`baseline_plan_id`), по одной записи на метрику,
 `delta` = план минус baseline (отрицательное значение — план лучше baseline). Оба плана
 должны быть `status=done`, иначе — `400`; план из пути проверяется первым, и если он ещё
-не готов, baseline вообще не читается.
+не готов, baseline вообще не читается. Оба плана должны быть одного `engineer_set_id` —
+сравнение планов разных наборов недопустимо и тоже даёт `400`.
 ```json
 [
   {"metric": "engineers_used", "main": 9, "baseline": 13, "delta": -4},
@@ -327,6 +368,7 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 {
   "plan_id": 43,
   "parent_plan_id": 42,
+  "engineer_set_id": 7,
   "...": "...",
   "diff": {
     "changed_assignments": [

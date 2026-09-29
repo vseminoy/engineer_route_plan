@@ -23,6 +23,9 @@
 <App>
  ├─ <DataLoadScreen>
  │   ├─ <RegionSelect>
+ │   ├─ <EngineerSetSelect region />        (набор бригад региона; по умолчанию — default)
+ │   ├─ <EngineerSetCreateForm region />    (создать дополнительный набор своими параметрами)
+ │   ├─ <EngineerSetDeleteConfirm engineerSet />  (нет у набора default)
  │   ├─ <FileUploadForm tickets />
  │   └─ <DemoDatasetButton region />
  ├─ <PlanScreen planId>
@@ -54,6 +57,7 @@
 ### 3.1. `DataLoadScreen`
 
 - Выбор региона: список из `GET /regions` (код и название; описание регионов — `07_data_dictionary.md`).
+- Выбор набора бригад региона (`GET /engineer-sets?region=`): список наборов с названием, видом (`demo`/`generated`) и параметрами; по умолчанию выбран набор `default`. Форма создания дополнительного набора (`POST /engineer-sets`: название, число бригад, доли утренней и вечерней смен, seed) — своя валидация по спеке этой операции, `409` при занятом названии — текстом у поля. Удаление дополнительного набора — с подтверждением («планы этого набора тоже будут удалены»); у набора `default` кнопки удаления нет, `409` при попытке — текст из словаря ошибок. Список бригад (`GET /engineers`) и построение плана (`POST /plan/build`) идут по выбранному набору; сравнение плана с baseline — только внутри набора, по которому он построен.
 - Источник данных: загрузка файла (CSV/JSON, drag-n-drop + кнопка выбора) **или** кнопка «Использовать демо-набор».
 - Валидация на клиенте — по спеке API (§6, «Валидация форм»): регион — по шаблону кода из спеки, расширение `.csv`/`.json`, непустой файл, предельный размер файла. Содержимое файла проверяет backend: ответ `400` с `fields` показывается инлайн под соответствующими полями формы (`region`, `tickets_file`), `400` с `message` — под полем загрузки файла.
 - Итог загрузки из ответа backend: сколько загружено бригад и заявок, сколько строк пропущено (пустые и служебная строка офиса) и список невалидных строк — номер строки, колонка и причина.
@@ -155,6 +159,17 @@ type Priority = number; // ранг ≥ 1, меньше — срочнее: 1 а
 type TicketStatus = 'not_sent' | 'sent' | 'en_route' | 'in_progress' | 'completed' | 'cancelled' | 'overdue';
 type UnassignedReason = 'no_skill' | 'no_time_slot' | 'no_vehicle' | 'shift_overflow' | 'no_equipment' | 'all_eligible_engineers_booked_elsewhere';
 
+interface EngineerSet {
+  id: number;
+  name: string;               // уникально в регионе; у демо-набора всегда 'default'
+  kind: 'demo' | 'generated';
+  engineers: number;
+  morningShare: number;
+  eveningShare: number;
+  seed: string;
+  description: string;        // параметры генератора текстом — отличить наборы друг от друга
+}
+
 interface RouteStop {
   ticketId: number;
   sequenceNo: number;
@@ -196,6 +211,7 @@ interface Plan {
   planId: number;
   algorithm: 'or_tools' | 'baseline_fcfs';
   status: PlanStatus;
+  engineerSetId: number;        // набор бригад, для которого построен план; есть всегда
   parentPlanId?: number;
   // engineers/unassigned/metrics приходят только при status === 'done'
   engineers?: EngineerRoute[];
