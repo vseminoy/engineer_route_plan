@@ -12,6 +12,7 @@ from src.domain import Engineer, Point, Skill, Ticket, TicketDraft, TicketStatus
 from src.errors import Conflict, InvalidInput, NotFound
 from src.repository.plans import AssignmentRow, AssignmentWrite, PlanRow
 from src.service.replan import (
+    EngineerUnavailableEvent,
     IncidentInput,
     NewTicketEvent,
     NewUrgentTicketEvent,
@@ -474,6 +475,164 @@ async def test_ticket_cancelled_ticket_not_yet_cancelled() -> None:
     with pytest.raises(Conflict) as e:
         await replanner.replan(10, event)
     assert e.value.reason == "ticket_not_cancelled"
+
+
+# --- engineer_unavailable: drop and reinsert, no announce, no eviction --------------------
+
+
+async def test_engineer_unavailable_moves_ticket_to_another_engineer() -> None:
+    unavailable = _engineer(1, (Skill.LOCAL_WORK,))
+    other = _engineer(2, (Skill.LOCAL_WORK,), start=OTHER_POINT)
+    ticket = _ticket(50, required_skill=Skill.LOCAL_WORK)
+    repo = FakeRepo(
+        plan=_plan(),
+        engineers=[unavailable, other],
+        tickets=[ticket],
+        assignments=[_row(50, 1, 1)],
+    )
+    replanner = _replanner(repo, FakeOsrm())
+    event = EngineerUnavailableEvent(triggered_at=TRIGGERED_AT, engineer_id=1)
+
+    outcome = await replanner.replan(10, event)
+
+    writes = _writes_of(repo)
+    write = _by_ticket(writes, 50)
+    assert write.engineer_id == 2
+    assert write.sequence_no == 1
+    assert "недоступной" in write.explanation
+    assert not any(w.engineer_id == 1 for w in writes)
+    assert outcome.diff.reassigned_from_unavailable_engineer == [50]
+    change = next(c for c in outcome.diff.changed_assignments if c.ticket_id == 50)
+    assert change.before_engineer_id == 1
+    assert change.after_engineer_id == 2
+    assert outcome.diff.plan_stability == 2
+
+
+async def test_engineer_unavailable_in_progress_visit_stays_with_the_engineer() -> None:
+    unavailable = _engineer(1, (Skill.LOCAL_WORK,))
+    other = _engineer(2, (Skill.LOCAL_WORK,), start=OTHER_POINT)
+    in_progress = _ticket(30, required_skill=Skill.LOCAL_WORK, status=TicketStatus.IN_PROGRESS)
+    tail_ticket = _ticket(50, required_skill=Skill.LOCAL_WORK, status=TicketStatus.SENT)
+    frozen_row = _row(30, 1, 1, planned_arrival=datetime(2026, 9, 1, 10, 0))
+    tail_row = _row(50, 1, 2, planned_arrival=datetime(2026, 9, 1, 11, 0))
+    repo = FakeRepo(
+        plan=_plan(),
+        engineers=[unavailable, other],
+        tickets=[in_progress, tail_ticket],
+        assignments=[frozen_row, tail_row],
+    )
+    replanner = _replanner(repo, FakeOsrm())
+    event = EngineerUnavailableEvent(triggered_at=TRIGGERED_AT, engineer_id=1)
+
+    outcome = await replanner.replan(10, event)
+
+    writes = _writes_of(repo)
+    frozen_write = _by_ticket(writes, 30)
+    assert frozen_write.engineer_id == 1
+    assert frozen_write.sequence_no == 1
+    assert frozen_write.planned_arrival == datetime(2026, 9, 1, 10, 0)
+    assert frozen_write.explanation == frozen_row.explanation
+    moved_write = _by_ticket(writes, 50)
+    assert moved_write.engineer_id == 2
+    assert outcome.diff.reassigned_from_unavailable_engineer == [50]
+    assert not any(c.ticket_id == 30 for c in outcome.diff.changed_assignments)
+
+
+async def test_engineer_unavailable_no_skilled_engineer_leaves_ticket_unassigned() -> None:
+    unavailable = _engineer(1, (Skill.LOCAL_WORK,))
+    other = _engineer(2, (Skill.EMERGENCY,), start=OTHER_POINT)
+    ticket = _ticket(50, required_skill=Skill.LOCAL_WORK)
+    repo = FakeRepo(
+        plan=_plan(),
+        engineers=[unavailable, other],
+        tickets=[ticket],
+        assignments=[_row(50, 1, 1)],
+    )
+    replanner = _replanner(repo, FakeOsrm())
+    event = EngineerUnavailableEvent(triggered_at=TRIGGERED_AT, engineer_id=1)
+
+    outcome = await replanner.replan(10, event)
+
+    write = _by_ticket(_writes_of(repo), 50)
+    assert write.engineer_id is None
+    assert write.unassigned_reason == "no_skill"
+    assert outcome.diff.newly_unassigned == [50]
+    assert outcome.diff.reassigned_from_unavailable_engineer == []
+
+
+async def test_engineer_unavailable_no_free_interval_leaves_ticket_unassigned() -> None:
+    unavailable = _engineer(1, (Skill.LOCAL_WORK,))
+    other = _engineer(
+        2, (Skill.LOCAL_WORK,), start=OTHER_POINT, shift_start=time(8, 0), shift_end=time(11, 0)
+    )
+    blocking = _ticket(
+        60,
+        required_skill=Skill.LOCAL_WORK,
+        window_start=datetime(2026, 9, 1, 9, 0),
+        window_end=datetime(2026, 9, 1, 9, 10),
+        duration_min=100,
+    )
+    target = _ticket(50, required_skill=Skill.LOCAL_WORK)
+    repo = FakeRepo(
+        plan=_plan(),
+        engineers=[unavailable, other],
+        tickets=[blocking, target],
+        assignments=[
+            _row(60, 2, 1, duration_min=100, planned_arrival=datetime(2026, 9, 1, 9, 5)),
+            _row(50, 1, 1),
+        ],
+    )
+    replanner = _replanner(repo, FakeOsrm())
+    event = EngineerUnavailableEvent(triggered_at=TRIGGERED_AT, engineer_id=1)
+
+    outcome = await replanner.replan(10, event)
+
+    write = _by_ticket(_writes_of(repo), 50)
+    assert write.engineer_id is None
+    assert write.unassigned_reason == "all_eligible_engineers_booked_elsewhere"
+    assert outcome.diff.reassigned_from_unavailable_engineer == []
+
+
+async def test_engineer_unavailable_engineer_not_found() -> None:
+    repo = FakeRepo(plan=_plan(), engineers=[], tickets=[], assignments=[])
+    replanner = _replanner(repo, FakeOsrm())
+    event = EngineerUnavailableEvent(triggered_at=TRIGGERED_AT, engineer_id=999)
+
+    with pytest.raises(NotFound) as e:
+        await replanner.replan(10, event)
+    assert e.value.reason == "engineer_not_found"
+
+
+async def test_engineer_unavailable_second_dropped_ticket_sees_first_insertion() -> None:
+    """Two tickets dropped off the same unavailable brigade both land on the same other
+    brigade — the second one's free-interval search must see the first one already
+    inserted, not the parent plan's empty tail again (`touched` is keyed by engineer id,
+    so a stale search would silently overwrite the first ticket's write)."""
+    unavailable = _engineer(1, (Skill.LOCAL_WORK,))
+    other = _engineer(2, (Skill.LOCAL_WORK,), start=OTHER_POINT)
+    first = _ticket(50, required_skill=Skill.LOCAL_WORK)
+    second = _ticket(51, required_skill=Skill.LOCAL_WORK)
+    repo = FakeRepo(
+        plan=_plan(),
+        engineers=[unavailable, other],
+        tickets=[first, second],
+        assignments=[_row(50, 1, 1), _row(51, 1, 2)],
+    )
+    replanner = _replanner(repo, FakeOsrm())
+    event = EngineerUnavailableEvent(triggered_at=TRIGGERED_AT, engineer_id=1)
+
+    outcome = await replanner.replan(10, event)
+
+    writes = _writes_of(repo)
+    first_write = _by_ticket(writes, 50)
+    second_write = _by_ticket(writes, 51)
+    assert first_write.engineer_id == 2
+    assert second_write.engineer_id == 2
+    assert first_write.sequence_no == 1
+    assert second_write.sequence_no == 2
+    assert first_write.planned_arrival == datetime(2026, 9, 1, 12, 5)
+    assert second_write.planned_arrival == datetime(2026, 9, 1, 12, 40)
+    assert outcome.diff.reassigned_from_unavailable_engineer == [50, 51]
 
 
 # --- new_ticket: free-interval insertion (no announce, no eviction) -----------------------

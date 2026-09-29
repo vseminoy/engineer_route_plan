@@ -1,8 +1,9 @@
 """Replanning a region's day plan by one event (Contract Net Protocol, Smith 1980):
 `new_urgent_ticket` (announce/bid/award over brigades with the `emergency` skill, with an
-eviction cascade of depth exactly 1) and `ticket_cancelled` (drop one visit and shift its
-brigade's tail). Synchronous: the caller gets the finished plan in the same request,
-unlike `plan_builder.build`.
+eviction cascade of depth exactly 1), `ticket_cancelled` (drop one visit and shift its
+brigade's tail), `new_ticket` and `engineer_unavailable` (both: fit into another brigade's
+free interval, no announce, no eviction). Synchronous: the caller gets the finished plan
+in the same request, unlike `plan_builder.build`.
 
 Does not run the solver again — the point is minimal change (`plan_stability`), which a
 full re-solve of the day cannot promise. Feasibility checks (skill, vehicle, window,
@@ -103,7 +104,13 @@ class TicketCancelledEvent:
     ticket_id: int
 
 
-ReplanEvent = NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent
+@dataclass(frozen=True)
+class EngineerUnavailableEvent:
+    triggered_at: datetime
+    engineer_id: int
+
+
+ReplanEvent = NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent | EngineerUnavailableEvent
 
 
 @dataclass(frozen=True)
@@ -120,6 +127,7 @@ class PlanDiff:
     changed_assignments: list[AssignmentChange]
     newly_assigned: list[int]
     newly_unassigned: list[int]
+    reassigned_from_unavailable_engineer: list[int]
     plan_stability: int
 
 
@@ -234,6 +242,7 @@ class Replanner:
 
         tickets_by_id: dict[int, Ticket] = {t.id: t for t in tickets}
         draft: TicketDraft | None = None
+        reassigned_from_unavailable: list[int] = []
         if isinstance(event, NewUrgentTicketEvent):
             draft = _incident_draft(plan.plan_date, event)
             new_ticket = _ticket_from_draft(_PLACEHOLDER_TICKET_ID, draft)
@@ -257,7 +266,7 @@ class Replanner:
                 plan, event, new_ticket, engineers, tickets_by_id, parent_rows
             )
             event_type = "new_ticket"
-        else:
+        elif isinstance(event, TicketCancelledEvent):
             ticket = tickets_by_id.get(event.ticket_id)
             if ticket is None:
                 raise NotFound("ticket_not_found", params={"ticket_id": event.ticket_id})
@@ -267,12 +276,20 @@ class Replanner:
                 plan, event, engineers, tickets_by_id, parent_rows
             )
             event_type = "ticket_cancelled"
+        else:
+            engineer = next((e for e in engineers if e.id == event.engineer_id), None)
+            if engineer is None:
+                raise NotFound("engineer_not_found", params={"engineer_id": event.engineer_id})
+            writes, reassigned_from_unavailable = await self._engineer_unavailable(
+                plan, event, engineer, engineers, tickets_by_id, parent_rows
+            )
+            event_type = "engineer_unavailable"
 
         async with database_errors("plan_replan_write"), self.connect() as conn:
             if draft is not None:
                 ticket_id = await self.insert_ticket(conn, plan.region_id, draft)
                 writes = _remap_ticket_id(writes, _PLACEHOLDER_TICKET_ID, ticket_id)
-            diff = _diff(parent_rows, writes)
+            diff = _diff(parent_rows, writes, reassigned_from_unavailable)
             new_plan_id = await self.insert_replanned_plan(
                 conn,
                 plan.region_id,
@@ -445,58 +462,73 @@ class Replanner:
             write = _unassigned_write(ticket_id, reason, _regular_unassigned_text(reason))
             return _assemble(parent_rows, {}, [write])
 
-        best: _FreeSlot | None = None
-        for engineer in candidates:
-            anchor_point, anchor_time, frozen, tail = _state_at(
-                rows_by_engineer.get(engineer.id, ()), tickets_by_id, engineer, event.triggered_at
-            )
-            points = [
-                anchor_point,
-                *(tickets_by_id[r.ticket_id].location for r in tail),
-                target.location,
-            ]
-            matrix = await self.osrm.table(engineer.vehicle_type, points)
-            shift_end = datetime.combine(plan.plan_date, engineer.shift_end)
-            found = _free_slot_position(matrix, anchor_time, tail, tickets_by_id, target, shift_end)
-            if found is None:
-                continue
-            position, result = found
-            if best is None or result.arrival < best.result.arrival:
-                best = _FreeSlot(
-                    engineer=engineer, frozen=frozen, tail=tail, position=position, result=result
-                )
-
+        best = await _find_free_slot(
+            self.osrm, candidates, rows_by_engineer, tickets_by_id, event.triggered_at, plan, target
+        )
         if best is None:
             reason = UnassignedReason.ALL_ELIGIBLE_ENGINEERS_BOOKED_ELSEWHERE
             write = _unassigned_write(ticket_id, reason, _regular_unassigned_text(reason))
             return _assemble(parent_rows, {}, [write])
 
-        offset = len(best.frozen)
-        before = [
-            _copy_write(best.engineer, r, offset + i)
-            for i, r in enumerate(best.tail[: best.position], start=1)
-        ]
-        new_write = AssignmentWrite(
-            ticket_id=best.result.ticket_id,
-            engineer_id=best.engineer.id,
-            sequence_no=offset + best.position + 1,
-            planned_arrival=best.result.arrival,
-            travel_time_min=best.result.travel_min,
-            travel_distance_m=round(best.result.distance_m),
-            unassigned_reason=None,
-            explanation=_regular_assigned_text(best.engineer, best.result.arrival),
-        )
-        after = [
-            _copy_write(best.engineer, r, offset + best.position + 1 + i)
-            for i, r in enumerate(best.tail[best.position :], start=1)
-        ]
-        touched = {
-            best.engineer.id: _frozen_writes(best.engineer, best.frozen)
-            + before
-            + [new_write]
-            + after
-        }
+        touched = {best.engineer.id: _writes_from_free_slot(best, _regular_assigned_text)}
         return _assemble(parent_rows, touched, [])
+
+    async def _engineer_unavailable(
+        self,
+        plan: PlanRow,
+        event: EngineerUnavailableEvent,
+        unavailable: Engineer,
+        engineers: Sequence[Engineer],
+        tickets_by_id: Mapping[int, Ticket],
+        parent_rows: Sequence[AssignmentRow],
+    ) -> tuple[list[AssignmentWrite], list[int]]:
+        """Drops the unavailable brigade's not-yet-started visits (its `in_progress` visit,
+        if any, stays frozen and unchanged) and, one at a time in original route order,
+        offers each dropped ticket the same free-interval search as `new_ticket` — no
+        announce, no eviction — against the other brigades' *current* routes, so a second
+        dropped ticket sees the first one's insertion rather than the parent plan again."""
+        rows_by_engineer = _rows_by_engineer(parent_rows)
+        _, _, frozen, tail_rows = _state_at(
+            rows_by_engineer.get(unavailable.id, ()), tickets_by_id, unavailable, event.triggered_at
+        )
+        touched: dict[int, list[AssignmentWrite]] = {
+            unavailable.id: _frozen_writes(unavailable, frozen)
+        }
+        live_rows = {e.id: rows_by_engineer.get(e.id, []) for e in engineers if e.id != unavailable.id}
+        candidate_pool = [e for e in engineers if e.id != unavailable.id]
+        unassigned_writes: list[AssignmentWrite] = []
+        reassigned: list[int] = []
+
+        for row in sorted(tail_rows, key=lambda r: r.sequence_no or 0):
+            ticket = tickets_by_id[row.ticket_id]
+            target = _stop_def(ticket)
+            skilled = [e for e in candidate_pool if ticket.required_skill in e.skills]
+            candidates = [e for e in skilled if ticket.required_vehicle in (None, e.vehicle_type)]
+            if not candidates:
+                reason = UnassignedReason.NO_SKILL if not skilled else UnassignedReason.NO_VEHICLE
+                unassigned_writes.append(
+                    _unassigned_write(ticket.id, reason, _unavailable_unassigned_text(reason))
+                )
+                continue
+
+            best = await _find_free_slot(
+                self.osrm, candidates, live_rows, tickets_by_id, event.triggered_at, plan, target
+            )
+            if best is None:
+                reason = UnassignedReason.ALL_ELIGIBLE_ENGINEERS_BOOKED_ELSEWHERE
+                unassigned_writes.append(
+                    _unassigned_write(ticket.id, reason, _unavailable_unassigned_text(reason))
+                )
+                continue
+
+            writes = _writes_from_free_slot(best, _unavailable_assigned_text)
+            touched[best.engineer.id] = writes
+            live_rows[best.engineer.id] = [
+                _row_from_write(w, tickets_by_id[w.ticket_id].duration_min) for w in writes
+            ]
+            reassigned.append(ticket.id)
+
+        return _assemble(parent_rows, touched, unassigned_writes), sorted(reassigned)
 
     async def _ticket_cancelled(
         self,
@@ -766,6 +798,67 @@ def _free_slot_position(
     return best
 
 
+async def _find_free_slot(
+    osrm: TableClient,
+    candidates: Sequence[Engineer],
+    rows_by_engineer: Mapping[int, Sequence[AssignmentRow]],
+    tickets_by_id: Mapping[int, Ticket],
+    triggered_at: datetime,
+    plan: PlanRow,
+    target: _StopDef,
+) -> _FreeSlot | None:
+    """The candidate with the earliest-arriving free interval for `target`, each one's
+    actual route reconstructed from `rows_by_engineer` — shared by `new_ticket` and
+    `engineer_unavailable`, which differ only in which brigades are candidates and which
+    rows their routes are read from."""
+    best: _FreeSlot | None = None
+    for engineer in candidates:
+        anchor_point, anchor_time, frozen, tail = _state_at(
+            rows_by_engineer.get(engineer.id, ()), tickets_by_id, engineer, triggered_at
+        )
+        points = [
+            anchor_point,
+            *(tickets_by_id[r.ticket_id].location for r in tail),
+            target.location,
+        ]
+        matrix = await osrm.table(engineer.vehicle_type, points)
+        shift_end = datetime.combine(plan.plan_date, engineer.shift_end)
+        found = _free_slot_position(matrix, anchor_time, tail, tickets_by_id, target, shift_end)
+        if found is None:
+            continue
+        position, result = found
+        if best is None or result.arrival < best.result.arrival:
+            best = _FreeSlot(
+                engineer=engineer, frozen=frozen, tail=tail, position=position, result=result
+            )
+    return best
+
+
+def _writes_from_free_slot(
+    best: _FreeSlot, assigned_text: Callable[[Engineer, datetime], str]
+) -> list[AssignmentWrite]:
+    offset = len(best.frozen)
+    before = [
+        _copy_write(best.engineer, r, offset + i)
+        for i, r in enumerate(best.tail[: best.position], start=1)
+    ]
+    new_write = AssignmentWrite(
+        ticket_id=best.result.ticket_id,
+        engineer_id=best.engineer.id,
+        sequence_no=offset + best.position + 1,
+        planned_arrival=best.result.arrival,
+        travel_time_min=best.result.travel_min,
+        travel_distance_m=round(best.result.distance_m),
+        unassigned_reason=None,
+        explanation=assigned_text(best.engineer, best.result.arrival),
+    )
+    after = [
+        _copy_write(best.engineer, r, offset + best.position + 1 + i)
+        for i, r in enumerate(best.tail[best.position :], start=1)
+    ]
+    return _frozen_writes(best.engineer, best.frozen) + before + [new_write] + after
+
+
 def _visit_end(row: AssignmentRow, tickets_by_id: Mapping[int, Ticket]) -> datetime:
     """A brigade that arrives before a ticket's window opens waits for it (as `_walk` and
     `baseline.py` both do) — `row.planned_arrival` is the raw arrival, not the start of
@@ -774,6 +867,23 @@ def _visit_end(row: AssignmentRow, tickets_by_id: Mapping[int, Ticket]) -> datet
     window_start = tickets_by_id[row.ticket_id].window_start
     start = max(row.planned_arrival, window_start)
     return start + timedelta(minutes=row.duration_min)
+
+
+def _row_from_write(write: AssignmentWrite, duration_min: int) -> AssignmentRow:
+    """An `AssignmentWrite` just produced within this same `engineer_unavailable` event,
+    reinterpreted as the `AssignmentRow` its recipient's route now stands at — so the next
+    dropped ticket's free-interval search sees this insertion rather than the parent plan."""
+    return AssignmentRow(
+        ticket_id=write.ticket_id,
+        engineer_id=write.engineer_id,
+        sequence_no=write.sequence_no,
+        planned_arrival=write.planned_arrival,
+        travel_time_min=write.travel_time_min,
+        travel_distance_m=write.travel_distance_m,
+        unassigned_reason=write.unassigned_reason,
+        explanation=write.explanation,
+        duration_min=duration_min,
+    )
 
 
 def _copy_write(engineer: Engineer, row: AssignmentRow, sequence_no: int) -> AssignmentWrite:
@@ -1011,6 +1121,27 @@ def _regular_unassigned_text(reason: UnassignedReason) -> str:
     return "Свободного интервала без сдвига уже стоящих заявок не нашлось ни у одной бригады."
 
 
+def _unavailable_assigned_text(engineer: Engineer, arrival: datetime) -> str:
+    return (
+        f"Бригада «{engineer.name}», прибытие {arrival:%H:%M} — переставлена в свободный "
+        "интервал маршрута с бригады, ставшей недоступной, без сдвига уже стоящих заявок."
+    )
+
+
+def _unavailable_unassigned_text(reason: UnassignedReason) -> str:
+    if reason is UnassignedReason.NO_SKILL:
+        return "Заявка снята с недоступной бригады: ни одна другая бригада региона с нужным навыком не найдена."
+    if reason is UnassignedReason.NO_VEHICLE:
+        return (
+            "Заявка снята с недоступной бригады: ни одна бригада с нужным навыком "
+            "не располагает нужным транспортом."
+        )
+    return (
+        "Заявка снята с недоступной бригады: свободного интервала без сдвига уже стоящих "
+        "заявок не нашлось ни у одной другой бригады."
+    )
+
+
 def _remap_ticket_id(
     writes: Sequence[AssignmentWrite], old: int, new: int
 ) -> list[AssignmentWrite]:
@@ -1050,7 +1181,11 @@ def _assemble(
     return writes
 
 
-def _diff(parent_rows: Sequence[AssignmentRow], new_writes: Sequence[AssignmentWrite]) -> PlanDiff:
+def _diff(
+    parent_rows: Sequence[AssignmentRow],
+    new_writes: Sequence[AssignmentWrite],
+    reassigned_from_unavailable_engineer: Sequence[int] = (),
+) -> PlanDiff:
     parent_by_ticket = {r.ticket_id: r for r in parent_rows}
     changed: list[AssignmentChange] = []
     newly_assigned: list[int] = []
@@ -1090,5 +1225,6 @@ def _diff(parent_rows: Sequence[AssignmentRow], new_writes: Sequence[AssignmentW
         changed_assignments=changed,
         newly_assigned=sorted(newly_assigned),
         newly_unassigned=sorted(newly_unassigned),
+        reassigned_from_unavailable_engineer=sorted(reassigned_from_unavailable_engineer),
         plan_stability=len(changed_engineers),
     )

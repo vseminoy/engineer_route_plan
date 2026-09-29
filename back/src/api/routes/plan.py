@@ -20,6 +20,7 @@ from src.service.plan_reader import (
 )
 from src.service.replan import (
     AssignmentChange,
+    EngineerUnavailableEvent,
     IncidentInput,
     NewTicketEvent,
     NewUrgentTicketEvent,
@@ -238,8 +239,12 @@ def _replan_event(body: api.ReplanEventRequest) -> ReplanEvent:
             triggered_at=_triggered_at(event.triggered_at),
             ticket=_regular_ticket_input(event.ticket),
         )
-    return TicketCancelledEvent(
-        triggered_at=_triggered_at(event.triggered_at), ticket_id=event.ticket_id
+    if isinstance(event, api.TicketCancelledEvent):
+        return TicketCancelledEvent(
+            triggered_at=_triggered_at(event.triggered_at), ticket_id=event.ticket_id
+        )
+    return EngineerUnavailableEvent(
+        triggered_at=_triggered_at(event.triggered_at), engineer_id=event.engineer_id
     )
 
 
@@ -258,7 +263,7 @@ def _plan_diff(d: PlanDiff) -> api.PlanDiff:
         changed_assignments=[_assignment_change(c) for c in d.changed_assignments],
         newly_assigned=d.newly_assigned,
         newly_unassigned=d.newly_unassigned,
-        reassigned_from_unavailable_engineer=[],
+        reassigned_from_unavailable_engineer=d.reassigned_from_unavailable_engineer,
         plan_stability=d.plan_stability,
     )
 

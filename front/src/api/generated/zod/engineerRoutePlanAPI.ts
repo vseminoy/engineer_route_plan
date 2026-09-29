@@ -828,7 +828,7 @@ export const ReplanPlanResponse = zod.strictObject({
 })).describe('Заявки, у которых сменилась бригада и/или порядковый номер визита'),
   "newly_assigned": zod.array(zod.int()).describe('Заявки, назначенные впервые этим событием, по возрастанию ticket_id'),
   "newly_unassigned": zod.array(zod.int()).describe('Заявки, назначенные в plan_id, а этим событием ушедшие в unassigned, по возрастанию ticket_id'),
-  "reassigned_from_unavailable_engineer": zod.array(zod.int()).describe('Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable; сервер пока не обрабатывает это событие, поле всегда пустое'),
+  "reassigned_from_unavailable_engineer": zod.array(zod.int()).describe('Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable, на маршруты других бригад; для остальных типов событий — всегда пустое'),
   "plan_stability": zod.int().min(replanPlanResponseDiffPlanStabilityMin).describe('Число бригад, чей маршрут изменило это событие')
 })
 })

@@ -1557,8 +1557,8 @@ components:
             type: integer
           description: >-
             Заявки, переставленные с бригады, ставшей недоступной событием
-            engineer_unavailable; сервер пока не обрабатывает это событие,
-            поле всегда пустое
+            engineer_unavailable, на маршруты других бригад; для остальных
+            типов событий — всегда пустое
         plan_stability:
           type: integer
           minimum: 0

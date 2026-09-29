@@ -972,6 +972,12 @@
 | `test_ticket_cancelled_drops_visit_and_shifts_the_tail` | у бригады отменённый визит и один открытый визит после него | строки отменённого визита в новом плане нет вовсе; открытый визит получает `sequence_no=1` и пересчитанное время; `diff.changed_assignments` содержит его (сменился `sequence_no`) |
 | `test_ticket_cancelled_ticket_not_found` | `ticket_id` события не входит в заявки региона | `NotFound(reason="ticket_not_found")` |
 | `test_ticket_cancelled_ticket_not_yet_cancelled` | заявка существует, но её статус не `cancelled` | `Conflict(reason="ticket_not_cancelled")` |
+| `test_engineer_unavailable_moves_ticket_to_another_engineer` | у недоступной бригады один открытый визит, у другой бригады с тем же навыком есть свободный интервал | заявка переставлена на другую бригаду; `explanation` называет причину («недоступной»); ни одной строки на бывшей бригаде не осталось; `diff.reassigned_from_unavailable_engineer == [<ticket_id>]`, `plan_stability == 2` |
+| `test_engineer_unavailable_in_progress_visit_stays_with_the_engineer` | у недоступной бригады визит `in_progress` и открытый визит в хвосте | замороженный визит остаётся у неё без изменений (не входит в `diff.changed_assignments`); открытый визит переставлен на другую бригаду, входит в `diff.reassigned_from_unavailable_engineer` |
+| `test_engineer_unavailable_no_skilled_engineer_leaves_ticket_unassigned` | ни у одной другой бригады нет нужного навыка | `unassigned_reason="no_skill"`, `diff.reassigned_from_unavailable_engineer == []` |
+| `test_engineer_unavailable_no_free_interval_leaves_ticket_unassigned` | у единственной подходящей бригады свободного интервала без сдвига уже стоящей заявки нет | `unassigned_reason="all_eligible_engineers_booked_elsewhere"` |
+| `test_engineer_unavailable_engineer_not_found` | `engineer_id` события не входит в бригады набора плана | `NotFound(reason="engineer_not_found")` |
+| `test_engineer_unavailable_second_dropped_ticket_sees_first_insertion` | у недоступной бригады два открытых визита, оба помещаются на одну и ту же другую бригаду | второй визит переставлен позже первого на матрице переездов (не в тот же интервал повторно) — второй поиск свободного интервала видит маршрут этой бригады уже с первой переставленной заявкой, а не пустой хвост плана-родителя |
 | `test_plan_not_done_is_rejected` | план-родитель `status="running"` | `InvalidInput(reason="plan_not_ready")` |
 | `test_plan_not_found` | `get_plan` вернул `None` | `NotFound(reason="plan_not_found")` |
 | `test_triggered_at_outside_plan_date_is_rejected` | `triggered_at` — другая календарная дата, чем `plan_date` | `InvalidInput(reason="triggered_at_out_of_range")` |
@@ -989,9 +995,11 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_replan_new_urgent_ticket_returns_the_new_plan` | валидное тело `new_urgent_ticket`, `Replanner.replan` вернул `ReplanOutcome` с непустым `diff` и `engineer_set_id` родителя | `200`, тело `PlanReplanResult` — `plan_id`/`parent_plan_id`/`status=done`/`engineer_set_id` из исхода, `engineers`/`unassigned`/`metrics` из `PlanReader.get`, `diff` — как вернул сервис, `reassigned_from_unavailable_engineer` всегда `[]`; событие дошло до `Replanner.replan` разобранным (`NewUrgentTicketEvent` с полями заявки и `reaction_min`) |
+| `test_replan_new_urgent_ticket_returns_the_new_plan` | валидное тело `new_urgent_ticket`, `Replanner.replan` вернул `ReplanOutcome` с непустым `diff` и `engineer_set_id` родителя | `200`, тело `PlanReplanResult` — `plan_id`/`parent_plan_id`/`status=done`/`engineer_set_id` из исхода, `engineers`/`unassigned`/`metrics` из `PlanReader.get`, `diff` — как вернул сервис (включая `reassigned_from_unavailable_engineer`); событие дошло до `Replanner.replan` разобранным (`NewUrgentTicketEvent` с полями заявки и `reaction_min`) |
 | `test_replan_ticket_cancelled_reaches_the_service` | валидное тело `ticket_cancelled` | `Replanner.replan` вызван с `TicketCancelledEvent(ticket_id=...)` |
 | `test_replan_new_ticket_reaches_the_service` | валидное тело `new_ticket` | `Replanner.replan` вызван с `NewTicketEvent`, поля заявки и окно разобраны в `datetime` |
+| `test_replan_engineer_unavailable_reaches_the_service` | валидное тело `engineer_unavailable` | `Replanner.replan` вызван с `EngineerUnavailableEvent(engineer_id=...)` |
+| `test_replan_engineer_unavailable_engineer_not_found` | `Replanner.replan` поднимает `NotFound(reason="engineer_not_found")` | `404` |
 | `test_replan_new_ticket_invalid_window_date` | `ticket.window_start="2026-02-30T09:00:00"` (несуществующая дата, форму спека принимает) | `400`, `{"fields": [{"name": "ticket.window_start", "message": "Несуществующие дата или время"}]}` |
 | `test_replan_new_ticket_window_order_rejected_by_service` | `Replanner.replan` поднимает `InvalidInput(reason="window_order", message=...)` | `400`, `{"message": ...}` |
 | `test_replan_new_ticket_unknown_type_rejected_by_service` | `Replanner.replan` поднимает `InvalidInput(reason="ticket_type_unknown", message=...)` | `400`, `{"message": ...}` |

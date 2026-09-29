@@ -229,7 +229,11 @@ class FakeReplanner:
             algorithm="or_tools",
             engineer_set_id=70,
             diff=PlanDiff(
-                changed_assignments=[], newly_assigned=[], newly_unassigned=[], plan_stability=0
+                changed_assignments=[],
+                newly_assigned=[],
+                newly_unassigned=[],
+                reassigned_from_unavailable_engineer=[],
+                plan_stability=0,
             ),
         )
         self.error = error

@@ -11,6 +11,7 @@ from src.errors import (
 from src.service.plan_reader import MetricsRead, PlanRead
 from src.service.replan import (
     AssignmentChange,
+    EngineerUnavailableEvent,
     NewTicketEvent,
     NewUrgentTicketEvent,
     PlanDiff,
@@ -57,6 +58,12 @@ TICKET_CANCELLED_BODY = {
     "ticket_id": 21,
 }
 
+ENGINEER_UNAVAILABLE_BODY = {
+    "event_type": "engineer_unavailable",
+    "triggered_at": "2026-09-01T12:00:00",
+    "engineer_id": 11,
+}
+
 
 def test_replan_new_urgent_ticket_returns_the_new_plan() -> None:
     plan = PlanRead(
@@ -93,6 +100,7 @@ def test_replan_new_urgent_ticket_returns_the_new_plan() -> None:
             ],
             newly_assigned=[99],
             newly_unassigned=[],
+            reassigned_from_unavailable_engineer=[],
             plan_stability=2,
         ),
     )
@@ -220,6 +228,24 @@ def test_replan_invalid_triggered_at_date() -> None:
     assert response.json() == {
         "fields": [{"name": "triggered_at", "message": "Несуществующие дата или время"}]
     }
+
+
+def test_replan_engineer_unavailable_reaches_the_service() -> None:
+    replanner = FakeReplanner()
+    response = client(replanner=replanner).post(REPLAN_URL, json=ENGINEER_UNAVAILABLE_BODY)
+
+    assert response.status_code == 200
+    [(plan_id, event)] = replanner.calls
+    assert plan_id == 1
+    assert isinstance(event, EngineerUnavailableEvent)
+    assert event.engineer_id == 11
+
+
+def test_replan_engineer_unavailable_engineer_not_found() -> None:
+    replanner = FakeReplanner(error=NotFound("engineer_not_found", params={"engineer_id": 11}))
+    response = client(replanner=replanner).post(REPLAN_URL, json=ENGINEER_UNAVAILABLE_BODY)
+
+    assert response.status_code == 404
 
 
 def test_replan_plan_not_found() -> None:

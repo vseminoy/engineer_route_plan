@@ -695,9 +695,33 @@ class TicketCancelledEvent(BaseModel):
     ]
 
 
-class ReplanEventRequest(RootModel[NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent]):
+class EventType3(StrEnum):
+    engineer_unavailable = "engineer_unavailable"
+
+
+class EngineerUnavailableEvent(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    event_type: Annotated[EventType3, Field(description="Тип события — бригада стала недоступна")]
+    triggered_at: Annotated[
+        LocalDateTime,
+        Field(
+            description="Момент, когда бригада стала недоступна; план перестраивается от состояния бригад на этот момент"
+        ),
+    ]
+    engineer_id: Annotated[
+        int, Field(description="Бригада, ставшая недоступной", ge=1, le=9223372036854775807)
+    ]
+
+
+class ReplanEventRequest(
+    RootModel[
+        NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent | EngineerUnavailableEvent
+    ]
+):
     root: Annotated[
-        NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent,
+        NewUrgentTicketEvent | NewTicketEvent | TicketCancelledEvent | EngineerUnavailableEvent,
         Field(description="Одно событие перепланирования; тип определяет event_type."),
     ]
 
@@ -736,7 +760,7 @@ class PlanDiff(BaseModel):
     reassigned_from_unavailable_engineer: Annotated[
         list[int],
         Field(
-            description="Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable; это событие в API не реализовано, поле всегда пустое"
+            description="Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable, на маршруты других бригад; для остальных типов событий — всегда пустое"
         ),
     ]
     plan_stability: Annotated[

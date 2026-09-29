@@ -976,12 +976,11 @@ sequenceDiagram
 
 Синхронная операция — ответ `200` уже несёт готовый план, очереди и фоновой задачи, в
 отличие от `POST /api/v1/plan/build`, здесь нет. Тело — одно событие
-(`ReplanEventRequest`, `oneOf` по `event_type`): `new_urgent_ticket`, `new_ticket` или
-`ticket_cancelled`; ещё один вид события бизнес-процесса (недоступность бригады — вне
-текущей декомпозиции) контрактом не описан и здесь не принимается — неизвестное
-значение `event_type` проваливает `oneOf` и уходит по общей ветке `400 {fields}`. Сам
-механизм Contract Net для `new_urgent_ticket` (объявление задания бригадам-кандидатам,
-ставки, победитель, каскад вытеснения глубиной 1) и вставка `new_ticket` в свободный
+(`ReplanEventRequest`, `oneOf` по `event_type`): `new_urgent_ticket`, `new_ticket`,
+`ticket_cancelled` или `engineer_unavailable`; неизвестное значение `event_type`
+проваливает `oneOf` и уходит по общей ветке `400 {fields}`. Сам механизм Contract Net
+для `new_urgent_ticket` (объявление задания бригадам-кандидатам, ставки, победитель,
+каскад вытеснения глубиной 1) и вставка `new_ticket`/`engineer_unavailable` в свободный
 интервал маршрута (без объявления и без вытеснения) — в разделе сервисного слоя
 «Перепланирование: Contract Net»; здесь — только HTTP-ветки маршрута и персист. Новый
 план хранит полный набор
@@ -1041,6 +1040,11 @@ sequenceDiagram
             API->>API: лог plan_replan_failed (warning, reason=ticket_not_cancelled)
             API->>H: Conflict
             H-->>Client: 409 без тела
+        else event_type = engineer_unavailable и бригады engineer_id нет в наборе плана
+            Svc-->>API: NotFound
+            API->>API: лог plan_replan_failed (warning, reason=engineer_not_found)
+            API->>H: NotFound
+            H-->>Client: 404 без тела
         else triggered_at раньше начала или позже конца даты плана
             Svc-->>API: InvalidInput(triggered_at_out_of_range)
             API->>API: лог plan_replan_failed (warning, reason=triggered_at_out_of_range)
@@ -1090,6 +1094,19 @@ sequenceDiagram
                 end
             else event_type = ticket_cancelled
                 Svc->>Svc: снять заявку с маршрута бригады, сдвинуть последующие визиты
+            else event_type = engineer_unavailable
+                Svc->>Svc: снять с недоступной бригады не начатые визиты (in_progress остаётся)
+                Svc->>OSRM: по каждой снятой заявке, по одной — время в пути от точки освобождения/визитов остальных бригад (с учётом уже переставленных этим событием) до заявки
+                alt OSRM недоступен
+                    OSRM-->>Svc: DependencyUnavailable
+                    Svc-->>API: DependencyUnavailable
+                    API->>API: лог plan_replan_failed (error, reason=osrm_unavailable)
+                    API->>H: DependencyUnavailable
+                    H-->>Client: 503 без тела
+                else
+                    OSRM-->>Svc: время в пути по кандидатам
+                    Svc->>Svc: свободный интервал у кандидата (без объявления, без вытеснения) для каждой снятой заявки → бригада+позиция или unassigned (см. service-диаграмму)
+                end
             end
             Svc->>PlanRepo: BEGIN#59; [new_urgent_ticket, new_ticket] INSERT tickets (серверные required_skill/priority/duration_min/received_at, у new_ticket — из таблицы соответствия типов)#59; INSERT plans (parent_plan_id=42, engineer_set_id — тот же, что у parent_plan_id, status='done')#59; INSERT assignments — по одной строке на каждую открытую заявку региона: у незатронутых бригад копия строки parent_plan_id, у затронутых — новое назначение (или unassigned)#59; COMMIT
             alt БД отклонила запрос или недоступна
