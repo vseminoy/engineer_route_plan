@@ -1,5 +1,6 @@
 """Writing a region's loaded data."""
 
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 import aiosql
 from psycopg import AsyncConnection
 
-from src.domain import EngineerDraft, RegionDraft, RegionWritten, TicketDraft
+from src.domain import EngineerDraft, EngineerSetParams, RegionDraft, RegionWritten, TicketDraft
 from src.repository.db import fetch_all, run_query
 
 QUERIES_DIR = Path(__file__).resolve().parents[2] / "queries"
@@ -16,19 +17,30 @@ QUERIES_DIR = Path(__file__).resolve().parents[2] / "queries"
 # static type. Source: https://nackjicholson.github.io/aiosql/database-driver-adapters.html
 queries: Any = aiosql.from_path(QUERIES_DIR, "apsycopg")
 
+# (engineers, morning_share, evening_share, seed) -> the set's generated brigades. The
+# caller binds the office point, remote towns and ticket districts of this load — the only
+# inputs a set's own row cannot carry — via `functools.partial` before passing this in.
+GenerateEngineers = Callable[[int, float, float, str], list[EngineerDraft]]
+
 
 async def replace_region_data(
     conn: AsyncConnection[Any],
     region: RegionDraft,
-    engineers: list[EngineerDraft],
+    default_set_params: EngineerSetParams,
+    generate_engineers: GenerateEngineers,
     tickets: list[TicketDraft],
 ) -> RegionWritten:
     """Replaces the region's tickets with the given ones in one transaction and returns
-    the region id and whether its brigades were kept. Plans of the region, their rows and
-    replan events go too: they refer to the tickets being replaced. When the region's
-    brigades are exactly the given ones in name, skills, vehicle type and shift, they keep
-    their ids and only move to the given start points; otherwise they are replaced by the
-    given ones. On any error nothing changes."""
+    the region id, the brigade count across every set and, by set name, whether that set's
+    brigades were kept. Plans of the region (every set), their rows and replan events go
+    too: they refer to the tickets being replaced.
+
+    The region's first load creates its `default` set with `default_set_params`; a later
+    load finds it (and any `generated` set) already there and regenerates each set's
+    brigades from that set's own stored parameters — `generate_engineers` is called once
+    per set. A set whose regenerated brigades are exactly the stored ones in name, skills,
+    vehicle type and shift keeps their ids and only moves them to the new start points;
+    otherwise that set's brigades are replaced. On any error nothing changes."""
     async with conn.transaction():
         row = await run_query(
             "upsert_region",
@@ -50,7 +62,39 @@ async def replace_region_data(
         ):
             delete = getattr(queries, name)
             await run_query(name, partial(delete, conn, region_id=region_id))
-        engineers_kept = await _store_engineers(conn, region_id, engineers)
+        sets = await run_query(
+            "list_engineer_sets_by_region",
+            lambda: fetch_all(queries.list_engineer_sets_by_region(conn, region_id=region_id)),
+        )
+        if not sets:
+            new_id = await run_query(
+                "insert_default_engineer_set",
+                lambda: queries.insert_default_engineer_set(
+                    conn,
+                    region_id=region_id,
+                    engineers=default_set_params.engineers,
+                    morning_share=default_set_params.morning_share,
+                    evening_share=default_set_params.evening_share,
+                    seed=default_set_params.seed,
+                ),
+            )
+            sets = [
+                (
+                    new_id,
+                    "default",
+                    "demo",
+                    default_set_params.engineers,
+                    default_set_params.morning_share,
+                    default_set_params.evening_share,
+                    default_set_params.seed,
+                )
+            ]
+        engineers_kept: dict[str, bool] = {}
+        total_engineers = 0
+        for set_id, set_name, _kind, set_engineers, morning_share, evening_share, seed in sets:
+            drafts = generate_engineers(set_engineers, morning_share, evening_share, seed)
+            engineers_kept[set_name] = await _store_engineer_set(conn, set_id, drafts)
+            total_engineers += len(drafts)
         await run_query(
             "insert_tickets",
             lambda: queries.insert_tickets(
@@ -80,17 +124,17 @@ async def replace_region_data(
                 ],
             ),
         )
-    return RegionWritten(region_id=region_id, engineers_kept=engineers_kept)
+    return RegionWritten(region_id=region_id, engineers=total_engineers, engineers_kept=engineers_kept)
 
 
-async def _store_engineers(
-    conn: AsyncConnection[Any], region_id: int, engineers: list[EngineerDraft]
+async def _store_engineer_set(
+    conn: AsyncConnection[Any], engineer_set_id: int, engineers: list[EngineerDraft]
 ) -> bool:
     """Runs after the region's plans are gone, since plan rows refer to brigades.
-    Returns true when the stored brigades are kept and only their start points move."""
+    Returns true when the set's stored brigades are kept and only their start points move."""
     rows = await run_query(
-        "list_region_roster",
-        lambda: fetch_all(queries.list_region_roster(conn, region_id=region_id)),
+        "list_engineer_set_roster",
+        lambda: fetch_all(queries.list_engineer_set_roster(conn, engineer_set_id=engineer_set_id)),
     )
     stored = sorted(
         (name, tuple(sorted(skills)), vehicle_type, shift_start, shift_end)
@@ -113,7 +157,7 @@ async def _store_engineers(
                 conn,
                 [
                     {
-                        "region_id": region_id,
+                        "engineer_set_id": engineer_set_id,
                         "name": e.name,
                         "start_lon": e.start.lon,
                         "start_lat": e.start.lat,
@@ -124,8 +168,8 @@ async def _store_engineers(
         )
         return True
     await run_query(
-        "delete_region_engineers",
-        lambda: queries.delete_region_engineers(conn, region_id=region_id),
+        "delete_engineer_set_engineers",
+        lambda: queries.delete_engineer_set_engineers(conn, engineer_set_id=engineer_set_id),
     )
     await run_query(
         "insert_engineers",
@@ -133,7 +177,7 @@ async def _store_engineers(
             conn,
             [
                 {
-                    "region_id": region_id,
+                    "engineer_set_id": engineer_set_id,
                     "name": e.name,
                     "start_lon": e.start.lon,
                     "start_lat": e.start.lat,

@@ -18,10 +18,10 @@ async def get_region_id(conn: AsyncConnection[Any], code: str) -> int | None:
     return region_id
 
 
-async def list_engineers(conn: AsyncConnection[Any], region_id: int) -> list[Engineer]:
+async def list_engineers(conn: AsyncConnection[Any], engineer_set_id: int) -> list[Engineer]:
     rows = await run_query(
-        "list_engineers_by_region",
-        lambda: fetch_all(queries.list_engineers_by_region(conn, region_id=region_id)),
+        "list_engineers_by_set",
+        lambda: fetch_all(queries.list_engineers_by_set(conn, engineer_set_id=engineer_set_id)),
     )
     return [
         Engineer(

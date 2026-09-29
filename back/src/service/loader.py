@@ -6,13 +6,14 @@ from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
 import structlog
 from psycopg import AsyncConnection
 
-from src.domain import EngineerDraft, RegionDraft, RegionWritten, TicketDraft
+from src.domain import EngineerDraft, EngineerSetParams, RegionDraft, RegionWritten, TicketDraft
 from src.errors import AppError, InvalidInput
 from src.logging import get_logger
 from src.repository.db import database_errors
@@ -38,8 +39,9 @@ DEMO_DIR = DATA_DIR / "demo"
 
 Source = Literal["csv", "json", "demo"]
 Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection[Any]]]
+GenerateEngineers = Callable[[int, float, float, str], list[EngineerDraft]]
 ReplaceRegionData = Callable[
-    [AsyncConnection[Any], RegionDraft, list[EngineerDraft], list[TicketDraft]],
+    [AsyncConnection[Any], RegionDraft, EngineerSetParams, GenerateEngineers, list[TicketDraft]],
     Awaitable[RegionWritten],
 ]
 
@@ -187,16 +189,26 @@ class Loader:
             office=office or region.center,
         )
         districts = {t.district for t in tickets if t.district}
-        engineers = generate_engineers(region, self.regions, draft.office, districts)
+        assert self.regions.shifts.morning.share is not None
+        assert self.regions.shifts.evening.share is not None
+        default_set_params = EngineerSetParams(
+            engineers=region.engineers,
+            morning_share=self.regions.shifts.morning.share,
+            evening_share=self.regions.shifts.evening.share,
+            seed=region.code,
+        )
+        generate = partial(generate_engineers, self.regions, office=draft.office, districts=districts)
         queued = time.monotonic()
         async with self._write_turn:
             wait_ms += _since(queued)
             async with database_errors("replace_region_data"), self.connect() as conn:
-                written = await self.replace_region_data(conn, draft, engineers, tickets)
+                written = await self.replace_region_data(
+                    conn, draft, default_set_params, generate, tickets
+                )
 
         result = LoadResult(
             region=region.code,
-            engineers=len(engineers),
+            engineers=written.engineers,
             tickets=len(tickets),
             rows_total=parsed.rows_total,
             rows_skipped=parsed.split.skipped,

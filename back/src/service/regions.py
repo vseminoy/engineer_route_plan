@@ -54,11 +54,13 @@ class Shifts(BaseModel):
             raise ValueError("the full-day shift takes the brigades left over and has no share")
         return self
 
-    def split(self, engineers: int) -> tuple[int, int, int]:
-        """(morning, evening, full day) brigade counts."""
-        assert self.morning.share is not None and self.evening.share is not None
-        morning = math.floor(engineers * self.morning.share)
-        evening = math.floor(engineers * self.evening.share)
+    def split(
+        self, engineers: int, morning_share: float, evening_share: float
+    ) -> tuple[int, int, int]:
+        """(morning, evening, full day) brigade counts for the given shares — the
+        `default` set's own config shares, or another set's stored ones."""
+        morning = math.floor(engineers * morning_share)
+        evening = math.floor(engineers * evening_share)
         return morning, evening, engineers - morning - evening
 
 
@@ -99,8 +101,11 @@ class Regions(BaseModel):
 
     @model_validator(mode="after")
     def _enough_full_day(self) -> "Regions":
+        assert self.shifts.morning.share is not None and self.shifts.evening.share is not None
         for region in self.regions.values():
-            full_day = self.shifts.split(region.engineers)[2]
+            full_day = self.shifts.split(
+                region.engineers, self.shifts.morning.share, self.shifts.evening.share
+            )[2]
             if full_day < MIN_FULL_DAY_ENGINEERS:
                 raise ValueError(
                     f"regions.{region.code}: {full_day} full-day brigades, "

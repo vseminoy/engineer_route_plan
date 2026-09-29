@@ -14,3 +14,8 @@ RETURNING id;
 -- name: get_region_id(code)$
 -- Id of the region with this code; none until the region's data is loaded for the first time.
 SELECT id FROM regions WHERE code = :code;
+
+-- name: get_region_office(region_id)^
+-- The region's office point, for generating a set's brigades outside a file load
+-- (POST /engineer-sets) — a file load reads it from the loaded file itself instead.
+SELECT ST_Y(office_geom) AS lat, ST_X(office_geom) AS lon FROM regions WHERE id = :region_id;

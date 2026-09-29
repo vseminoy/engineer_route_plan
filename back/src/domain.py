@@ -81,14 +81,55 @@ class TicketDraft(BaseModel):
     received_at: datetime
 
 
+class EngineerSetKind(StrEnum):
+    DEMO = "demo"
+    GENERATED = "generated"
+
+
+class EngineerSetParams(BaseModel):
+    """Generator parameters of a region's `default` set, computed from region config —
+    what the loader passes in for the region's very first load, before any `engineer_sets`
+    row exists to read them back from."""
+
+    model_config = ConfigDict(frozen=True)
+
+    engineers: int = Field(ge=1, le=30)
+    morning_share: float = Field(ge=0, le=1)
+    evening_share: float = Field(ge=0, le=1)
+    seed: str = Field(min_length=1, max_length=50)
+
+
+class EngineerSet(BaseModel):
+    """A stored engineer set, as listed for a region."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    name: str
+    kind: EngineerSetKind
+    engineers: int
+    morning_share: float
+    evening_share: float
+    seed: str
+
+
+class EngineerSetWithRegion(EngineerSet):
+    """`EngineerSet` plus the region it belongs to, for ownership checks the region-less
+    read does not need."""
+
+    region_id: int
+
+
 class RegionWritten(BaseModel):
-    """The outcome of writing a region's data: `engineers_kept` is true when the stored
+    """The outcome of writing a region's data: `engineers` is the region's brigade count
+    across every set; `engineers_kept` is true, by set name, when that set's stored
     brigades kept their ids and only moved to the new start points."""
 
     model_config = ConfigDict(frozen=True)
 
     region_id: int
-    engineers_kept: bool
+    engineers: int
+    engineers_kept: dict[str, bool]
 
 
 class Engineer(BaseModel):

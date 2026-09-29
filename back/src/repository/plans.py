@@ -15,6 +15,7 @@ from src.repository.region_data import queries
 class PlanRow:
     id: int
     region_id: int
+    engineer_set_id: int
     plan_date: date
     algorithm: str
     status: str
@@ -57,6 +58,7 @@ class AssignmentWrite:
 async def insert_running_plan(
     conn: AsyncConnection[Any],
     region_id: int,
+    engineer_set_id: int,
     plan_date: date,
     algorithm: str,
     created_at: datetime,
@@ -66,6 +68,7 @@ async def insert_running_plan(
         lambda: queries.insert_running_plan(
             conn,
             region_id=region_id,
+            engineer_set_id=engineer_set_id,
             plan_date=plan_date,
             algorithm=algorithm,
             created_at=created_at,
@@ -129,10 +132,11 @@ async def get_plan(conn: AsyncConnection[Any], plan_id: int) -> PlanRow | None:
     row = await run_query("get_plan", lambda: queries.get_plan(conn, plan_id=plan_id))
     if row is None:
         return None
-    id_, region_id, plan_date, algorithm, status, failed_reason = row
+    id_, region_id, engineer_set_id, plan_date, algorithm, status, failed_reason = row
     return PlanRow(
         id=id_,
         region_id=region_id,
+        engineer_set_id=engineer_set_id,
         plan_date=plan_date,
         algorithm=algorithm,
         status=status,
@@ -143,20 +147,22 @@ async def get_plan(conn: AsyncConnection[Any], plan_id: int) -> PlanRow | None:
 async def insert_replanned_plan(
     conn: AsyncConnection[Any],
     region_id: int,
+    engineer_set_id: int,
     plan_date: date,
     algorithm: str,
     parent_plan_id: int,
     created_at: datetime,
     assignments: list[AssignmentWrite],
 ) -> int:
-    """A synchronous, already-`done` plan: `replan` never leaves `running`. Returns the
-    new plan's id."""
+    """A synchronous, already-`done` plan: `replan` never leaves `running`.
+    `engineer_set_id` is always the parent plan's own. Returns the new plan's id."""
     async with conn.transaction():
         plan_id: int = await run_query(
             "insert_replanned_plan",
             lambda: queries.insert_replanned_plan(
                 conn,
                 region_id=region_id,
+                engineer_set_id=engineer_set_id,
                 plan_date=plan_date,
                 algorithm=algorithm,
                 parent_plan_id=parent_plan_id,

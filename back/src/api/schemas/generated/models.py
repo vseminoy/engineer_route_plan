@@ -264,7 +264,9 @@ class DataLoadResult(BaseModel):
         extra="forbid",
     )
     region: RegionCode
-    engineers: Annotated[int, Field(description="Сколько бригад теперь у региона", ge=0)]
+    engineers: Annotated[
+        int, Field(description="Сколько бригад теперь во всех наборах региона вместе", ge=0)
+    ]
     tickets: Annotated[int, Field(description="Сколько заявок загружено", ge=1)]
     rows_total: Annotated[int, Field(description="Строк данных в файле, без заголовка CSV", ge=0)]
     rows_skipped: Annotated[
@@ -280,9 +282,90 @@ class DataLoadResult(BaseModel):
     ]
 
 
+class EngineerSetKind(StrEnum):
+    demo = "demo"
+    generated = "generated"
+
+
+class EngineerSet(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    id: Annotated[int, Field(description="Идентификатор набора бригад на сервере")]
+    name: Annotated[
+        str,
+        Field(
+            description='Название набора, уникальное в регионе; у набора kind=demo всегда "default"'
+        ),
+    ]
+    kind: EngineerSetKind
+    engineers: Annotated[int, Field(description="Сколько бригад в наборе", ge=1, le=30)]
+    morning_share: Annotated[
+        float,
+        Field(description="Доля бригад на утренней смене, которой создан набор", ge=0.0, le=1.0),
+    ]
+    evening_share: Annotated[
+        float,
+        Field(description="Доля бригад на вечерней смене, которой создан набор", ge=0.0, le=1.0),
+    ]
+    seed: Annotated[str, Field(description="Зерно генератора, которым создан набор")]
+    description: Annotated[
+        str,
+        Field(
+            description="Параметры генератора набора текстом для пользователя (число бригад, доли смен, seed) — чтобы отличить наборы одного региона друг от друга на фронтенде"
+        ),
+    ]
+
+
+class EngineerSetCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    region: RegionCode
+    name: Annotated[
+        str,
+        Field(
+            description='Название набора, уникальное в регионе; "default" занято набором региона, если регион загружен',
+            max_length=100,
+            min_length=1,
+        ),
+    ]
+    engineers: Annotated[int, Field(description="Сколько бригад создать", ge=1, le=30)]
+    morning_share: Annotated[
+        float,
+        Field(
+            description="Доля бригад на утренней смене (округляется вниз); вместе с evening_share не должна оставлять меньше 4 бригад на весь день",
+            ge=0.0,
+            le=1.0,
+        ),
+    ]
+    evening_share: Annotated[
+        float, Field(description="Доля бригад на вечерней смене (округляется вниз)", ge=0.0, le=1.0)
+    ]
+    seed: Annotated[
+        str,
+        Field(
+            description="Зерно генератора; тот же seed и те же остальные параметры дают тот же набор",
+            max_length=50,
+            min_length=1,
+        ),
+    ]
+
+
 class PlanAlgorithm(StrEnum):
     or_tools = "or_tools"
     baseline_fcfs = "baseline_fcfs"
+
+
+class EngineerSetId(RootModel[int]):
+    root: Annotated[
+        int,
+        Field(
+            description="Набор бригад региона, для которого строится план; null или отсутствует — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у поля engineer_set_id",
+            ge=1,
+            le=9223372036854775807,
+        ),
+    ] = None
 
 
 class PlanBuildRequest(BaseModel):
@@ -297,6 +380,12 @@ class PlanBuildRequest(BaseModel):
         ),
     ]
     algorithm: PlanAlgorithm
+    engineer_set_id: Annotated[
+        EngineerSetId | None,
+        Field(
+            description="Набор бригад региона, для которого строится план; null или отсутствует — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у поля engineer_set_id"
+        ),
+    ] = None
 
 
 class UnassignedReason(StrEnum):
@@ -453,6 +542,12 @@ class Plan(BaseModel):
     plan_id: Annotated[int, Field(description="Идентификатор плана на сервере")]
     algorithm: PlanAlgorithm
     status: PlanStatus
+    engineer_set_id: Annotated[
+        int,
+        Field(
+            description="Набор бригад, для которого построен план — тот же, что был передан (или default) в POST /plan/build, каким бы ни был status"
+        ),
+    ]
     engineers: Annotated[
         list[EngineerRoute] | None,
         Field(
@@ -671,6 +766,10 @@ class PlanReplanResult(BaseModel):
         int, Field(description="План, от которого посчитан этот, — plan_id из пути запроса")
     ]
     algorithm: Annotated[PlanAlgorithm, Field(description="Тот же алгоритм, что у plan_id")]
+    engineer_set_id: Annotated[
+        int,
+        Field(description="Тот же набор бригад, что у plan_id — перепланирование не меняет набор"),
+    ]
     status: Annotated[
         Status1,
         Field(description="Перепланирование синхронное: ответ 200 всегда несёт готовый план"),
