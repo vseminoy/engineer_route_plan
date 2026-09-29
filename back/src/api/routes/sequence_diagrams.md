@@ -809,7 +809,7 @@ sequenceDiagram
             else event_type = ticket_cancelled
                 Svc->>Svc: снять заявку с маршрута бригады, сдвинуть последующие визиты
             end
-            Svc->>PlanRepo: BEGIN; [new_urgent_ticket, new_ticket] INSERT tickets (серверные required_skill/priority/duration_min/received_at, у new_ticket — из таблицы соответствия типов); INSERT plans (parent_plan_id=42, status='done'); INSERT assignments — по одной строке на каждую открытую заявку региона: у незатронутых бригад копия строки parent_plan_id, у затронутых — новое назначение (или unassigned); COMMIT
+            Svc->>PlanRepo: BEGIN#59; [new_urgent_ticket, new_ticket] INSERT tickets (серверные required_skill/priority/duration_min/received_at, у new_ticket — из таблицы соответствия типов)#59; INSERT plans (parent_plan_id=42, status='done')#59; INSERT assignments — по одной строке на каждую открытую заявку региона: у незатронутых бригад копия строки parent_plan_id, у затронутых — новое назначение (или unassigned)#59; COMMIT
             alt БД отклонила запрос или недоступна
                 PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
                 Svc-->>API: DependencyUnavailable | DatabaseFailure

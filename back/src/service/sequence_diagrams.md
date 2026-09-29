@@ -613,7 +613,7 @@ sequenceDiagram
     participant Repo as queries (планы)
 
     BG->>Builder: build(plan_id, tickets, engineers, plan_date, algorithm)
-    note over Builder: tickets, engineers — те же объекты, что enqueue() уже прочитал и\nпровалидировал; фоновая задача их не перечитывает
+    note over Builder: tickets, engineers — те же объекты, что enqueue() уже прочитал и\nпровалидировал#59; фоновая задача их не перечитывает
     par на каждый тип транспорта бригад
         Builder->>OSRM: table(vehicle, старты + точки заявок)
     end
@@ -749,7 +749,7 @@ sequenceDiagram
             OSRM-->>Svc: время в пути по кандидатам
             Svc->>Svc: свободный интервал(candidate) = позиция, где прибытие на заявку в её окне и следующий визит бригады не отодвигается
             alt хотя бы один кандидат нашёл интервал
-                Svc->>Svc: победитель = min время прибытия среди найденных интервалов; вставить заявку, хвост маршрута не пересчитывается
+                Svc->>Svc: победитель = min время прибытия среди найденных интервалов#59; вставить заявку, хвост маршрута не пересчитывается
             else
                 Svc->>Explain: unassigned_text(all_eligible_engineers_booked_elsewhere)
                 Svc-->>Svc: заявка → unassigned
