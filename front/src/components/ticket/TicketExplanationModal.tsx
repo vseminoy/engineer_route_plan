@@ -14,9 +14,9 @@ interface Props {
   onClose: () => void;
 }
 
-// 06_spec_frontend.md §3.5 — assigned block (engineer, arrival, full
-// explanation) or unassigned block (reason heading + full explanation),
-// never truncated (NFR-01/NFR-07). Full-screen on mobile via CSS (≤767px).
+// Assigned block (engineer, arrival, full explanation) or unassigned block
+// (reason heading + full explanation), never truncated. Full-screen on
+// mobile via CSS (≤767px).
 export function TicketExplanationModal({ plan, ticketById, ticketId, region, onClose }: Props) {
   const summary = ticketById.get(ticketId);
   const setStatus = useSetTicketStatus(plan.planId, region);

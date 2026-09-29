@@ -1,13 +1,15 @@
-import type { ApiPlan, ApiPlanDiff } from './types';
 import type {
   DataLoadResult as ApiDataLoadResult,
   Engineer,
   EngineerRoute as ApiEngineerRoute,
   Plan as GeneratedPlan,
   PlanComparisonEntry,
+  PlanDiff as ApiPlanDiff,
   PlanMetrics as ApiPlanMetrics,
+  PlanReplanResult,
   Region as ApiRegion,
   Ticket,
+  UnassignedTicket as ApiUnassignedTicket,
   Visit as ApiRouteStop
 } from './generated/schemas';
 import { minutesSinceMidnight } from '@/lib/format';
@@ -32,9 +34,8 @@ import type {
   VehicleType
 } from '@/types/domain';
 
-// Shared by the generated build/get response and the legacy hand-written
-// replan one (F6) — both name their route stop, engineer route and
-// unassigned-ticket objects identically, so one set of mappers covers both.
+// Shared by the build/get and replan responses — both name their route stop,
+// engineer route and unassigned-ticket objects identically.
 function mapRouteStop(s: ApiRouteStop): RouteStop {
   return {
     ticketId: s.ticket_id,
@@ -57,10 +58,7 @@ function mapEngineerRoute(e: ApiEngineerRoute): EngineerRoute {
   };
 }
 
-// `reason_code` is typed as plain `string` here (rather than the generated
-// 5-value union) so this one function also accepts the legacy replan wire
-// shape, whose hand-written type doesn't narrow it either.
-function mapUnassignedTicket(u: { ticket_id: number; reason_code: string; explanation: string }): UnassignedTicket {
+function mapUnassignedTicket(u: ApiUnassignedTicket): UnassignedTicket {
   return {
     ticketId: u.ticket_id,
     reasonCode: u.reason_code as UnassignedReason,
@@ -79,9 +77,8 @@ function mapPlanMetrics(m: ApiPlanMetrics): PlanMetrics {
   };
 }
 
-// Fallback for the legacy replan response (mapLegacyReplanPlan below), which
-// has no metrics field of its own on the wire — derived from
-// engineers/unassigned until F6 gives replan a real spec and client.
+// Fallback for a done build whose response carries no metrics object —
+// derived from the engineers/unassigned the same response already has.
 function computePlanMetrics(engineers: EngineerRoute[], unassigned: UnassignedTicket[]): PlanMetrics {
   const distanceByEngineer: Record<string, number> = {};
   const idleTimeByEngineerMin: Record<string, number> = {};
@@ -158,23 +155,18 @@ export function mapPlanCompare(entries: PlanComparisonEntry[]): PlanCompare {
   };
 }
 
-// POST /plan/{id}/replan has a real spec and a generated client now, but F6
-// (which wires ReplanTab to it) hasn't started — this still maps the
-// hand-written pre-async shape (metrics/diff on the wire, no running state)
-// that `replan` in endpoints.ts calls via `http.post` directly. F6 replaces
-// both with the generated `replanPlan` client and this mapper.
-export function mapLegacyReplanPlan(api: ApiPlan): Plan {
-  const engineers = api.engineers.map(mapEngineerRoute);
-  const unassigned = api.unassigned.map(mapUnassignedTicket);
+// POST /plan/{id}/replan is synchronous — the response is always a finished
+// plan, with a diff against its parent.
+export function mapPlanReplanResult(api: PlanReplanResult): Plan {
   return {
     planId: api.plan_id,
     algorithm: api.algorithm as Algorithm,
     status: 'done',
     parentPlanId: api.parent_plan_id,
-    engineers,
-    unassigned,
-    metrics: computePlanMetrics(engineers, unassigned),
-    diff: api.diff ? mapDiff(api.diff) : undefined
+    engineers: api.engineers.map(mapEngineerRoute),
+    unassigned: api.unassigned.map(mapUnassignedTicket),
+    metrics: mapPlanMetrics(api.metrics),
+    diff: mapDiff(api.diff)
   };
 }
 

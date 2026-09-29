@@ -1,6 +1,5 @@
-// All datetimes in this app are naive local time, never UTC-converted
-// (BR-21 / AGENTS.md) — these helpers only ever do string slicing, no
-// timezone-aware Date math.
+// All datetimes in this app are naive local time, never UTC-converted —
+// these helpers only ever do string slicing, no timezone-aware Date math.
 
 export function timeOnly(plannedArrival: string): string {
   // 'YYYY-MM-DD HH:MM' -> 'HH:MM'

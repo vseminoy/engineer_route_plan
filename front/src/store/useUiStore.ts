@@ -3,10 +3,10 @@ import type { RegionCode } from '@/types/domain';
 
 export type PanelTab = 'engineers' | 'unassigned' | 'metrics' | 'replan';
 
-// UI-only state (06_spec_frontend.md §4): no business data (plans, tickets,
-// engineers, metrics) lives here — that is owned exclusively by the
-// TanStack Query cache. `baselinePlanId` is a session pointer (which cached
-// plan is "the baseline"), not a duplicate of its data.
+// UI-only state: no business data (plans, tickets, engineers, metrics) lives
+// here — that is owned exclusively by the TanStack Query cache.
+// `baselinePlanId` is a session pointer (which cached plan is "the
+// baseline"), not a duplicate of its data.
 interface UiState {
   selectedRegion: RegionCode | null;
   setSelectedRegion: (region: RegionCode | null) => void;

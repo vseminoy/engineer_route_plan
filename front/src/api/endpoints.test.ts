@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { setTicketStatus } from './endpoints';
+import { replan, setTicketStatus } from './endpoints';
 import { ApiError } from './client';
 import type { Ticket } from './generated/schemas';
+import type { ReplanEvent } from '@/types/domain';
 
 function stubFetch(response: Response) {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
@@ -82,6 +83,83 @@ describe('setTicketStatus', () => {
 
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(404);
+    expect(err.body).toBeUndefined();
+  });
+});
+
+const urgentEvent: ReplanEvent = {
+  eventType: 'new_urgent_ticket',
+  triggeredAt: '2026-08-17T13:20:00',
+  address: 'ул. Ленина, 1',
+  lat: 55.0,
+  lon: 37.0
+};
+
+const cancelEvent: ReplanEvent = { eventType: 'ticket_cancelled', triggeredAt: '2026-08-17T13:20:00', ticketId: 101 };
+
+describe('replan', () => {
+  it('maps the synchronous 200 response to a done plan with its diff', async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify({
+          plan_id: 43,
+          parent_plan_id: 42,
+          algorithm: 'or_tools',
+          engineer_set_id: 1,
+          status: 'done',
+          engineers: [],
+          unassigned: [],
+          metrics: {
+            engineers_used: 0,
+            total_distance_km: 0,
+            distance_by_engineer: {},
+            assigned_count: 0,
+            unassigned_count: 0,
+            idle_time_by_engineer_min: {}
+          },
+          diff: {
+            changed_assignments: [],
+            newly_assigned: [],
+            newly_unassigned: [],
+            reassigned_from_unavailable_engineer: [],
+            plan_stability: 0
+          }
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    const plan = await replan(42, urgentEvent);
+
+    expect(plan.planId).toBe(43);
+    expect(plan.parentPlanId).toBe(42);
+    expect(plan.status).toBe('done');
+  });
+
+  it('rejects an invalid field with a 400 fields response', async () => {
+    stubFetch(
+      new Response(JSON.stringify({ fields: [{ name: 'ticket.address', message: 'Слишком длинный адрес' }] }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+
+    const err = (await catchError(replan(42, urgentEvent))) as ApiError;
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(400);
+    expect(err.body && 'fields' in err.body ? err.body.fields : undefined).toEqual([
+      { name: 'ticket.address', message: 'Слишком длинный адрес' }
+    ]);
+  });
+
+  it('rejects a cancel event for a ticket not yet cancelled with a bodyless 409', async () => {
+    stubFetch(new Response(null, { status: 409 }));
+
+    const err = (await catchError(replan(42, cancelEvent))) as ApiError;
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(409);
     expect(err.body).toBeUndefined();
   });
 });

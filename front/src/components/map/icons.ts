@@ -1,8 +1,8 @@
 import L from 'leaflet';
 
-// 06_spec_frontend.md §3.2 — marker shape/color encodes priority and status;
-// 07 — never color alone, so urgent gets a ring and emergency gets a bolt
-// glyph on top of the identity color, not just a hue change.
+// Marker shape encodes priority/status alongside color, never color alone:
+// urgent gets a ring and emergency gets a bolt glyph on top of the identity
+// color, not just a hue change.
 interface TicketIconOptions {
   color: string;
   urgent: boolean;

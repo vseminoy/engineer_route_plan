@@ -6,9 +6,9 @@ interface Props {
   good: boolean;
 }
 
-// FR-11/FR-12 — main plan vs baseline, explicit delta with an
-// improvement/regression indicator (never color alone: the arrow direction
-// + text carry the meaning too).
+// Main plan vs baseline, with an explicit delta and an improvement/regression
+// indicator — never color alone: the arrow direction and text carry the
+// meaning too.
 export function MetricComparisonCard({ label, mainValue, baselineValue, deltaLabel, good }: Props) {
   return (
     <div className="metric-card">

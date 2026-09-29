@@ -2,11 +2,9 @@ interface Props {
   planStabilityFallback?: number;
 }
 
-// 06_spec_frontend.md §3.6 — plan_stability, shown only once a plan carries a
-// diff (i.e. after a replan, F6): how many engineers' routes that event
-// changed. PlanMetrics itself never carries load-balance/stability fields —
-// specs/openapi.yaml only ever returns the fixed set mapped in
-// mapPlanMetrics (api/mappers.ts).
+// plan_stability, shown only once a plan carries a diff (after a replan):
+// how many engineers' routes that event changed. PlanMetrics itself never
+// carries this field — it comes from the diff, mapped separately in mapDiff.
 export function OptionalMetricsBlock({ planStabilityFallback }: Props) {
   if (planStabilityFallback === undefined) return null;
 

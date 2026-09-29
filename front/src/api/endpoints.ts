@@ -1,4 +1,4 @@
-import { http, unwrap } from './client';
+import { unwrap } from './client';
 import {
   buildPlan as postPlanBuild,
   changeTicketStatus,
@@ -8,14 +8,15 @@ import {
   listRegions,
   listTickets,
   loadDemoData,
+  replanPlan,
   uploadRegionData
 } from './generated/engineerRoutePlanAPI';
 import {
   mapDataLoadResult,
   mapEngineerRoster,
-  mapLegacyReplanPlan,
   mapPlan,
   mapPlanCompare,
+  mapPlanReplanResult,
   mapRegion,
   mapTicketSummary
 } from './mappers';
@@ -24,10 +25,11 @@ import type {
   Engineer,
   Plan as ApiPlanGenerated,
   PlanComparisonEntry,
+  PlanReplanResult,
   Region as ApiRegion,
+  ReplanEventRequest,
   Ticket
 } from './generated/schemas';
-import type { ApiPlan } from './types';
 import type {
   Algorithm,
   DataLoadResult,
@@ -81,36 +83,37 @@ export function comparePlan(planId: number, baselinePlanId: number): Promise<Pla
   );
 }
 
-function replanEventToPayload(event: ReplanEvent): Record<string, unknown> {
+// type_hd is informational only for this event (the server always assigns
+// required_skill=emergency itself) — a fixed label for a ticket the
+// dispatcher raises by hand, not read from an external system.
+const MANUAL_INCIDENT_TYPE_HD = 'Авария (заведена диспетчером)';
+
+export function replanEventToRequest(event: ReplanEvent): ReplanEventRequest {
   switch (event.eventType) {
     case 'new_urgent_ticket':
       return {
         event_type: 'new_urgent_ticket',
         triggered_at: event.triggeredAt,
         ticket: {
-          address: event.ticket.address,
-          district: event.ticket.district,
-          lat: event.ticket.lat,
-          lon: event.ticket.lon,
-          window_start: event.ticket.windowStart,
-          window_end: event.ticket.windowEnd,
-          required_skill: event.ticket.requiredSkill,
-          duration_min: event.ticket.durationMin
-        }
+          // No external-system ticket number for a dispatcher-raised
+          // incident — derived from triggered_at so it stays unique.
+          external_id: `manual-${event.triggeredAt}`,
+          type_bk: null,
+          type_hd: MANUAL_INCIDENT_TYPE_HD,
+          district: null,
+          address: event.address,
+          location: { lat: event.lat, lon: event.lon },
+          required_vehicle: null
+        },
+        ...(event.reactionMin !== undefined ? { reaction_min: event.reactionMin } : {})
       };
     case 'ticket_cancelled':
       return { event_type: 'ticket_cancelled', triggered_at: event.triggeredAt, ticket_id: event.ticketId };
-    case 'engineer_unavailable':
-      return {
-        event_type: 'engineer_unavailable',
-        triggered_at: event.triggeredAt,
-        engineer_id: event.engineerId
-      };
   }
 }
 
 export function replan(planId: number, event: ReplanEvent): Promise<Plan> {
-  return http.post<ApiPlan>(`/plan/${planId}/replan`, replanEventToPayload(event)).then(mapLegacyReplanPlan);
+  return unwrap<PlanReplanResult>(replanPlan(planId, replanEventToRequest(event)), 200).then(mapPlanReplanResult);
 }
 
 export function setTicketStatus(ticketId: number, status: TicketStatus): Promise<TicketSummary> {

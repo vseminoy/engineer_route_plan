@@ -1,7 +1,6 @@
-// Domain types the app is written against — camelCase, exactly as specified
-// in docs/bft/06_spec_frontend.md §5. Raw API responses (snake_case, per
-// docs/bft/05_spec_backend.md §4) are mapped into these in src/api/mappers.ts;
-// components never see the wire shape directly.
+// Domain types the app is written against — camelCase, independent of the
+// wire shape. Raw API responses (snake_case) are mapped into these in
+// src/api/mappers.ts; components never see the wire shape directly.
 
 export type Skill = 'local_work' | 'connection' | 'emergency';
 export type VehicleType = 'car' | 'foot' | 'bike' | 'public_transport';
@@ -37,7 +36,7 @@ export interface Region {
 export interface RouteStop {
   ticketId: number;
   sequenceNo: number;
-  plannedArrival: string; // 'YYYY-MM-DD HH:MM', naive local time (no UTC conversion — BR-21)
+  plannedArrival: string; // naive local datetime, ISO-8601 without an offset ('2026-08-17T10:05:00')
   travelTimeMin: number;
   travelDistanceKm: number;
   explanation: string;
@@ -49,7 +48,7 @@ export interface EngineerRoute {
   route: RouteStop[];
   totalDistanceKm: number;
   totalTravelTimeMin: number;
-  idleTimeMin: number; // FR-23 — display only, never compared to baseline
+  idleTimeMin: number; // display only, never compared to baseline
 }
 
 export interface UnassignedTicket {
@@ -64,7 +63,7 @@ export interface PlanMetrics {
   distanceByEngineer: Record<string, number>;
   assignedCount: number;
   unassignedCount: number;
-  idleTimeByEngineerMin: Record<string, number>; // FR-23, always present
+  idleTimeByEngineerMin: Record<string, number>; // always present, display only
 }
 
 export interface PlanDiff {
@@ -125,24 +124,19 @@ export interface PlanCompare {
   totalDistanceKm: { main: number; baseline: number; delta: number };
 }
 
-// One of the three replan events from 06_spec_frontend.md §3.7 / 05_spec_backend.md §4.3.
+// The two replan events the dispatcher can raise from the UI. The contract
+// allows a third, new_ticket (a non-urgent ticket arriving mid-day), with no
+// form for it here — nothing in the app needs it yet.
 export type ReplanEvent =
   | {
       eventType: 'new_urgent_ticket';
       triggeredAt: string;
-      ticket: {
-        address: string;
-        district?: string;
-        lat?: number;
-        lon?: number;
-        windowStart: string;
-        windowEnd: string;
-        requiredSkill: 'emergency';
-        durationMin: 80;
-      };
+      address: string;
+      lat: number;
+      lon: number;
+      reactionMin?: number;
     }
-  | { eventType: 'ticket_cancelled'; triggeredAt: string; ticketId: number }
-  | { eventType: 'engineer_unavailable'; triggeredAt: string; engineerId: number };
+  | { eventType: 'ticket_cancelled'; triggeredAt: string; ticketId: number };
 
 // From GET /engineers — roster data the /plan responses don't carry
 // themselves (skills for the skill-icon chips, shift bounds for the

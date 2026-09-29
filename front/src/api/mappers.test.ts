@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { mapDataLoadResult, mapEngineerRoster, mapPlan, mapPlanCompare, mapTicketSummary } from './mappers';
-import type { DataLoadResult, Engineer, Plan, PlanComparisonEntry, Ticket } from './generated/schemas';
+import { mapDataLoadResult, mapEngineerRoster, mapPlan, mapPlanCompare, mapPlanReplanResult, mapTicketSummary } from './mappers';
+import type { DataLoadResult, Engineer, Plan, PlanComparisonEntry, PlanReplanResult, Ticket } from './generated/schemas';
 
 describe('mapEngineerRoster', () => {
   it('flattens the start point and converts shift bounds to minutes since midnight', () => {
@@ -163,6 +163,67 @@ describe('mapPlanCompare', () => {
 
   it('throws if the response is missing a mandatory metric', () => {
     expect(() => mapPlanCompare([{ metric: 'engineers_used', main: 9, baseline: 13, delta: -4 }])).toThrow();
+  });
+});
+
+describe('mapPlanReplanResult', () => {
+  it('maps the synchronous replan response to a done plan with its diff', () => {
+    const api: PlanReplanResult = {
+      plan_id: 43,
+      parent_plan_id: 42,
+      algorithm: 'or_tools',
+      engineer_set_id: 1,
+      status: 'done',
+      engineers: [
+        {
+          engineer_id: 3,
+          name: 'Бригада Соколов',
+          route: [
+            {
+              ticket_id: 101,
+              sequence_no: 1,
+              planned_arrival: '2026-08-17T10:05:00',
+              travel_time_min: 18,
+              travel_distance_km: 6.2,
+              explanation: 'Назначена бригада «Соколов».'
+            }
+          ],
+          total_distance_km: 21.4,
+          total_travel_time_min: 54,
+          idle_time_min: 126
+        }
+      ],
+      unassigned: [],
+      metrics: {
+        engineers_used: 1,
+        total_distance_km: 21.4,
+        distance_by_engineer: { '3': 21.4 },
+        assigned_count: 1,
+        unassigned_count: 0,
+        idle_time_by_engineer_min: { '3': 126 }
+      },
+      diff: {
+        changed_assignments: [],
+        newly_assigned: [101],
+        newly_unassigned: [],
+        reassigned_from_unavailable_engineer: [],
+        plan_stability: 1
+      }
+    };
+
+    const plan = mapPlanReplanResult(api);
+
+    expect(plan.status).toBe('done');
+    expect(plan.planId).toBe(43);
+    expect(plan.parentPlanId).toBe(42);
+    expect(plan.engineers?.[0].route[0].plannedArrival).toBe('2026-08-17T10:05:00');
+    expect(plan.diff).toEqual({
+      changedAssignments: [],
+      newlyAssigned: [101],
+      newlyUnassigned: [],
+      reassignedFromUnavailableEngineer: [],
+      planStability: 1
+    });
   });
 });
 

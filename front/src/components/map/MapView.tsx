@@ -19,7 +19,7 @@ function FitBounds({ points }: { points: [number, number][] }) {
   const map = useMap();
   useEffect(() => {
     if (points.length === 0) return;
-    // 06_spec_frontend.md §3.2 — auto-center on the plan's bounding box on first load.
+    // Auto-center on the plan's bounding box on first load.
     map.fitBounds(L.latLngBounds(points), { padding: [32, 32] });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points.length]);
@@ -138,7 +138,7 @@ export function MapView({ plan, roster, tickets }: Props) {
       style={{ width: '100%', height: '100%' }}
       // TicketMarker/EngineerRouteLayer already carry priority/status via
       // ring + icon + color, so clicking a route highlights its EngineerCard
-      // (06_spec_frontend.md §3.2) without needing a separate control here.
+      // without needing a separate control here.
     >
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'

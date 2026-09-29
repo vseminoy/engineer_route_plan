@@ -21,7 +21,7 @@ FRONTEND_PORT ?= $(shell sed -n 's/^FRONTEND_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\
 SMOKE_URL ?= http://localhost:$(or $(FRONTEND_PORT),8080)
 
 # Code and specs whose comments must not reference internal documents or requirement ids.
-COMMENT_DIRS ?= back/src back/alembic/env.py back/alembic/versions back/queries back/scripts specs
+COMMENT_DIRS ?= back/src back/alembic/env.py back/alembic/versions back/queries back/scripts specs front/src
 
 PY311_CHECK := import sys; sys.exit(sys.version_info < (3, 11))
 

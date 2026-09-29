@@ -5,7 +5,9 @@
 - [`src/api/client.ts` — разбор ответа с ошибкой](#srcapiclientts--разбор-ответа-с-ошибкой)
 - [`src/api/mappers.ts` — маппинг сгенерированных типов в доменные](#srcapimappersts--маппинг-сгенерированных-типов-в-доменные)
 - [`src/api/mappers.ts` — `mapPlanCompare`](#srcapimappersts--mapplancompare)
+- [`src/api/mappers.ts` — `mapPlanReplanResult`](#srcapimappersts--mapplanreplanresult)
 - [`src/api/endpoints.ts` — `setTicketStatus`](#srcapiendpointsts--setticketstatus)
+- [`src/api/endpoints.ts` — `replan`](#srcapiendpointsts--replan)
 
 ---
 
@@ -48,6 +50,14 @@
 | `reshapes the compare_plan entries into the fixed engineersUsed/totalDistanceKm pair` | Массив `PlanComparisonEntry` из двух записей (`engineers_used`, `total_distance_km`) | Доменный `PlanCompare` — `{main, baseline, delta}` для каждой из двух метрик |
 | `throws if the response is missing a mandatory metric` | Массив с одной записью (`total_distance_km` отсутствует) | Функция бросает исключение — ответ backend, отступающий от контракта, не должен тихо превратиться в `undefined` |
 
+## `src/api/mappers.ts` — `mapPlanReplanResult`
+
+Файл: `mappers.test.ts` (`vitest`), там же, где остальные мапперы.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `maps the synchronous replan response to a done plan with its diff` | `PlanReplanResult` с `parent_plan_id`, метриками и `diff` | Доменный `Plan` — `status: 'done'`, `parentPlanId`, метрики и `diff` замаплены напрямую |
+
 ## `src/api/endpoints.ts` — `setTicketStatus`
 
 Файл: `src/api/endpoints.test.ts` (`vitest`), тот же приём со стабом глобального `fetch`, что и у `client.test.ts` — `changeTicketStatus` (сгенерированный клиент) ходит через него же.
@@ -57,3 +67,13 @@
 | `maps the 200 response to the domain ticket summary` | `fetch` отвечает `200` с заявкой | `setTicketStatus` возвращает `TicketSummary`, замапленную из ответа |
 | `rejects an invalid transition with the 400 message as-is` | `fetch` отвечает `400` с `{"message": "..."}` (недопустимый переход) | `ApiError` с этим `message`, статус заявки не считается изменённым |
 | `rejects a missing ticket with a bodyless 404` | `fetch` отвечает `404` без тела | `ApiError` со статусом `404` и `body === undefined` |
+
+## `src/api/endpoints.ts` — `replan`
+
+Файл: `src/api/endpoints.test.ts` (`vitest`), тот же приём со стабом глобального `fetch` — `replanPlan` (сгенерированный клиент) ходит через него же.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `maps the synchronous 200 response to a done plan with its diff` | `fetch` отвечает `200` готовым планом | `replan` возвращает `Plan` со `status: 'done'` и `parentPlanId` из ответа |
+| `rejects an invalid field with a 400 fields response` | `fetch` отвечает `400` с `{"fields": [...]}` | `ApiError.body.fields` — тот же массив |
+| `rejects a cancel event for a ticket not yet cancelled with a bodyless 409` | `fetch` отвечает `409` без тела | `ApiError` со статусом `409` и `body === undefined` |

@@ -13,7 +13,7 @@ export function skillLabel(skill: Skill): string {
   }
 }
 
-// 06_spec_frontend.md §3.5 — reason_code → human-readable heading.
+// reason_code → human-readable heading, shown in the ticket explanation.
 export const unassignedReasonHeading: Record<UnassignedReason, string> = {
   no_skill: 'Нет бригады с нужной квалификацией',
   no_time_slot: 'Ни одна бригада не успевает в это временное окно',
@@ -68,7 +68,8 @@ const statusMessage: Record<number, string> = {
 const endpointStatusMessage: Record<string, string> = {
   'POST /data/upload 413': 'Файл слишком большой (предел — 1 МБ).',
   'PATCH /tickets/{id}/status 404': 'Заявка не найдена',
-  'GET /plan/{id} 404': 'План не найден — возможно, ссылка устарела'
+  'GET /plan/{id} 404': 'План не найден — возможно, ссылка устарела',
+  'POST /plan/{id}/replan 409': 'Заявка ещё не отмечена отменённой — сначала измените её статус'
 };
 
 function textForStatus(endpoint: string, status: number): string {

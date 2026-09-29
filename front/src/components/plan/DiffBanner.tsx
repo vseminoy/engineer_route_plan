@@ -7,8 +7,8 @@ interface Props {
   ticketById: Map<number, TicketSummary>;
 }
 
-// FR-16/FR-22 — a short "Изменено назначений: N" banner with an expandable
-// details list (before → after / new), per 06_spec_frontend.md §3.8.
+// A short "Изменено назначений: N" banner with an expandable details list
+// (before → after / new).
 export function DiffBanner({ plan, ticketById }: Props) {
   const diffDetailsOpen = useUiStore((s) => s.diffDetailsOpen);
   const toggleDiffDetails = useUiStore((s) => s.toggleDiffDetails);

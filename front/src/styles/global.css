@@ -1,6 +1,5 @@
 /* Design tokens match the approved mockup (Claude Artifact
-   JRzzrv6QUwgp5XCHpkBfAR) — see docs/bft/04_tor_frontend.md / 06_spec_frontend.md
-   for the requirements these implement. */
+   JRzzrv6QUwgp5XCHpkBfAR). */
 :root {
   --color-bg: #eef1f5;
   --color-surface: #ffffff;
@@ -135,7 +134,7 @@ textarea {
   gap: 12px;
 }
 
-/* ---- Tablet: narrower panel, still side-by-side (04_tor_frontend.md §5) ---- */
+/* ---- Tablet: narrower panel, still side-by-side ---- */
 @media (max-width: 1023px) and (min-width: 768px) {
   .side-panel {
     width: 300px;
@@ -144,7 +143,7 @@ textarea {
 
 /* ---- Mobile ≤767px: map full-bleed, panel becomes a bottom sheet whose
    tab bar sits at the BOTTOM edge, acting as bottom navigation — same
-   markup as desktop, just re-flowed (04_tor_frontend.md §5). ---- */
+   markup as desktop, just re-flowed. ---- */
 @media (max-width: 767px) {
   .plan-screen__body {
     position: relative;

@@ -1,100 +1,177 @@
 import { useState } from 'react';
 import { useReplan } from '@/queries/useReplan';
-import type { DonePlan, EngineerRoster, ReplanEvent, TicketSummary } from '@/types/domain';
+import { replanEventToRequest } from '@/api/endpoints';
+import { ReplanPlanBody } from '@/api/generated/zod/engineerRoutePlanAPI';
+import { ApiError } from '@/api/client';
+import { describeError } from '@/lib/labels';
+import { fieldErrorsFromApi, fieldErrorsFromZod, isFieldErrors, type FieldErrorMap } from '@/lib/fieldErrors';
+import { ErrorToast } from '@/components/common/ErrorToast';
+import { FullScreenErrorNotice } from '@/components/common/FullScreenErrorNotice';
+import type { DonePlan, ReplanEvent, TicketSummary } from '@/types/domain';
 
-type EventKind = 'new_urgent' | 'cancel' | 'unavailable';
+type EventKind = ReplanEvent['eventType'];
 
 interface Props {
   plan: DonePlan;
-  roster: EngineerRoster[];
   ticketById: Map<number, TicketSummary>;
   onReplanned: (newPlanId: number) => void;
 }
+
+const ENDPOINT = 'POST /plan/{id}/replan';
+
+// The two schema members this form raises — the contract's oneOf order is
+// [new_urgent_ticket, new_ticket, ticket_cancelled]; new_ticket has no form.
+const NEW_URGENT_TICKET_SCHEMA = ReplanPlanBody.options[0];
+const TICKET_CANCELLED_SCHEMA = ReplanPlanBody.options[2];
 
 function nowNaive(): Date {
   return new Date();
 }
 
-function toNaiveString(d: Date): string {
+function toLocalDateTimeString(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-export function ReplanTab({ plan, roster, ticketById, onReplanned }: Props) {
-  const [kind, setKind] = useState<EventKind>('new_urgent');
+export function ReplanTab({ plan, ticketById, onReplanned }: Props) {
+  const [kind, setKind] = useState<EventKind>('new_urgent_ticket');
   const [address, setAddress] = useState('');
+  const [lat, setLat] = useState('');
+  const [lon, setLon] = useState('');
+  const [reactionMin, setReactionMin] = useState('');
   const [cancelTicketId, setCancelTicketId] = useState<number | ''>('');
-  const [unavailableEngineerId, setUnavailableEngineerId] = useState<number | ''>('');
+  const [fieldErrors, setFieldErrors] = useState<FieldErrorMap>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [serviceError, setServiceError] = useState<string | null>(null);
   const replanMutation = useReplan(plan.planId);
 
   const assignedTickets = plan.engineers.flatMap((e) =>
     e.route.map((s) => ({ ticketId: s.ticketId, label: `${ticketById.get(s.ticketId)?.address ?? `№${s.ticketId}`} — ${e.name}` }))
   );
 
-  function buildEvent(): ReplanEvent | null {
-    const triggeredAt = nowNaive();
-    if (kind === 'new_urgent') {
-      if (!address.trim()) return null;
-      const windowEnd = new Date(triggeredAt.getTime() + 100 * 60 * 1000); // BR-14: 100-minute SLA
+  function selectKind(next: EventKind) {
+    setKind(next);
+    setFieldErrors({});
+    setFormError(null);
+  }
+
+  function buildEvent(): ReplanEvent {
+    const triggeredAt = toLocalDateTimeString(nowNaive());
+    if (kind === 'new_urgent_ticket') {
+      const reaction = reactionMin.trim() === '' ? undefined : Number(reactionMin);
       return {
         eventType: 'new_urgent_ticket',
-        triggeredAt: toNaiveString(triggeredAt),
-        ticket: {
-          address: address.trim(),
-          windowStart: toNaiveString(triggeredAt),
-          windowEnd: toNaiveString(windowEnd),
-          requiredSkill: 'emergency',
-          durationMin: 80
-        }
+        triggeredAt,
+        address: address.trim(),
+        lat: lat.trim() === '' ? NaN : Number(lat),
+        lon: lon.trim() === '' ? NaN : Number(lon),
+        ...(reaction !== undefined ? { reactionMin: reaction } : {})
       };
     }
-    if (kind === 'cancel') {
-      if (cancelTicketId === '') return null;
-      return { eventType: 'ticket_cancelled', triggeredAt: toNaiveString(triggeredAt), ticketId: cancelTicketId };
+    return { eventType: 'ticket_cancelled', triggeredAt, ticketId: cancelTicketId === '' ? NaN : cancelTicketId };
+  }
+
+  function handleReplanError(err: unknown) {
+    if (err instanceof ApiError && err.status === 400 && err.body) {
+      const body = err.body;
+      if (isFieldErrors(body)) {
+        setFieldErrors((prev) => ({ ...prev, ...fieldErrorsFromApi(body) }));
+      } else {
+        setFormError(body.message);
+      }
+      return;
     }
-    if (unavailableEngineerId === '') return null;
-    return { eventType: 'engineer_unavailable', triggeredAt: toNaiveString(triggeredAt), engineerId: unavailableEngineerId };
+    if (err instanceof ApiError && err.status === 503) {
+      setServiceError(describeError(err, ENDPOINT));
+      return;
+    }
+    setFormError(describeError(err, ENDPOINT));
+  }
+
+  function submitEvent(event: ReplanEvent) {
+    replanMutation.mutate(event, {
+      onSuccess: (newPlan) => onReplanned(newPlan.planId),
+      onError: handleReplanError
+    });
   }
 
   function handleSubmit() {
+    setFormError(null);
     const event = buildEvent();
-    if (!event) return;
-    replanMutation.mutate(event, { onSuccess: (newPlan) => onReplanned(newPlan.planId) });
+    const request = replanEventToRequest(event);
+    const schema = event.eventType === 'new_urgent_ticket' ? NEW_URGENT_TICKET_SCHEMA : TICKET_CANCELLED_SCHEMA;
+    const parsed = schema.safeParse(request);
+    if (!parsed.success) {
+      setFieldErrors(fieldErrorsFromZod(parsed.error));
+      return;
+    }
+    setFieldErrors({});
+    submitEvent(event);
+  }
+
+  function retry() {
+    if (!replanMutation.variables) return;
+    setServiceError(null);
+    submitEvent(replanMutation.variables);
   }
 
   return (
     <>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <label className="replan-radio">
-          <input type="radio" checked={kind === 'new_urgent'} onChange={() => setKind('new_urgent')} />
+          <input type="radio" checked={kind === 'new_urgent_ticket'} onChange={() => selectKind('new_urgent_ticket')} />
           Новая срочная заявка
         </label>
         <label className="replan-radio">
-          <input type="radio" checked={kind === 'cancel'} onChange={() => setKind('cancel')} />
+          <input type="radio" checked={kind === 'ticket_cancelled'} onChange={() => selectKind('ticket_cancelled')} />
           Отмена заявки
-        </label>
-        <label className="replan-radio">
-          <input type="radio" checked={kind === 'unavailable'} onChange={() => setKind('unavailable')} />
-          Недоступность бригады
         </label>
       </div>
 
-      {kind === 'new_urgent' && (
+      {kind === 'new_urgent_ticket' && (
         <div className="replan-fields">
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
             Адрес
             <input type="text" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Например, ул. Наличная, 20" />
           </label>
+          {fieldErrors['ticket.address'] && (
+            <span style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>{fieldErrors['ticket.address']}</span>
+          )}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--color-text-secondary)', flex: 1 }}>
+              Широта
+              <input type="number" step="any" value={lat} onChange={(e) => setLat(e.target.value)} placeholder="55.75" />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--color-text-secondary)', flex: 1 }}>
+              Долгота
+              <input type="number" step="any" value={lon} onChange={(e) => setLon(e.target.value)} placeholder="37.61" />
+            </label>
+          </div>
+          {(fieldErrors['ticket.location.lat'] || fieldErrors['ticket.location.lon']) && (
+            <span style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>
+              {fieldErrors['ticket.location.lat'] ?? fieldErrors['ticket.location.lon']}
+            </span>
+          )}
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
+            Время реакции, мин (необязательно, 60–120, по умолчанию 120)
+            <input type="number" min={60} max={120} value={reactionMin} onChange={(e) => setReactionMin(e.target.value)} placeholder="120" />
+          </label>
+          {fieldErrors.reaction_min && (
+            <span style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>{fieldErrors.reaction_min}</span>
+          )}
+
           <div style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
             Навык: <strong style={{ color: 'var(--color-text-primary)' }}>Авария</strong> (фиксировано)
           </div>
           <div style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
-            Норматив на объекте: <strong style={{ color: 'var(--color-text-primary)' }}>80 мин</strong>
+            Норматив на объекте: <strong style={{ color: 'var(--color-text-primary)' }}>80 мин</strong> (считает сервер)
           </div>
         </div>
       )}
 
-      {kind === 'cancel' && (
+      {kind === 'ticket_cancelled' && (
         <div className="replan-fields">
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
             Заявка для отмены
@@ -107,28 +184,20 @@ export function ReplanTab({ plan, roster, ticketById, onReplanned }: Props) {
               ))}
             </select>
           </label>
-        </div>
-      )}
-
-      {kind === 'unavailable' && (
-        <div className="replan-fields">
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
-            Бригада недоступна
-            <select value={unavailableEngineerId} onChange={(e) => setUnavailableEngineerId(e.target.value ? Number(e.target.value) : '')}>
-              <option value="">Выберите бригаду…</option>
-              {roster.map((r) => (
-                <option key={r.engineerId} value={r.engineerId}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          {fieldErrors.ticket_id && (
+            <span style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>{fieldErrors.ticket_id}</span>
+          )}
         </div>
       )}
 
       <button className="btn-primary" onClick={handleSubmit} disabled={replanMutation.isPending}>
         {replanMutation.isPending ? 'Перестраиваем…' : 'Перестроить план'}
       </button>
+
+      {formError && <ErrorToast message={formError} onDismiss={() => setFormError(null)} />}
+      {serviceError && (
+        <FullScreenErrorNotice message={serviceError} retryLabel="Повторить" retrying={replanMutation.isPending} onRetry={retry} />
+      )}
     </>
   );
 }

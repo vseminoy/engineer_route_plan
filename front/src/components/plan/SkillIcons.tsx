@@ -27,8 +27,7 @@ const ICON_PATH: Record<Skill, JSX.Element> = {
   )
 };
 
-// 04_tor_frontend.md follow-up — 1 to 3 skill chips next to the brigade
-// name on the "Бригады" tab (EngineerCard).
+// 1 to 3 skill chips next to the brigade name on the engineer card.
 export function SkillIcons({ skills }: { skills: Skill[] }) {
   return (
     <span className="skill-icons">

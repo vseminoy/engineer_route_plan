@@ -1,8 +1,7 @@
-// Deterministic categorical palette for engineer routes/markers
-// (06_spec_frontend.md §3.2 — "детерминированная палитра по engineer_id").
-// Red is reserved for the urgent-priority ring and the danger/status
-// tokens in global.css, so it is left out of this rotation — see the
-// dataviz skill's status-vs-categorical separation rule.
+// Deterministic categorical palette for engineer routes/markers, keyed by
+// engineer_id so the same engineer always gets the same color. Red is
+// reserved for the urgent-priority ring and the danger/status tokens in
+// global.css, so it is left out of this rotation.
 const ENGINEER_PALETTE = [
   '#2A78D6', // blue
   '#EB6834', // orange

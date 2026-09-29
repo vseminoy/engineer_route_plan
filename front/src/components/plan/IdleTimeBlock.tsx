@@ -5,8 +5,8 @@ interface Props {
   engineers: EngineerRoute[];
 }
 
-// FR-23 — idle time is displayed only, never compared to baseline and never
-// given a better/worse indicator (it is not part of the optimizer's objective).
+// Idle time is displayed only, never compared to baseline and never given a
+// better/worse indicator — it is not part of the optimizer's objective.
 export function IdleTimeBlock({ engineers }: Props) {
   const maxIdle = Math.max(1, ...engineers.map((e) => e.idleTimeMin));
 

@@ -6,9 +6,8 @@ import type { RegionCode } from '@/types/domain';
 
 // Builds the main (or_tools) plan the dispatcher will work with, plus a
 // baseline_fcfs plan for the same region/date so the Metrics tab has
-// something to compare against (05_spec_backend.md §4.2, FR-11/FR-12).
-// Both responses are seeded straight into the TanStack Query cache — no
-// separate compare-endpoint round trip needed.
+// something to compare against. Both responses are seeded straight into the
+// TanStack Query cache — no separate compare-endpoint round trip needed.
 export function useBuildPlan() {
   const queryClient = useQueryClient();
   const setBaselinePlanId = useUiStore((s) => s.setBaselinePlanId);
