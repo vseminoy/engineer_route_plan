@@ -26,7 +26,8 @@ COMMENT_DIRS ?= back/src back/alembic/env.py back/alembic/versions back/queries 
 PY311_CHECK := import sys; sys.exit(sys.version_info < (3, 11))
 
 .PHONY: help up down ps logs reset smoke \
-	install run lint fmt typecheck test test-unit test-integration check-comments check gen-api geocache
+	install run lint fmt typecheck test test-unit test-integration check-comments check gen-api geocache \
+	front-dev front-lint front-test gen-front check-front gen
 
 help:
 	@awk 'BEGIN {FS = ":.*## "} \
@@ -118,3 +119,24 @@ gen-api: ## Перегенерировать Pydantic-схемы по specs/open
 
 geocache: ## Догеокодировать адреса исходных наборов в back/data/geocache.csv (нужен интернет)
 	cd back && $(PY) -m scripts.build_geocache
+
+##@ Разработка (front/)
+
+front-dev: ## Dev-сервер фронтенда (проксирует /api на :8001; на :8002 — make front-dev VITE_BACKEND_ORIGIN=http://localhost:8002)
+	npm --prefix front run dev
+
+front-lint: ## Проверка типов фронтенда (tsc --noEmit)
+	npm --prefix front run lint
+
+front-test: ## Тесты фронтенда (vitest)
+	npm --prefix front run test
+
+gen-front: ## Перегенерировать клиент и zod-схемы фронтенда по specs/openapi.yaml (orval)
+	npm --prefix front run gen:api
+
+check-front: gen-front ## gen-front + diff сгенерированного клиента + front-lint + front-test
+	git diff --exit-code front/src/api/generated
+	npm --prefix front run lint
+	npm --prefix front run test
+
+gen: gen-api gen-front ## Перегенерировать Pydantic-схемы backend и клиент+zod-схемы frontend
