@@ -183,7 +183,7 @@
 |---|---|---|
 | `test_plan_status_valid` (`running`/`done`/`failed`) | вставка плана с этим `status` (`failed` — с `failed_reason`) | принято |
 | `test_plan_status_closed_set` | `status = 'queued'` | `CheckViolation`, `ck_plans__status` |
-| `test_plan_failed_reason_closed_set` | `status = 'failed', failed_reason = 'timeout'` | `CheckViolation`, `ck_plans__failed_reason` |
+| `test_plan_failed_reason_closed_set` | `status = 'failed', failed_reason = 'bogus_reason'` | `CheckViolation`, `ck_plans__failed_reason` |
 | `test_plan_status_failed_reason_shape` (`failed` без причины / `done` или `running` с причиной) | несогласованная пара `status`/`failed_reason` | `CheckViolation`, `ck_plans__status_failed_reason` |
 
 ## `alembic/versions/1b0ce84eb128_engineer_sets.py` — наборы бригад
@@ -213,6 +213,20 @@
 | `test_downgrade_then_upgrade` | `downgrade c124884e0c63`, затем `upgrade head` | после отката `engineer_sets` нет, `engineers.region_id` восстановлен (тот же `region_id`, что был у набора), `engineers.engineer_set_id` и `plans.engineer_set_id` нет; повторный накат проходит и снова создаёт `default`-наборы |
 | `test_every_new_table_and_column_is_commented` | каталог: `engineer_sets` и её колонки, `engineers.engineer_set_id`, `plans.engineer_set_id` | ни одного пустого комментария |
 | `test_engineer_sets_grants` | под `app_rw`: `INSERT`/`UPDATE`/`DELETE`/`SELECT` `engineer_sets`; под `app_ro`: `SELECT` | `app_rw` — все проходят; `app_ro` — `SELECT` проходит |
+
+## `alembic/versions/46c1bba9efff_plans_failed_reason_timeout_shutdown.py` — таймаут и остановка сервера в причинах отказа
+
+Файл: `tests/db/test_schema.py`.
+
+> Мока нет: `@pytest.mark.integration`, контейнер PostGIS, окружение и роли — как в разделе
+> схемы БД. Состояние — `upgrade head` (ревизия входит в цепочку миграций стенда). Watchdog
+> солвера и стартовая чистка зависших планов (`plan_builder.py`) пишут именно эти два
+> значения; до этой ревизии запись падала с `CheckViolation` и план оставался в `running`
+> навсегда — ревизия закрывает разрыв между кодом и ограничением схемы.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_plan_failed_reason_valid` (`osrm_unavailable`/`db_unavailable`/`build_error`/`timeout`/`shutdown`) | вставка плана `status='failed'` с этой причиной | принято |
 
 ## `alembic/env.py` — запуск миграций
 

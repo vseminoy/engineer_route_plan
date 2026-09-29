@@ -865,6 +865,14 @@ def test_engineer_sets_grants(rw: psycopg.Connection, migrated_db: Database) -> 
 # --- plans.status -----------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "failed_reason", ["osrm_unavailable", "db_unavailable", "build_error", "timeout", "shutdown"]
+)
+def test_plan_failed_reason_valid(rw: psycopg.Connection, failed_reason: str) -> None:
+    region_id = _region(rw)
+    _plan(rw, region_id, status="failed", failed_reason=failed_reason)
+
+
 @pytest.mark.parametrize("status", ["running", "done", "failed"])
 def test_plan_status_valid(rw: psycopg.Connection, status: str) -> None:
     region_id = _region(rw)
@@ -882,7 +890,7 @@ def test_plan_status_closed_set(rw: psycopg.Connection) -> None:
 def test_plan_failed_reason_closed_set(rw: psycopg.Connection) -> None:
     region_id = _region(rw)
     with pytest.raises(psycopg.Error) as raised, rw.transaction():
-        _plan(rw, region_id, status="failed", failed_reason="timeout")
+        _plan(rw, region_id, status="failed", failed_reason="bogus_reason")
     assert raised.value.diag.constraint_name == "ck_plans__failed_reason"
 
 
