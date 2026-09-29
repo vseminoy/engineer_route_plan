@@ -1,5 +1,4 @@
 from collections.abc import AsyncIterator
-from concurrent.futures import ProcessPoolExecutor
 from datetime import timedelta
 from typing import Any
 
@@ -33,6 +32,7 @@ from src.service.plan_reader import PlanReader
 from src.service.region_lists import RegionLists
 from src.service.regions import Regions
 from src.service.replan import Replanner
+from src.service.solver_pool import SolverPool
 from src.service.ticket_status import TicketStatuses
 from src.service.ticket_types import TicketTypes
 
@@ -80,7 +80,7 @@ def create_plan_services(
     db_pool: AsyncConnectionPool,
     regions: Regions,
     osrm: OsrmClient,
-    pool: ProcessPoolExecutor,
+    pool: SolverPool,
     ticket_types: TicketTypes,
 ) -> tuple[PlanBuilder, PlanReader, Replanner]:
     builder = PlanBuilder(
@@ -96,6 +96,7 @@ def create_plan_services(
         pool=pool,
         max_table_size=settings.osrm_max_table_size,
         solver_time_limit=timedelta(seconds=settings.solver_time_limit_s),
+        solver_watchdog_margin_s=settings.solver_watchdog_margin_s,
     )
     reader = PlanReader(
         connect=db_pool.connection,

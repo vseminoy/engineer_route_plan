@@ -38,6 +38,9 @@ class Settings(LoggingSettings):
     # Time budget of one or_tools solve (all three phases together); the build itself has
     # no deadline of its own — the client polls GET /plan/{id} until it finishes.
     solver_time_limit_s: float = Field(default=30, gt=0, allow_inf_nan=False)
+    # Extra time past solver_time_limit_s before the watchdog treats a solve as hung and
+    # kills its worker: a margin over the solver's own budget, not a second deadline for it.
+    solver_watchdog_margin_s: float = Field(default=15, gt=0, allow_inf_nan=False)
 
 
 class MigrationSettings(LoggingSettings):

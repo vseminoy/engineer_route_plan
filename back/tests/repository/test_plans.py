@@ -22,6 +22,7 @@ from src.repository.plans import (
     list_plan_assignments,
     mark_plan_done,
     mark_plan_failed,
+    mark_running_plans_failed,
 )
 from src.repository.region_data import replace_region_data
 from tests.conftest import RW_PASSWORD, Database
@@ -202,3 +203,51 @@ async def test_plan_queries_db_unavailable(
         await get_plan(conn, 1)
     assert e.value.reason == "db_unavailable"
     assert events(capsys, "db_query_failed")[-1]["query"] == "get_plan"
+
+
+async def test_sweep_running_plans_closes_all_regions(conn: AsyncConnection[Any]) -> None:
+    other_region = RegionDraft(
+        code="south_east", name="Юго-Восток", office_address="офис", office=OFFICE
+    )
+    other = await replace_region_data(conn, other_region, [_engineer()], [_ticket("3")])
+    await conn.commit()
+
+    running_east = await insert_running_plan(
+        conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
+    )
+    running_other = await insert_running_plan(
+        conn, other.region_id, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
+    )
+    done = await insert_running_plan(conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    await mark_plan_done(conn, done, [])
+    await conn.commit()
+
+    closed = await mark_running_plans_failed(conn, "shutdown")
+    await conn.commit()
+
+    assert set(closed) == {running_east, running_other}
+    assert await _plan_row(conn, running_east) == ("failed", "shutdown")
+    assert await _plan_row(conn, running_other) == ("failed", "shutdown")
+    assert await _plan_row(conn, done) == ("done", None)
+
+
+async def test_sweep_running_plans_no_running_plans(conn: AsyncConnection[Any]) -> None:
+    done = await insert_running_plan(conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    await mark_plan_done(conn, done, [])
+    await conn.commit()
+
+    closed = await mark_running_plans_failed(conn, "shutdown")
+
+    assert closed == []
+    assert await _plan_row(conn, done) == ("done", None)
+
+
+async def test_sweep_running_plans_db_unavailable(
+    conn: AsyncConnection[Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    json_logs()
+    await conn.close()
+    with pytest.raises(DependencyUnavailable) as e:
+        await mark_running_plans_failed(conn, "shutdown")
+    assert e.value.reason == "db_unavailable"
+    assert events(capsys, "db_query_failed")[-1]["query"] == "sweep_running_plans"

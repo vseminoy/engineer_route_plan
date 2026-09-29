@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import psycopg
 import pytest
@@ -8,10 +9,29 @@ from alembic import command
 from alembic.config import Config
 from testcontainers.community.postgres import PostgresContainer
 
+import src.app as app_module
+
 BACK_DIR = Path(__file__).resolve().parents[1]
 IMAGE = "postgis/postgis:16-3.4"
 RW_PASSWORD = "rw-test"
 RO_PASSWORD = "ro-test"
+
+
+@pytest.fixture(autouse=True)
+def _no_startup_sweep_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`app.py`'s `lifespan` calls `sweep_running_plans` against the real `db_pool`
+    before serving, but most tests build `create_app()` against an unreachable fake
+    `database_url` and never intended to touch the database at startup at all —
+    `db_pool.open(wait=False)` itself already performs no I/O. Stubbed out here so
+    every such test keeps behaving as it did before this call existed; tests/test_app.py
+    overrides this stub with its own fake to check the wiring, and the sweep's own
+    behaviour is covered directly in tests/service/test_plan_builder.py and
+    tests/repository/test_plans.py, with no real app involved."""
+
+    async def _noop(*_args: Any, **_kwargs: Any) -> list[int]:
+        return []
+
+    monkeypatch.setattr(app_module, "sweep_running_plans", _noop)
 
 
 @dataclass(frozen=True)

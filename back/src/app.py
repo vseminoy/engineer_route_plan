@@ -2,7 +2,6 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 
 import structlog
@@ -25,6 +24,9 @@ from src.clients.nominatim import NominatimClient, create_nominatim_client
 from src.clients.osrm import OsrmClient, create_osrm_client
 from src.config import Settings, get_settings
 from src.logging import configure_logging, get_logger
+from src.repository.plans import mark_running_plans_failed
+from src.service.plan_builder import sweep_running_plans
+from src.service.solver_pool import ProcessSolverPool
 
 logger = get_logger(__name__)
 access_logger = get_logger("http")
@@ -36,6 +38,9 @@ _SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # Polled by the container healthcheck every few seconds: a successful probe is
 # logged at debug so it does not drown out real traffic at the default level.
 _PROBE_PATHS = frozenset({"/health"})
+# The startup sweep's own connection timeout, shorter than the pool's default: an
+# unreachable database should not hold up the app coming up at all.
+_STARTUP_SWEEP_TIMEOUT_S = 5.0
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -56,7 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # the length of its search, so a thread pool would not free the event loop either —
         # only a separate process does. A single worker means the server never builds more
         # than one `or_tools` plan at a time; a concurrent build waits in the executor's queue.
-        plan_pool = ProcessPoolExecutor(max_workers=1)
+        plan_pool = ProcessSolverPool(max_workers=1)
         try:
             # Inside `try`: a client that fails to build or a malformed data file stops
             # the startup, and whatever was opened before it still gets closed.
@@ -75,6 +80,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 osrm_client,
                 plan_pool,
                 ticket_types,
+            )
+            # Before yield: no request is served until any plan an earlier, ungraceful
+            # stop left `running` is closed. A short connection timeout of its own — an
+            # unreachable database must not hold up startup by the pool's full default
+            # wait; the sweep just runs again next restart.
+            await sweep_running_plans(
+                lambda: db_pool.connection(timeout=_STARTUP_SWEEP_TIMEOUT_S),
+                mark_running_plans_failed,
             )
             logger.info("app_started", mode=app_settings.app_mode)
             yield

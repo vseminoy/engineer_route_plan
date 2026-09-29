@@ -11,7 +11,7 @@ from src.clients.osrm import TravelMatrix
 from src.domain import Engineer, Point, Skill, Ticket, TicketStatus, VehicleType
 from src.errors import DatabaseFailure, DependencyUnavailable, InvalidInput
 from src.repository.plans import AssignmentWrite
-from src.service.plan_builder import PlanBuilder, QueuedPlan
+from src.service.plan_builder import PlanBuilder, QueuedPlan, sweep_running_plans
 from src.service.regions import Regions
 from tests.log_records import events, json_logs
 
@@ -103,6 +103,34 @@ class SyncPool(Executor):
         return future
 
 
+class HangingPool(Executor):
+    """A submitted call never completes — stands in for a wedged `or_tools` worker, only
+    to exercise the watchdog timeout in `PlanBuilder._solve`."""
+
+    def submit(self, fn: Any, /, *args: Any, **kwargs: Any) -> Future[Any]:
+        return Future()  # never resolved
+
+
+class FakeSolverPool:
+    """Implements `solver_pool.SolverPool` over a fake `Executor`; `restart()` records
+    the call instead of touching a real process — `ProcessSolverPool.restart()` itself is
+    covered on a real `ProcessPoolExecutor` in `tests/service/test_solver_pool.py`."""
+
+    def __init__(self, executor: Executor) -> None:
+        self._executor = executor
+        self.restart_calls = 0
+
+    @property
+    def executor(self) -> Executor:
+        return self._executor
+
+    def restart(self) -> None:
+        self.restart_calls += 1
+
+    def shutdown(self, *, cancel_futures: bool = False) -> None:
+        self._executor.shutdown(cancel_futures=cancel_futures)
+
+
 class FakeRepo:
     def __init__(
         self,
@@ -159,6 +187,9 @@ def _builder(
     connect: FakeConnect | None = None,
     regions: Regions | None = None,
     max_table_size: int = 1000,
+    pool: FakeSolverPool | None = None,
+    solver_time_limit: timedelta = timedelta(milliseconds=200),
+    solver_watchdog_margin_s: float = 5,
 ) -> PlanBuilder:
     return PlanBuilder(
         regions=regions or REGIONS,
@@ -170,9 +201,10 @@ def _builder(
         mark_plan_done=repo.mark_plan_done,
         mark_plan_failed=repo.mark_plan_failed,
         osrm=osrm or FakeOsrm({VehicleType.CAR: _matrix(2)}),
-        pool=SyncPool(),
+        pool=pool or FakeSolverPool(SyncPool()),
         max_table_size=max_table_size,
-        solver_time_limit=timedelta(milliseconds=200),
+        solver_time_limit=solver_time_limit,
+        solver_watchdog_margin_s=solver_watchdog_margin_s,
     )
 
 
@@ -351,3 +383,99 @@ async def test_build_logs_finished(capsys: pytest.CaptureFixture[str]) -> None:
     (record,) = events(capsys, "plan_build_finished")
     assert record["plan_id"] == 7
     assert record["algorithm"] == "or_tools"
+
+
+async def test_build_or_tools_timeout_marks_failed() -> None:
+    repo = FakeRepo()
+    pool = FakeSolverPool(HangingPool())
+    builder = _builder(
+        repo,
+        osrm=FakeOsrm({VehicleType.CAR: _matrix(2)}),
+        pool=pool,
+        solver_time_limit=timedelta(milliseconds=1),
+        solver_watchdog_margin_s=0.001,
+    )
+
+    await builder.build(7, repo.tickets, repo.engineers, DAY, "or_tools")
+
+    assert repo.done_calls == []
+    assert repo.failed_calls == [(7, "timeout")]
+    assert pool.restart_calls == 1
+
+
+async def test_build_baseline_never_times_out() -> None:
+    repo = FakeRepo()
+    pool = FakeSolverPool(HangingPool())
+    builder = _builder(
+        repo,
+        osrm=FakeOsrm({VehicleType.CAR: _matrix(2)}),
+        pool=pool,
+        solver_time_limit=timedelta(milliseconds=1),
+        solver_watchdog_margin_s=0.001,
+    )
+
+    await builder.build(7, repo.tickets, repo.engineers, DAY, "baseline_fcfs")
+
+    assert repo.failed_calls == []
+    assert repo.done_calls[0][0] == 7
+    assert pool.restart_calls == 0
+
+
+async def test_build_or_tools_within_margin_not_treated_as_timeout() -> None:
+    repo = FakeRepo()
+    pool = FakeSolverPool(SyncPool())
+    builder = _builder(repo, osrm=FakeOsrm({VehicleType.CAR: _matrix(2)}), pool=pool)
+
+    await builder.build(7, repo.tickets, repo.engineers, DAY, "or_tools")
+
+    assert repo.failed_calls == []
+    assert repo.done_calls[0][0] == 7
+    assert pool.restart_calls == 0
+
+
+# --- sweep_running_plans --------------------------------------------------------------
+
+
+class FakeSweepRepo:
+    def __init__(
+        self, closed_ids: list[int] | None = None, error: Exception | None = None
+    ) -> None:
+        self.closed_ids = [] if closed_ids is None else closed_ids
+        self.error = error
+        self.calls: list[str] = []
+
+    async def mark_running_plans_failed(self, _conn: Any, failed_reason: str) -> list[int]:
+        self.calls.append(failed_reason)
+        if self.error:
+            raise self.error
+        return self.closed_ids
+
+
+async def test_sweep_running_plans_returns_closed_ids(capsys: pytest.CaptureFixture[str]) -> None:
+    json_logs()
+    repo = FakeSweepRepo(closed_ids=[3, 7])
+
+    result = await sweep_running_plans(FakeConnect(), repo.mark_running_plans_failed)
+
+    assert result == [3, 7]
+    assert repo.calls == ["shutdown"]
+    (record,) = events(capsys, "plan_startup_sweep_finished")
+    assert record["count"] == 2
+
+
+async def test_sweep_running_plans_no_plans_no_log(capsys: pytest.CaptureFixture[str]) -> None:
+    json_logs()
+    repo = FakeSweepRepo(closed_ids=[])
+
+    result = await sweep_running_plans(FakeConnect(), repo.mark_running_plans_failed)
+
+    assert result == []
+    assert events(capsys, "plan_startup_sweep_finished") == []
+
+
+async def test_sweep_running_plans_db_unavailable_does_not_raise() -> None:
+    repo = FakeSweepRepo(error=DependencyUnavailable(reason="db_unavailable"))
+
+    result = await sweep_running_plans(FakeConnect(), repo.mark_running_plans_failed)
+
+    assert result == []

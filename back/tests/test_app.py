@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import pytest
 from fastapi.exceptions import RequestValidationError
@@ -9,6 +10,7 @@ from src import app as app_module
 from src.clients.osrm import OsrmClient
 from src.config import Settings
 from src.errors import AppError
+from src.service.solver_pool import ProcessSolverPool
 
 
 class _FakePool:
@@ -22,7 +24,7 @@ class _FakePool:
     async def close(self) -> None:
         self.closed_called = True
 
-    def connection(self) -> None:
+    def connection(self, timeout: float | None = None) -> None:
         raise AssertionError("the lifespan tests take no connection")
 
 
@@ -32,6 +34,27 @@ class _FakeOsrmClient:
 
     async def aclose(self) -> None:
         self.aclose_calls += 1
+
+
+class _FakeSweep:
+    """Stands in for `sweep_running_plans`: what it actually does (its behaviour under a
+    missing/unreachable database, what it logs) is covered in
+    `tests/service/test_plan_builder.py`. Here only the wiring matters — that `lifespan`
+    calls it, once, before serving requests."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, Any]] = []
+
+    async def __call__(self, connect: Any, mark_running_plans_failed: Any) -> list[int]:
+        self.calls.append((connect, mark_running_plans_failed))
+        return []
+
+
+@pytest.fixture(autouse=True)
+def _stub_sweep(monkeypatch: pytest.MonkeyPatch) -> _FakeSweep:
+    fake = _FakeSweep()
+    monkeypatch.setattr(app_module, "sweep_running_plans", fake)
+    return fake
 
 
 def _fake_settings() -> Settings:
@@ -94,6 +117,47 @@ def test_lifespan_closes_pool_when_data_files_fail(monkeypatch: pytest.MonkeyPat
         pass
     assert fake_pool.closed_called is True
     assert osrm_client.aclose_calls == 1
+
+
+def test_lifespan_calls_startup_sweep_before_serving(
+    monkeypatch: pytest.MonkeyPatch, _stub_sweep: _FakeSweep
+) -> None:
+    fake_pool = _FakePool()
+    monkeypatch.setattr(app_module, "create_db_pool", lambda settings: fake_pool)
+    app = app_module.create_app(settings=_fake_settings())
+
+    with TestClient(app):
+        assert len(_stub_sweep.calls) == 1
+
+
+def test_lifespan_uses_process_solver_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_pool = _FakePool()
+    monkeypatch.setattr(app_module, "create_db_pool", lambda settings: fake_pool)
+    app = app_module.create_app(settings=_fake_settings())
+
+    with TestClient(app):
+        assert isinstance(app.state.plan_builder.pool, ProcessSolverPool)
+
+
+def test_lifespan_shutdown_stops_solver_pool_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_pool = _FakePool()
+    monkeypatch.setattr(app_module, "create_db_pool", lambda settings: fake_pool)
+    calls: list[dict[str, Any]] = []
+    original_shutdown = ProcessSolverPool.shutdown
+
+    def spy_shutdown(self: ProcessSolverPool, *, cancel_futures: bool = False) -> None:
+        calls.append({"cancel_futures": cancel_futures})
+        original_shutdown(self, cancel_futures=cancel_futures)
+
+    monkeypatch.setattr(ProcessSolverPool, "shutdown", spy_shutdown)
+    app = app_module.create_app(settings=_fake_settings())
+
+    with TestClient(app):
+        pass
+
+    assert calls == [{"cancel_futures": True}]
 
 
 def test_create_app_registers_health_route() -> None:

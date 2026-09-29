@@ -116,6 +116,15 @@ async def mark_plan_failed(conn: AsyncConnection[Any], plan_id: int, failed_reas
     )
 
 
+async def mark_running_plans_failed(conn: AsyncConnection[Any], failed_reason: str) -> list[int]:
+    """Closes every plan left `running`, across all regions. Returns the closed ids."""
+    rows = await run_query(
+        "sweep_running_plans",
+        lambda: fetch_all(queries.sweep_running_plans(conn, failed_reason=failed_reason)),
+    )
+    return [row[0] for row in rows]
+
+
 async def get_plan(conn: AsyncConnection[Any], plan_id: int) -> PlanRow | None:
     row = await run_query("get_plan", lambda: queries.get_plan(conn, plan_id=plan_id))
     if row is None:

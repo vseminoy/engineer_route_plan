@@ -388,6 +388,8 @@ class PlanFailedReason(StrEnum):
     osrm_unavailable = "osrm_unavailable"
     db_unavailable = "db_unavailable"
     build_error = "build_error"
+    timeout = "timeout"
+    shutdown = "shutdown"
 
 
 DistanceByEngineerAdditionalProperty = TypeAliasType(

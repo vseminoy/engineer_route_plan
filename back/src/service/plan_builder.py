@@ -13,7 +13,6 @@ it once scheduled.
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from concurrent.futures import Executor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import partial
@@ -32,6 +31,7 @@ from src.service.explain import ExplainedPlan, explain
 from src.service.loader import Connect
 from src.service.regions import Regions
 from src.service.solver import SolveStatus, solve_day
+from src.service.solver_pool import SolverPool
 
 logger = get_logger(__name__)
 
@@ -41,6 +41,12 @@ ListEngineers = Callable[[AsyncConnection[Any], int], Awaitable[list[Engineer]]]
 InsertRunningPlan = Callable[[AsyncConnection[Any], int, date, str, datetime], Awaitable[int]]
 MarkPlanDone = Callable[[AsyncConnection[Any], int, list[AssignmentWrite]], Awaitable[None]]
 MarkPlanFailed = Callable[[AsyncConnection[Any], int, str], Awaitable[None]]
+MarkRunningPlansFailed = Callable[[AsyncConnection[Any], str], Awaitable[list[int]]]
+
+
+class _SolverTimedOut(Exception):
+    """Raised by `_solve` when the watchdog kills a wedged `or_tools` worker. Caught
+    inside `build` only — never escapes this module or reaches a client."""
 
 
 class TableClient(Protocol):
@@ -72,12 +78,13 @@ class PlanBuilder:
     mark_plan_done: MarkPlanDone
     mark_plan_failed: MarkPlanFailed
     osrm: TableClient
-    pool: Executor
-    """A `ProcessPoolExecutor(max_workers=1)` in the running app; tests may stand in any
-    other `concurrent.futures.Executor` (e.g. a same-process one), since `run_in_executor`
-    itself is typed against the base class."""
+    pool: SolverPool
+    """A `ProcessSolverPool` in the running app; tests stand in a fake implementing the
+    same protocol. `.executor` is what `run_in_executor` runs on; `.restart()` is what
+    the watchdog calls after killing a wedged worker."""
     max_table_size: int
     solver_time_limit: timedelta
+    solver_watchdog_margin_s: float
     clock: Callable[[], datetime] = datetime.now
 
     async def enqueue(self, region_code: str, plan_date: date, algorithm: str) -> QueuedPlan:
@@ -118,6 +125,10 @@ class PlanBuilder:
         except DependencyUnavailable:
             await self._fail(plan_id, "osrm_unavailable")
             return
+        except _SolverTimedOut:
+            logger.warning("plan_build_timeout", plan_id=plan_id, algorithm=algorithm)
+            await self._fail(plan_id, "timeout")
+            return
         except Exception:
             logger.exception("plan_build_failed", plan_id=plan_id, algorithm=algorithm)
             await self._fail(plan_id, "build_error")
@@ -146,8 +157,8 @@ class PlanBuilder:
     ) -> ExplainedPlan:
         if algorithm == "or_tools":
             loop = asyncio.get_running_loop()
-            day_plan = await loop.run_in_executor(
-                self.pool,
+            future = loop.run_in_executor(
+                self.pool.executor,
                 partial(
                     solve_day,
                     tickets,
@@ -157,6 +168,17 @@ class PlanBuilder:
                     time_limit=self.solver_time_limit,
                 ),
             )
+            watchdog_timeout = self.solver_time_limit.total_seconds() + self.solver_watchdog_margin_s
+            try:
+                day_plan = await asyncio.wait_for(future, timeout=watchdog_timeout)
+            except TimeoutError:
+                # `time_limit` is the budget the solver itself is handed and expected to
+                # respect; this is the backstop for when it (or the worker process) does
+                # not — a genuine hang, not a slow-but-honest search. The worker cannot be
+                # reasoned with, only ended: `restart()` kills it and stands up a fresh
+                # executor so the next `or_tools` build is not stuck behind a broken pool.
+                self.pool.restart()
+                raise _SolverTimedOut from None
         else:
             day_plan = baseline.solve_day(tickets, engineers, matrices, day=plan_date)
         return explain(day_plan, tickets, engineers, matrices, day=plan_date)
@@ -190,6 +212,26 @@ class PlanBuilder:
             # Already logged by `database_errors`; the plan stays `running` forever, same
             # as a backend restart mid-build — a fresh `POST /plan/build` is the recovery.
             pass
+
+
+async def sweep_running_plans(
+    connect: Connect,
+    mark_running_plans_failed: MarkRunningPlansFailed,
+    failed_reason: str = "shutdown",
+) -> list[int]:
+    """Closes every plan left `running` from an earlier, ungraceful stop — across every
+    region, since a single `backend` instance owns the whole database. Called once from
+    `app.py`'s `lifespan`, before the app accepts requests, not per region and not from a
+    request handler. Never raises: a database unreachable at startup must not stop the app
+    from coming up — the plans stay `running` until the next restart."""
+    try:
+        async with database_errors("plan_startup_sweep"), connect() as conn:
+            closed = await mark_running_plans_failed(conn, failed_reason)
+    except AppError:
+        return []
+    if closed:
+        logger.info("plan_startup_sweep_finished", count=len(closed))
+    return closed
 
 
 def _validate_window(tickets: Sequence[Ticket], plan_date: date) -> None:
