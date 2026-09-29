@@ -581,7 +581,22 @@ sequenceDiagram
 дня измерен в единицы мс (changeset 12) и не блокирует event loop заметно дольше самого
 вызова. Так как клиент не ждёт ответа на этот вызов синхронно, а опрашивает
 `GET /plan/{plan_id}`, общего дедлайна на весь путь сборки нет: своё время ограничивают
-только сам OSRM-клиент и `time_limit` солвера.
+только сам OSRM-клиент, `time_limit` солвера и — как крайняя защита — таймаут-вотчдог
+вокруг `run_in_executor` самого себя (ниже).
+
+**Watchdog зависшего `or_tools`.** `time_limit` — это бюджет, который сам солвер
+получает и обязан соблюдать; watchdog защищает от случая, когда солвер (или сам
+процесс-воркер) не соблюдает его — завис, не отвечает на внутренний дедлайн, убит ОС
+не полностью. `run_in_executor` оборачивается в `asyncio.wait_for` с таймаутом
+`SOLVER_TIME_LIMIT_S + SOLVER_WATCHDOG_MARGIN_S` — запас поверх собственного бюджета
+солвера, чтобы не считать зависанием штатное завершение впритык к `time_limit`. По
+истечении: `SolverPool.restart()` убивает единственный воркер (`Process.kill()`) и
+поднимает на его месте новый `ProcessPoolExecutor(max_workers=1)` — простой `kill()`
+без пересоздания оставил бы исполнитель битым (`BrokenProcessPool`) для всех
+последующих `or_tools`-сборок до перезапуска приложения, а `baseline_fcfs` пул вообще
+не использует и не пострадал бы. Билд, чей воркер убит, завершается как любой другой
+отказ — `status='failed', failed_reason='timeout'` через уже существующий
+`PlanBuilder._fail`; никакого отдельного пути ошибки для этого случая нет.
 
 **Персист** — статус план проходит в БД через прямое присваивание поля, без
 промежуточных состояний в памяти между шагами:
@@ -607,7 +622,7 @@ sequenceDiagram
     participant BG as фоновая задача
     participant Builder as service (plan_builder)
     participant OSRM as client (OSRM)
-    participant Pool as ProcessPoolExecutor(1)
+    participant Pool as SolverPool (ProcessPoolExecutor(1))
     participant Solver as solver.solve_day
     participant Explain as service (explain)
     participant Repo as queries (планы)
@@ -622,30 +637,75 @@ sequenceDiagram
         Builder->>Repo: UPDATE plans SET status='failed', failed_reason='osrm_unavailable'
     else
         OSRM-->>Builder: матрицы по типам транспорта
-        alt algorithm = or_tools
-            Builder->>Pool: run_in_executor(solve_day, ...) (очередь на 1 воркер)
+        alt algorithm = or_tools И воркер завис дольше time_limit + margin
+            Builder->>Pool: wait_for(run_in_executor(solve_day, ...), time_limit + margin)
             Pool->>Solver: solve_day(tickets, engineers, матрицы, plan_date, time_limit)
-            Solver-->>Pool: DayPlan
-            Pool-->>Builder: DayPlan
-        else algorithm = baseline_fcfs
-            Builder->>Builder: baseline.solve_day(...) (в текущем процессе)
-        end
-        alt солвер или explain упали непредвиденно
-            Builder->>Builder: лог plan_build_failed (error, exc_info)
-            Builder->>Repo: UPDATE plans SET status='failed', failed_reason='build_error'
+            Builder->>Pool: restart() #59; kill() воркера, новый ProcessPoolExecutor(1)
+            Builder->>Repo: UPDATE plans SET status='failed', failed_reason='timeout'
         else
-            Builder->>Explain: explain(DayPlan, tickets, engineers, матрицы, plan_date)
-            Explain-->>Builder: ExplainedPlan
-            Builder->>Repo: BEGIN#59; UPDATE plans SET status='done'#59; INSERT assignments ×(заявка)#59; COMMIT
-            alt БД отклонила запрос или недоступна
-                Repo-->>Builder: DependencyUnavailable | DatabaseFailure
-                Builder->>Repo: UPDATE plans SET status='failed', failed_reason='db_unavailable' | 'build_error'
+            alt algorithm = or_tools
+                Builder->>Pool: wait_for(run_in_executor(solve_day, ...), time_limit + margin)
+                Pool->>Solver: solve_day(tickets, engineers, матрицы, plan_date, time_limit)
+                Solver-->>Pool: DayPlan
+                Pool-->>Builder: DayPlan
+            else algorithm = baseline_fcfs
+                Builder->>Builder: baseline.solve_day(...) (в текущем процессе)
+            end
+            alt солвер или explain упали непредвиденно
+                Builder->>Builder: лог plan_build_failed (error, exc_info)
+                Builder->>Repo: UPDATE plans SET status='failed', failed_reason='build_error'
             else
-                Repo-->>Builder: OK
-                Builder->>Builder: лог plan_build_finished (info, plan_id, algorithm)
+                Builder->>Explain: explain(DayPlan, tickets, engineers, матрицы, plan_date)
+                Explain-->>Builder: ExplainedPlan
+                Builder->>Repo: BEGIN#59; UPDATE plans SET status='done'#59; INSERT assignments ×(заявка)#59; COMMIT
+                alt БД отклонила запрос или недоступна
+                    Repo-->>Builder: DependencyUnavailable | DatabaseFailure
+                    Builder->>Repo: UPDATE plans SET status='failed', failed_reason='db_unavailable' | 'build_error'
+                else
+                    Repo-->>Builder: OK
+                    Builder->>Builder: лог plan_build_finished (info, plan_id, algorithm)
+                end
             end
         end
     end
+```
+
+## Sweep зависших планов при старте приложения
+
+Дополняет watchdog выше для случая, когда сборка обрывается не из-за собственного
+зависания, а из-за остановки самого `backend`: `lifespan`'s `finally` не пытается
+дождаться идущей сборки и записать её исход — на выходе БД/пул соединений могут уже
+закрываться, а сам процесс может быть добит `SIGKILL` оркестратора по истечении его
+grace period раньше, чем запись успеет пройти. Поэтому `finally` лишь просит
+`SolverPool` завершиться быстро (`shutdown(cancel_futures=True)`, без ожидания и без
+попытки писать в БД) и выходит; планы, не успевшие дойти до `done`/`failed`, остаются
+`running` в БД.
+
+`sweep_running_plans` закрывает их при следующем старте — **до** `yield` в `lifespan`,
+то есть до того, как приложение начинает принимать запросы: `UPDATE plans SET
+status='failed', failed_reason='shutdown' WHERE status='running'` одним запросом, по
+всем регионам сразу (сама sweep-проверка не различает регионы — при одном инстансе
+`backend` на БД любой `running`-план на старте не может быть чужим). Если на старте
+недоступна сама БД — sweep логирует это и не блокирует запуск: `backend` поднимается,
+а зависшие с прошлого раза планы останутся `running` до следующего перезапуска.
+
+```mermaid
+sequenceDiagram
+    participant Lifespan as app.py (lifespan)
+    participant Sweep as service (plan_builder.sweep_running_plans)
+    participant Repo as queries (планы)
+
+    note over Lifespan: до yield#59; ни один запрос ещё не принят
+    Lifespan->>Sweep: sweep_running_plans(connect)
+    Sweep->>Repo: UPDATE plans SET status='failed', failed_reason='shutdown'#59; WHERE status='running'
+    alt БД недоступна
+        Repo-->>Sweep: DependencyUnavailable
+        Sweep-->>Lifespan: лог startup_sweep_failed (warning)#59; не поднимает исключение
+    else
+        Repo-->>Sweep: id закрытых планов
+        Sweep-->>Lifespan: лог startup_sweep_finished (info, count) — только если count > 0
+    end
+    Lifespan->>Lifespan: yield (приложение начинает принимать запросы)
 ```
 
 ## Перепланирование: Contract Net

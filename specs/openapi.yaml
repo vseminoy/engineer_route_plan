@@ -947,15 +947,18 @@ components:
       description: >-
         running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет;
         done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не
-        закончился (OSRM или БД недоступны на построении), см. failed_reason
+        закончился (OSRM/БД недоступны, расчёт завис дольше отведённого времени или прерван
+        остановкой сервера), см. failed_reason
 
     PlanFailedReason:
       type: string
-      enum: [osrm_unavailable, db_unavailable, build_error]
+      enum: [osrm_unavailable, db_unavailable, build_error, timeout, shutdown]
       description: >-
         Причина отказа уже поставленного в очередь построения: osrm_unavailable — сервис
         маршрутов недоступен, db_unavailable — недоступна база данных при сохранении плана,
-        build_error — непредусмотренная ошибка построения
+        build_error — непредусмотренная ошибка построения, timeout — расчёт не уложился в
+        отведённое время и был принудительно прерван, shutdown — план остался в running на
+        момент остановки сервера и был закрыт при следующем запуске
 
     PlanMetrics:
       type: object
