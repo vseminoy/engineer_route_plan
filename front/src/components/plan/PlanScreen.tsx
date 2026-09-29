@@ -74,7 +74,13 @@ export function PlanScreen() {
       </div>
 
       {selectedTicketId !== null && (
-        <TicketExplanationModal plan={plan} ticketById={ticketById} ticketId={selectedTicketId} onClose={closeTicket} />
+        <TicketExplanationModal
+          plan={plan}
+          ticketById={ticketById}
+          ticketId={selectedTicketId}
+          region={selectedRegion}
+          onClose={closeTicket}
+        />
       )}
 
       {(engineersQuery.isError || ticketsQuery.isError) && !dismissedError && (

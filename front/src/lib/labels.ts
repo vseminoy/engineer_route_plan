@@ -1,4 +1,4 @@
-import type { InvalidRowReason, Skill, UnassignedReason } from '@/types/domain';
+import type { InvalidRowReason, Skill, TicketStatus, UnassignedReason } from '@/types/domain';
 import { ApiError, NetworkError } from '@/api/client';
 import { isFieldErrors } from '@/lib/fieldErrors';
 
@@ -22,6 +22,16 @@ export const unassignedReasonHeading: Record<UnassignedReason, string> = {
   no_equipment: 'Не хватает оборудования у доступных бригад',
   all_eligible_engineers_booked_elsewhere:
     'Подходящие бригады есть, но все уже заняты другими заявками в это время'
+};
+
+export const ticketStatusLabel: Record<TicketStatus, string> = {
+  not_sent: 'Не отправлена',
+  sent: 'Отправлена бригаде',
+  en_route: 'Бригада в пути',
+  in_progress: 'Работа начата',
+  completed: 'Завершена',
+  cancelled: 'Отменена',
+  overdue: 'Просрочена'
 };
 
 // Why a row of the uploaded file (or the demo dataset) was not loaded as a

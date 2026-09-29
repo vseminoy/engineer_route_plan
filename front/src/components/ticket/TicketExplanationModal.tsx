@@ -1,20 +1,34 @@
+import { useState } from 'react';
 import { getEngineerColor } from '@/lib/colors';
-import { skillLabel, unassignedReasonHeading } from '@/lib/labels';
+import { describeError, skillLabel, unassignedReasonHeading } from '@/lib/labels';
 import { minutesToTimeLabel, timeOnly } from '@/lib/format';
-import { URGENT_PRIORITY, type Plan, type TicketSummary } from '@/types/domain';
+import { useSetTicketStatus } from '@/queries/useSetTicketStatus';
+import { TicketStatusControl } from './TicketStatusControl';
+import { URGENT_PRIORITY, type Plan, type RegionCode, type TicketStatus, type TicketSummary } from '@/types/domain';
 
 interface Props {
   plan: Plan;
   ticketById: Map<number, TicketSummary>;
   ticketId: number;
+  region: RegionCode | null;
   onClose: () => void;
 }
 
 // 06_spec_frontend.md §3.5 — assigned block (engineer, arrival, full
 // explanation) or unassigned block (reason heading + full explanation),
 // never truncated (NFR-01/NFR-07). Full-screen on mobile via CSS (≤767px).
-export function TicketExplanationModal({ plan, ticketById, ticketId, onClose }: Props) {
+export function TicketExplanationModal({ plan, ticketById, ticketId, region, onClose }: Props) {
   const summary = ticketById.get(ticketId);
+  const setStatus = useSetTicketStatus(plan.planId, region);
+  const [statusError, setStatusError] = useState<string | null>(null);
+
+  function handleStatusChange(next: TicketStatus) {
+    setStatusError(null);
+    setStatus.mutate(
+      { ticketId, status: next },
+      { onError: (err) => setStatusError(describeError(err, 'PATCH /tickets/{id}/status')) }
+    );
+  }
 
   let assignment: { engineerId: number; engineerName: string; eta: string; explanation: string } | null = null;
   for (const engineer of plan.engineers) {
@@ -64,6 +78,15 @@ export function TicketExplanationModal({ plan, ticketById, ticketId, onClose }: 
           <span>Окно: {windowText}</span>
           <span>Навык: {skill}</span>
         </div>
+
+        {summary && (
+          <TicketStatusControl
+            status={summary.status}
+            pending={setStatus.isPending}
+            error={statusError}
+            onChange={handleStatusChange}
+          />
+        )}
 
         {assignment && (
           <>

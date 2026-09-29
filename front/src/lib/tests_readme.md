@@ -5,6 +5,7 @@
 - [`src/lib/fieldErrors.ts` — один формат ошибок полей](#srclibfielderrorsts--один-формат-ошибок-полей)
 - [`src/lib/fileValidation.ts` — проверка файла заявок](#srclibfilevalidationts--проверка-файла-заявок)
 - [`src/lib/labels.ts` — текст ошибки по операции и коду](#srcliblabelsts--текст-ошибки-по-операции-и-коду)
+- [`src/lib/ticketStatus.ts` — допустимые переходы статуса заявки](#srclibticketstatusts--допустимые-переходы-статуса-заявки)
 
 ---
 
@@ -35,3 +36,16 @@
 | Test | Scenario | Expected result |
 |---|---|---|
 | `uses the operation-specific text for a 404 on ticket status change` | `describeError` для `ApiError(404)` с `endpoint: 'PATCH /tickets/{id}/status'` | Текст «Заявка не найдена», а не общий текст `404` |
+
+## `src/lib/ticketStatus.ts` — допустимые переходы статуса заявки
+
+Файл: `src/lib/ticketStatus.test.ts` (`vitest`).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `allows forward moves (including skipping a step), cancel, and overdue from not_sent` | `allowedNextStatuses('not_sent')` | `['sent', 'en_route', 'in_progress', 'completed', 'cancelled', 'overdue']` |
+| `allows forward moves, cancel, and overdue from en_route` | `allowedNextStatuses('en_route')` | `['in_progress', 'completed', 'cancelled', 'overdue']` |
+| `does not offer overdue once work has started (in_progress)` | `allowedNextStatuses('in_progress')` | `['completed', 'cancelled']`, без `overdue` |
+| `lets overdue return to en_route/in_progress/completed or cancel` | `allowedNextStatuses('overdue')` | `['en_route', 'in_progress', 'completed', 'cancelled']` |
+| `offers nothing once closed (completed, cancelled)` | `allowedNextStatuses('completed')`, `allowedNextStatuses('cancelled')` | `[]` |
+| `is true only for completed and cancelled` | `isClosedStatus` на всех статусах | `true` только для `completed`/`cancelled` |
