@@ -23,7 +23,6 @@ export type UnassignedReason =
   | 'no_time_slot'
   | 'no_vehicle'
   | 'shift_overflow'
-  | 'no_equipment'
   | 'all_eligible_engineers_booked_elsewhere';
 
 export type Algorithm = 'or_tools' | 'baseline_fcfs';

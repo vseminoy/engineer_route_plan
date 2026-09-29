@@ -19,7 +19,6 @@ export const unassignedReasonHeading: Record<UnassignedReason, string> = {
   no_time_slot: 'Ни одна бригада не успевает в это временное окно',
   no_vehicle: 'Нет бригады с нужным типом транспорта',
   shift_overflow: 'Работа не помещается в смену ни одной подходящей бригады',
-  no_equipment: 'Не хватает оборудования у доступных бригад',
   all_eligible_engineers_booked_elsewhere:
     'Подходящие бригады есть, но все уже заняты другими заявками в это время'
 };
