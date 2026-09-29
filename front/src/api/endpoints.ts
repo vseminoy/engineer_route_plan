@@ -1,8 +1,11 @@
-import { http } from './client';
-import { mapEngineerRoster, mapPlan, mapRegion, mapTicketSummary } from './mappers';
-import type { ApiEngineerListItem, ApiPlan, ApiRegion, ApiTicketListItem } from './types';
+import { http, unwrap } from './client';
+import { listEngineers, listRegions, listTickets, loadDemoData, uploadRegionData } from './generated/engineerRoutePlanAPI';
+import { mapDataLoadResult, mapEngineerRoster, mapPlan, mapRegion, mapTicketSummary } from './mappers';
+import type { DataLoadResult as ApiDataLoadResult, Engineer, Region as ApiRegion, Ticket } from './generated/schemas';
+import type { ApiPlan } from './types';
 import type {
   Algorithm,
+  DataLoadResult,
   EngineerRoster,
   Plan,
   RegionCode,
@@ -13,37 +16,25 @@ import type {
 } from '@/types/domain';
 
 export function getRegions(): Promise<Region[]> {
-  return http.get<ApiRegion[]>('/regions').then((rows) => rows.map(mapRegion));
+  return unwrap<ApiRegion[]>(listRegions(), 200).then((rows) => rows.map(mapRegion));
 }
 
 export function getEngineers(region: RegionCode): Promise<EngineerRoster[]> {
-  return http
-    .get<ApiEngineerListItem[]>(`/engineers?region=${encodeURIComponent(region)}`)
-    .then((rows) => rows.map(mapEngineerRoster));
+  return unwrap<Engineer[]>(listEngineers({ region }), 200).then((rows) => rows.map(mapEngineerRoster));
 }
 
-export function getTickets(region: RegionCode, planId?: number): Promise<TicketSummary[]> {
-  const suffix = planId !== undefined ? `&plan_id=${planId}` : '';
-  return http
-    .get<ApiTicketListItem[]>(`/tickets?region=${encodeURIComponent(region)}${suffix}`)
-    .then((rows) => rows.map(mapTicketSummary));
+export function getTickets(region: RegionCode): Promise<TicketSummary[]> {
+  return unwrap<Ticket[]>(listTickets({ region }), 200).then((rows) => rows.map(mapTicketSummary));
 }
 
-export function loadDemoDataset(region: RegionCode): Promise<{ region: RegionCode }> {
-  // Seeds the backend's store for the region; the plan itself is built by buildPlan().
-  return http.get(`/data/demo?region=${encodeURIComponent(region)}`);
+export function loadDemoDataset(region: RegionCode): Promise<DataLoadResult> {
+  return unwrap<ApiDataLoadResult>(loadDemoData({ region }), 200).then(mapDataLoadResult);
 }
 
-export function uploadDataset(
-  region: RegionCode,
-  ticketsFile: File,
-  engineersFile?: File
-): Promise<{ region: RegionCode }> {
-  const form = new FormData();
-  form.append('region', region);
-  form.append('tickets_file', ticketsFile);
-  if (engineersFile) form.append('engineers_file', engineersFile);
-  return http.post('/data/upload', form);
+export function uploadDataset(region: RegionCode, ticketsFile: File): Promise<DataLoadResult> {
+  return unwrap<ApiDataLoadResult>(uploadRegionData({ region, tickets_file: ticketsFile }), 200).then(
+    mapDataLoadResult
+  );
 }
 
 export function buildPlan(region: RegionCode, planDate: string, algorithm: Algorithm): Promise<Plan> {

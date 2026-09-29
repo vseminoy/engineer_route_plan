@@ -1,10 +1,7 @@
-// Raw wire shapes exactly as docs/bft/05_spec_backend.md §4 returns them
-// (snake_case JSON). Nothing outside src/api reads these directly.
-
-export interface ApiRegion {
-  code: string;
-  name: string;
-}
+// Raw wire shapes for the plan endpoints (POST /plan/build, GET /plan/{id},
+// POST /plan/{id}/replan), hand-written ahead of their generated client.
+// Regions, engineers, tickets and data loading use the generated types from
+// src/api/generated/schemas instead. Nothing outside src/api reads these directly.
 
 export interface ApiRouteStop {
   ticket_id: number;
@@ -63,35 +60,6 @@ export interface ApiPlan {
   unassigned: ApiUnassignedTicket[];
   metrics: ApiPlanMetrics;
   diff?: ApiPlanDiff;
-}
-
-// GET /engineers and GET /tickets are specified in 05_spec_backend.md §4.1
-// only as a one-line purpose ("список бригад региона с навыками и
-// транспортом" / "список заявок региона") — no sample JSON body is given.
-// These shapes are inferred from the `engineer` / `ticket` DDL in §3 and
-// should be reconciled against the real endpoint once the backend ships it.
-export interface ApiEngineerListItem {
-  id: number;
-  name: string;
-  vehicle_type: string;
-  skills: string[];
-  shift_start: string; // 'HH:MM:SS'
-  shift_end: string;
-  start_lat: number;
-  start_lon: number;
-}
-
-export interface ApiTicketListItem {
-  id: number;
-  required_skill: string;
-  priority: string;
-  address: string;
-  window_start: string;
-  window_end: string;
-  duration_min: number;
-  status: string;
-  lat: number | null;
-  lon: number | null;
 }
 
 // GET /plan/{id}/compare exists in the contract, but its documented example

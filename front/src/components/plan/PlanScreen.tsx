@@ -24,7 +24,7 @@ export function PlanScreen() {
 
   const planQuery = usePlan(planId);
   const engineersQuery = useEngineers(selectedRegion);
-  const ticketsQuery = useTickets(selectedRegion, planId);
+  const ticketsQuery = useTickets(selectedRegion);
 
   const ticketById = useMemo(
     () => new Map((ticketsQuery.data ?? []).map((t) => [t.ticketId, t])),

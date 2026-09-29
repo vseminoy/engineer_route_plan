@@ -1,4 +1,4 @@
-import type { Skill, UnassignedReason } from '@/types/domain';
+import type { InvalidRowReason, Skill, UnassignedReason } from '@/types/domain';
 import { ApiError, NetworkError } from '@/api/client';
 import { isFieldErrors } from '@/lib/fieldErrors';
 
@@ -24,6 +24,18 @@ export const unassignedReasonHeading: Record<UnassignedReason, string> = {
     'Подходящие бригады есть, но все уже заняты другими заявками в это время'
 };
 
+// Why a row of the uploaded file (or the demo dataset) was not loaded as a
+// ticket, shown next to its row number and column.
+export const invalidRowReasonText: Record<InvalidRowReason, string> = {
+  missing_field: 'Нет обязательного поля',
+  field_too_long: 'Значение длиннее предела',
+  bad_datetime: 'Время не в формате ДД.ММ.ГГГГ Ч:ММ',
+  window_order: 'Начало окна не раньше окончания',
+  unknown_type: 'Тип заявки не из таблицы соответствия',
+  unknown_status: 'Статус BK не из таблицы соответствия',
+  address_not_found: 'Для адреса не нашлось координат'
+};
+
 // A response status with no body: text by status, used when the endpoint has
 // no more specific entry below.
 const statusMessage: Record<number, string> = {
@@ -35,7 +47,9 @@ const statusMessage: Record<number, string> = {
 
 // `"METHOD /path" (as named in the spec) + status` → a message specific to that
 // operation's failure, for a status the generic table above doesn't fit well.
-const endpointStatusMessage: Record<string, string> = {};
+const endpointStatusMessage: Record<string, string> = {
+  'POST /data/upload 413': 'Файл слишком большой (предел — 1 МБ).'
+};
 
 function textForStatus(endpoint: string, status: number): string {
   return endpointStatusMessage[`${endpoint} ${status}`] ?? statusMessage[status] ?? 'Ошибка сервера';

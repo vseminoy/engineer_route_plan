@@ -7,7 +7,7 @@ import { TicketMarker } from './TicketMarker';
 import { EngineerStartMarker } from './EngineerStartMarker';
 import { getEngineerColor } from '@/lib/colors';
 import { useUiStore } from '@/store/useUiStore';
-import type { EngineerRoster, Plan, TicketSummary } from '@/types/domain';
+import { URGENT_PRIORITY, type EngineerRoster, type Plan, type TicketSummary } from '@/types/domain';
 
 interface Props {
   plan: Plan;
@@ -73,7 +73,7 @@ export function MapView({ plan, roster, tickets }: Props) {
             key={stop.ticketId}
             position={position}
             color={color}
-            urgent={ticket.priority === 'urgent'}
+            urgent={ticket.priority === URGENT_PRIORITY}
             emergency={ticket.requiredSkill === 'emergency'}
             unassigned={false}
             diffHighlight={diffTicketIds.has(stop.ticketId)}
@@ -122,7 +122,7 @@ export function MapView({ plan, roster, tickets }: Props) {
           key={u.ticketId}
           position={position}
           color="#9AA0AA"
-          urgent={ticket.priority === 'urgent'}
+          urgent={ticket.priority === URGENT_PRIORITY}
           emergency={false}
           unassigned
           onClick={() => openTicket(u.ticketId)}

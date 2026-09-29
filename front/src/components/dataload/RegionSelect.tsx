@@ -10,9 +10,11 @@ const FALLBACK_REGIONS: Array<{ code: RegionCode; name: string }> = [
 interface Props {
   value: RegionCode | null;
   onChange: (region: RegionCode) => void;
+  onBlur?: () => void;
+  error?: string;
 }
 
-export function RegionSelect({ value, onChange }: Props) {
+export function RegionSelect({ value, onChange, onBlur, error }: Props) {
   const regionsQuery = useRegions();
   const regions = regionsQuery.data && regionsQuery.data.length > 0 ? regionsQuery.data : FALLBACK_REGIONS;
 
@@ -22,6 +24,7 @@ export function RegionSelect({ value, onChange }: Props) {
       <select
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value as RegionCode)}
+        onBlur={onBlur}
         style={{ fontSize: 15, padding: '10px 12px', minHeight: 44, borderRadius: 8, border: '1px solid rgba(18,21,26,0.14)' }}
       >
         <option value="" disabled>
@@ -33,6 +36,7 @@ export function RegionSelect({ value, onChange }: Props) {
           </option>
         ))}
       </select>
+      {error && <span style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>{error}</span>}
     </label>
   );
 }

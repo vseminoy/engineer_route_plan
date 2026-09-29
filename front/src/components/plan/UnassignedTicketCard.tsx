@@ -1,6 +1,6 @@
 import { skillLabel, unassignedReasonHeading } from '@/lib/labels';
 import { minutesToTimeLabel } from '@/lib/format';
-import type { TicketSummary, UnassignedTicket } from '@/types/domain';
+import { URGENT_PRIORITY, type TicketSummary, type UnassignedTicket } from '@/types/domain';
 
 interface Props {
   ticket: UnassignedTicket;
@@ -13,7 +13,7 @@ export function UnassignedTicketCard({ ticket, summary, onClick }: Props) {
     <div className="unassigned-card" onClick={onClick}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <span style={{ fontSize: 14, fontWeight: 600 }}>{summary?.address ?? `Заявка №${ticket.ticketId}`}</span>
-        {summary?.priority === 'urgent' && <span className="urgent-badge">Срочно</span>}
+        {summary?.priority === URGENT_PRIORITY && <span className="urgent-badge">Срочно</span>}
       </div>
       {summary && (
         <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>

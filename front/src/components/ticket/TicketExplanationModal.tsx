@@ -1,7 +1,7 @@
 import { getEngineerColor } from '@/lib/colors';
 import { skillLabel, unassignedReasonHeading } from '@/lib/labels';
 import { minutesToTimeLabel, timeOnly } from '@/lib/format';
-import type { Plan, TicketSummary } from '@/types/domain';
+import { URGENT_PRIORITY, type Plan, type TicketSummary } from '@/types/domain';
 
 interface Props {
   plan: Plan;
@@ -26,7 +26,7 @@ export function TicketExplanationModal({ plan, ticketById, ticketId, onClose }: 
   }
   const unassigned = plan.unassigned.find((u) => u.ticketId === ticketId);
 
-  const urgent = summary?.priority === 'urgent';
+  const urgent = summary?.priority === URGENT_PRIORITY;
   const windowText = summary ? `${minutesToTimeLabel(summary.windowStartMin)}–${minutesToTimeLabel(summary.windowEndMin)}` : '—';
   const skill = summary ? skillLabel(summary.requiredSkill) : '—';
 

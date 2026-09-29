@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 // Backend base prefix is /api/v1 (05_spec_backend.md §4) — the dev proxy
@@ -18,5 +18,12 @@ export default defineConfig({
         changeOrigin: true
       }
     }
+  },
+  test: {
+    // `globals: true` puts `afterEach` on globalThis, which is what makes
+    // @testing-library/react register its automatic per-test DOM cleanup.
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./vitest.setup.ts']
   }
 });

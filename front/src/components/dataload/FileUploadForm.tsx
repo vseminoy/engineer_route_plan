@@ -1,42 +1,32 @@
 import { useRef, useState } from 'react';
+import { validateTicketsFile } from '@/lib/fileValidation';
 
 interface Props {
   disabled: boolean;
-  onSubmit: (ticketsFile: File, engineersFile?: File) => void;
+  error?: string;
+  onFileSelected: (file: File | null, error: string | null) => void;
+  onSubmit: (ticketsFile: File) => void;
 }
 
-function hasValidExtension(file: File): boolean {
-  return /\.(csv|json)$/i.test(file.name);
-}
-
-// 06_spec_frontend.md §3.1 — client-side validation is limited to
-// extension + non-empty file; everything else is a backend VALIDATION_ERROR
-// shown inline under the field, never a technical stack trace.
-export function FileUploadForm({ disabled, onSubmit }: Props) {
+// Client-side validation is extension + non-empty + size limit
+// (validateTicketsFile); the file's content is a backend concern, shown
+// inline under the field (`error`, from the parent's field-error map).
+export function FileUploadForm({ disabled, error, onFileSelected, onSubmit }: Props) {
   const [ticketsFile, setTicketsFile] = useState<File | null>(null);
-  const [engineersFile, setEngineersFile] = useState<File | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  function acceptTicketsFile(file: File) {
-    if (!hasValidExtension(file)) {
-      setError('Поддерживаются только файлы .csv или .json.');
-      return;
-    }
-    if (file.size === 0) {
-      setError('Файл пустой.');
-      return;
-    }
-    setError(null);
-    setTicketsFile(file);
+  function acceptFile(file: File) {
+    const message = validateTicketsFile(file);
+    setTicketsFile(message ? null : file);
+    onFileSelected(message ? null : file, message);
   }
 
   function handleDrop(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
     setIsDragOver(false);
     const file = e.dataTransfer.files[0];
-    if (file) acceptTicketsFile(file);
+    if (file) acceptFile(file);
   }
 
   return (
@@ -67,25 +57,16 @@ export function FileUploadForm({ disabled, onSubmit }: Props) {
           hidden
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) acceptTicketsFile(file);
+            if (file) acceptFile(file);
           }}
         />
       </div>
       {error && <div style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>{error}</div>}
 
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
-        Файл бригад (опционально)
-        <input
-          type="file"
-          accept=".csv,.json"
-          onChange={(e) => setEngineersFile(e.target.files?.[0] ?? null)}
-        />
-      </label>
-
       <button
         className="btn-primary"
         disabled={disabled || !ticketsFile}
-        onClick={() => ticketsFile && onSubmit(ticketsFile, engineersFile ?? undefined)}
+        onClick={() => ticketsFile && onSubmit(ticketsFile)}
       >
         Загрузить и построить план
       </button>

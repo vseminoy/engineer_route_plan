@@ -5,7 +5,11 @@
 
 export type Skill = 'local_work' | 'connection' | 'emergency';
 export type VehicleType = 'car' | 'foot' | 'bike' | 'public_transport';
-export type Priority = 'normal' | 'urgent';
+
+// Rank >= 1, smaller is more urgent: 1 — авария, 2 — подключение, 3 — ремонт/дозаказ.
+export type Priority = number;
+export const URGENT_PRIORITY: Priority = 1;
+
 export type TicketStatus =
   | 'not_sent'
   | 'sent'
@@ -141,4 +145,32 @@ export interface TicketSummary {
   status: TicketStatus;
   lat: number | null;
   lon: number | null;
+}
+
+// Why a row of the uploaded file (or the demo dataset) did not become a ticket —
+// POST /data/upload and POST /data/demo return one per rejected row.
+export type InvalidRowReason =
+  | 'missing_field'
+  | 'field_too_long'
+  | 'bad_datetime'
+  | 'window_order'
+  | 'unknown_type'
+  | 'unknown_status'
+  | 'address_not_found';
+
+export interface InvalidRow {
+  row: number;
+  column: string | null;
+  reason: InvalidRowReason;
+}
+
+// Result of POST /data/upload or POST /data/demo — replaces the region's tickets
+// (and refreshes its brigades' start points) in one transaction.
+export interface DataLoadResult {
+  region: RegionCode;
+  engineersCount: number;
+  ticketsCount: number;
+  rowsTotal: number;
+  rowsSkipped: number;
+  invalidRows: InvalidRow[];
 }

@@ -1,23 +1,21 @@
 import type {
-  ApiEngineerListItem,
   ApiEngineerRoute,
   ApiPlan,
   ApiPlanDiff,
   ApiPlanMetrics,
-  ApiRegion,
   ApiRouteStop,
-  ApiTicketListItem,
   ApiUnassignedTicket
 } from './types';
+import type { DataLoadResult as ApiDataLoadResult, Engineer, Region as ApiRegion, Ticket } from './generated/schemas';
 import { minutesSinceMidnight } from '@/lib/format';
 import type {
   Algorithm,
+  DataLoadResult,
   EngineerRoster,
   EngineerRoute,
   Plan,
   PlanDiff,
   PlanMetrics,
-  Priority,
   Region,
   RegionCode,
   RouteStop,
@@ -104,7 +102,7 @@ export function mapRegion(api: ApiRegion): Region {
   return { code: api.code as RegionCode, name: api.name };
 }
 
-export function mapEngineerRoster(api: ApiEngineerListItem): EngineerRoster {
+export function mapEngineerRoster(api: Engineer): EngineerRoster {
   return {
     engineerId: api.id,
     name: api.name,
@@ -112,22 +110,33 @@ export function mapEngineerRoster(api: ApiEngineerListItem): EngineerRoster {
     skills: api.skills as Skill[],
     shiftStartMin: minutesSinceMidnight(api.shift_start),
     shiftEndMin: minutesSinceMidnight(api.shift_end),
-    startLat: api.start_lat,
-    startLon: api.start_lon
+    startLat: api.start.lat,
+    startLon: api.start.lon
   };
 }
 
-export function mapTicketSummary(api: ApiTicketListItem): TicketSummary {
+export function mapTicketSummary(api: Ticket): TicketSummary {
   return {
     ticketId: api.id,
     requiredSkill: api.required_skill as Skill,
-    priority: api.priority as Priority,
+    priority: api.priority,
     address: api.address,
     windowStartMin: minutesSinceMidnight(api.window_start),
     windowEndMin: minutesSinceMidnight(api.window_end),
     durationMin: api.duration_min,
     status: api.status as TicketStatus,
-    lat: api.lat,
-    lon: api.lon
+    lat: api.location.lat,
+    lon: api.location.lon
+  };
+}
+
+export function mapDataLoadResult(api: ApiDataLoadResult): DataLoadResult {
+  return {
+    region: api.region as RegionCode,
+    engineersCount: api.engineers,
+    ticketsCount: api.tickets,
+    rowsTotal: api.rows_total,
+    rowsSkipped: api.rows_skipped,
+    invalidRows: api.rows_invalid.map((r) => ({ row: r.row, column: r.column, reason: r.reason }))
   };
 }

@@ -3,10 +3,10 @@ import { getTickets } from '@/api/endpoints';
 import { queryKeys } from './keys';
 import type { RegionCode } from '@/types/domain';
 
-export function useTickets(region: RegionCode | null, planId: number | undefined) {
+export function useTickets(region: RegionCode | null) {
   return useQuery({
     queryKey: queryKeys.tickets(region ?? ''),
-    queryFn: () => getTickets(region as RegionCode, planId),
+    queryFn: () => getTickets(region as RegionCode),
     enabled: region !== null
   });
 }

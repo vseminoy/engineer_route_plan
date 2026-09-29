@@ -54,3 +54,25 @@ export const http = {
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PATCH', body: body !== undefined ? JSON.stringify(body) : undefined })
 };
+
+// The generated fetch client (src/api/generated/) never throws: every response, success or
+// error, comes back as { data, status, headers }. This turns it into the same ApiError /
+// NetworkError pair `http.*` throws, so describeError/fieldErrors work the same regardless of
+// which client layer made the request.
+export async function unwrap<TSuccess>(
+  call: Promise<{ data: unknown; status: number; headers: Headers }>,
+  successStatus: number
+): Promise<TSuccess> {
+  let res: { data: unknown; status: number; headers: Headers };
+  try {
+    res = await call;
+  } catch {
+    throw new NetworkError();
+  }
+  if (res.status !== successStatus) {
+    const requestId = res.headers.get('X-Request-ID');
+    const body = res.status === 400 ? (res.data as ValidationError) : undefined;
+    throw new ApiError(res.status, requestId, body);
+  }
+  return res.data as TSuccess;
+}
