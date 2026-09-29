@@ -1,5 +1,12 @@
 import { http, unwrap } from './client';
-import { listEngineers, listRegions, listTickets, loadDemoData, uploadRegionData } from './generated/engineerRoutePlanAPI';
+import {
+  changeTicketStatus,
+  listEngineers,
+  listRegions,
+  listTickets,
+  loadDemoData,
+  uploadRegionData
+} from './generated/engineerRoutePlanAPI';
 import { mapDataLoadResult, mapEngineerRoster, mapPlan, mapRegion, mapTicketSummary } from './mappers';
 import type { DataLoadResult as ApiDataLoadResult, Engineer, Region as ApiRegion, Ticket } from './generated/schemas';
 import type { ApiPlan } from './types';
@@ -79,6 +86,6 @@ export function replan(planId: number, event: ReplanEvent): Promise<Plan> {
   return http.post<ApiPlan>(`/plan/${planId}/replan`, replanEventToPayload(event)).then(mapPlan);
 }
 
-export function setTicketStatus(ticketId: number, status: TicketStatus): Promise<void> {
-  return http.patch(`/tickets/${ticketId}/status`, { status });
+export function setTicketStatus(ticketId: number, status: TicketStatus): Promise<TicketSummary> {
+  return unwrap<Ticket>(changeTicketStatus(ticketId, { status }), 200).then(mapTicketSummary);
 }

@@ -4,6 +4,7 @@
 
 - [`src/lib/fieldErrors.ts` — один формат ошибок полей](#srclibfielderrorsts--один-формат-ошибок-полей)
 - [`src/lib/fileValidation.ts` — проверка файла заявок](#srclibfilevalidationts--проверка-файла-заявок)
+- [`src/lib/labels.ts` — текст ошибки по операции и коду](#srcliblabelsts--текст-ошибки-по-операции-и-коду)
 
 ---
 
@@ -26,3 +27,11 @@
 | `rejects an empty file` | Файл `tickets.csv` размером 0 байт | Текст «Файл пустой.» |
 | `rejects a file over the backend size limit` | Файл размером `MAX_UPLOAD_BYTES + 1` | Текст «Файл слишком большой (предел — 1 МБ).» |
 | `accepts a non-empty .csv or .json file within the limit` | Файлы `tickets.csv` (ровно на пределе) и `TICKETS.JSON` | `null` (файл проходит проверку) |
+
+## `src/lib/labels.ts` — текст ошибки по операции и коду
+
+Файл: `src/lib/labels.test.ts` (`vitest`).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `uses the operation-specific text for a 404 on ticket status change` | `describeError` для `ApiError(404)` с `endpoint: 'PATCH /tickets/{id}/status'` | Текст «Заявка не найдена», а не общий текст `404` |

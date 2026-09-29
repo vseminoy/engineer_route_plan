@@ -4,6 +4,7 @@
 
 - [`src/api/client.ts` — разбор ответа с ошибкой](#srcapiclientts--разбор-ответа-с-ошибкой)
 - [`src/api/mappers.ts` — маппинг сгенерированных типов в доменные](#srcapimappersts--маппинг-сгенерированных-типов-в-доменные)
+- [`src/api/endpoints.ts` — `setTicketStatus`](#srcapiendpointsts--setticketstatus)
 
 ---
 
@@ -32,3 +33,13 @@
 | `flattens the start point and converts shift bounds to minutes since midnight` | `mapEngineerRoster` на бригаде со `start: {lat, lon}` и сменой `'08:00'`–`'20:00'` | `startLat`/`startLon` — из `start`, `shiftStartMin`/`shiftEndMin` — минуты с полуночи |
 | `carries the numeric priority rank and derives the window in minutes from the naive datetime` | `mapTicketSummary` на заявке с `priority: 1` и `window_start`/`window_end` — полным наивным datetime | `priority` — то же число, `windowStartMin`/`windowEndMin` — минуты с полуночи выбранного дня |
 | `translates snake_case counts and invalid rows into the domain shape` | `mapDataLoadResult` на ответе с `rows_invalid` | доменный `DataLoadResult` с `engineersCount`/`ticketsCount`/`rowsTotal`/`rowsSkipped`/`invalidRows` |
+
+## `src/api/endpoints.ts` — `setTicketStatus`
+
+Файл: `src/api/endpoints.test.ts` (`vitest`), тот же приём со стабом глобального `fetch`, что и у `client.test.ts` — `changeTicketStatus` (сгенерированный клиент) ходит через него же.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `maps the 200 response to the domain ticket summary` | `fetch` отвечает `200` с заявкой | `setTicketStatus` возвращает `TicketSummary`, замапленную из ответа |
+| `rejects an invalid transition with the 400 message as-is` | `fetch` отвечает `400` с `{"message": "..."}` (недопустимый переход) | `ApiError` с этим `message`, статус заявки не считается изменённым |
+| `rejects a missing ticket with a bodyless 404` | `fetch` отвечает `404` без тела | `ApiError` со статусом `404` и `body === undefined` |

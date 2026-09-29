@@ -48,7 +48,8 @@ const statusMessage: Record<number, string> = {
 // `"METHOD /path" (as named in the spec) + status` → a message specific to that
 // operation's failure, for a status the generic table above doesn't fit well.
 const endpointStatusMessage: Record<string, string> = {
-  'POST /data/upload 413': 'Файл слишком большой (предел — 1 МБ).'
+  'POST /data/upload 413': 'Файл слишком большой (предел — 1 МБ).',
+  'PATCH /tickets/{id}/status 404': 'Заявка не найдена'
 };
 
 function textForStatus(endpoint: string, status: number): string {
