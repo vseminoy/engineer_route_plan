@@ -20,7 +20,7 @@
 - [`src/service/loader.py` — загрузка данных региона](#srcserviceloaderpy--загрузка-данных-региона)
 - [`src/service/region_lists.py` — регионы, бригады и заявки региона](#srcserviceregion_listspy--регионы-бригады-и-заявки-региона)
 - [`src/service/ticket_status.py` — переходы статусов заявки](#srcserviceticket_statuspy--переходы-статусов-заявки)
-- [`src/service/solver.py` — модель солвера (один проход)](#srcservicesolverpy--модель-солвера-один-проход)
+- [`src/service/solver.py` — модель солвера, ступенчатая (лексикографическая) оптимизация](#srcservicesolverpy--модель-солвера-ступенчатая-лексикографическая-оптимизация)
 - [`src/clients/nominatim.py` — клиент Nominatim](#srcclientsnominatimpy--клиент-nominatim)
 - [`src/clients/osrm.py` — клиент OSRM](#srcclientsosrmpy--клиент-osrm)
 - [`scripts/build_geocache.py` — сборка гео-кэша](#scriptsbuild_geocachepy--сборка-гео-кэша)
@@ -466,7 +466,7 @@
 | `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; запись `db_query_failed` с `query = change_ticket_status` |
 | `test_commit_failure_is_dependency_unavailable` | статус записан, фиксация транзакции поднимает `OperationalError` | `DependencyUnavailable(reason="db_unavailable")`; одна запись `db_query_failed` с `query = change_ticket_status`; записи `ticket_status_changed` нет |
 
-## `src/service/solver.py` — модель солвера (один проход)
+## `src/service/solver.py` — модель солвера, ступенчатая (лексикографическая) оптимизация
 
 Файл: `tests/service/test_solver.py`.
 
@@ -478,10 +478,14 @@
 > навык заявки и требуемый транспорт; прибытие — точно самое раннее, что позволяет переезд
 > по матрице профиля бригады (секунды вверх до минуты); начало работ — точно самое раннее из
 > прибытия и начала окна; выезд не раньше начала смены; окончание последней работы не позже
-> конца смены. `SolveWithParameters` подменяется дважды: возвращает `None` в тесте ветки
+> конца смены; `idle_min` бригады равен длине смены минус суммарные визиты и переезды.
+> `SolveWithParameters` подменяется дважды: возвращает `None` в тесте ветки
 > «решение не найдено», и вызовом, который поднимает исключение, если его вообще вызвали, —
 > там, где заявка должна быть отсеяна раньше модели. Логи — разбором JSON-строк stderr
-> (`capsys`, `tests/log_records.py`).
+> (`capsys`, `tests/log_records.py`). Большинство сценариев вызывают `solve_day` напрямую и
+> тем самым проверяют трёхфазную модель целиком; тесты этого раздела дополнительно
+> сравнивают её с однопроходным взвешенным вариантом (`_solve_single_pass_weighted`) —
+> базой сравнения, которая существует только для этого сравнения.
 
 ### Допустимость: навык и транспорт
 
@@ -522,6 +526,17 @@
 | `test_fewer_engineers_preferred` | 2 одинаковые бригады, 3 заявки умещаются в смену одной | все 3 назначены одной бригаде; у второй нет визитов |
 | `test_coverage_over_engineers` | 3 заявки умещаются только у двух бригад | назначены все 3, задействованы 2 бригады |
 | `test_shorter_order_chosen` | 1 бригада, 3 заявки на прямой, окна на весь день | порядок посещения по прямой от старта; суммарный переезд минимален |
+
+### Ступенчатая (лексикографическая) оптимизация
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_lexicographic_uses_no_more_engineers_than_single_pass` | 4 бригады, навык только у 2 (дефицит), 6 заявок навыка | лексикографический план задействует не больше бригад, чем однопроходный взвешенный на тех же данных; на этом конкретном входе обе стратегии умещаются на одной бригаде (1 ≤ 1) — расхождение проверяет случайный компаньон ниже |
+| `test_lexicographic_uses_no_more_engineers_than_single_pass_random` (seed 0–9) | случайные входы `_random_instance` | то же сравнение на 10 случайных наборах |
+| `test_solver_phase_finished_logged` | обычный вход | 3 записи `solver_phase_finished` уровня `info`, `phase` по порядку 1, 2, 3, у каждой — целое `objective` и `duration_ms` |
+| `test_idle_time_computed` | 1 бригада, 1 визит с переездом и длительностью | `idle_min` = длина смены минус переезд минус длительность |
+| `test_idle_time_whole_shift_when_unused` | бригада без подходящего навыка, заявка неназначена | `idle_min` = длина смены целиком |
+| `test_bound_coverage_and_bound_fleet_actually_cut` | `_bound_coverage`/`_bound_fleet` напрямую: недостижимый штраф покрытия; штраф в 0 (полное покрытие обязательно) вместе с нулём разрешённых бригад | оба случая — модель недопустима, ограничения реально отсекают решения, а не только присутствуют |
 
 ### Бригада — одна «машина»; результат
 

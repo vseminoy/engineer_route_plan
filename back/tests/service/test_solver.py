@@ -1,5 +1,6 @@
 import math
 import random
+import time as perf_time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
@@ -109,6 +110,8 @@ def assert_feasible(
         durations = matrices[e.vehicle_type].durations_s
         here = engineers.index(e)
         free = datetime.combine(DAY, e.shift_start)
+        travel_total = 0
+        duration_total = 0
         for visit in route.visits:
             t = by_id[visit.ticket_id]
             assert t.required_skill in e.skills, f"skill: ticket {t.id} to brigade {e.id}"
@@ -129,7 +132,15 @@ def assert_feasible(
             assert visit.start == expected_start, f"work not the earliest start: ticket {t.id}"
             assert visit.end == visit.start + timedelta(minutes=t.duration_min)
             assert visit.end <= datetime.combine(DAY, e.shift_end), f"shift: ticket {t.id}"
+            travel_total += math.ceil(seconds / 60)
+            duration_total += t.duration_min
             free, here = visit.end, row[t.id]
+        shift_min = (e.shift_end.hour * 60 + e.shift_end.minute) - (
+            e.shift_start.hour * 60 + e.shift_start.minute
+        )
+        assert route.idle_min == shift_min - travel_total - duration_total, (
+            f"idle time: brigade {e.id}"
+        )
 
 
 def visits_of(plan: DayPlan, engineer_id: int) -> tuple[Visit, ...]:
@@ -408,6 +419,149 @@ def test_shorter_order_chosen() -> None:
     assert sum(v.travel_min for v in visits) == 30
 
 
+# --- Ступенчатая (лексикографическая) оптимизация ---
+
+
+def _lex_vs_single_pass(
+    tickets: Sequence[Ticket],
+    engineers: Sequence[Engineer],
+    matrices: Mapping[VehicleType, TravelMatrix],
+) -> tuple[DayPlan, DayPlan]:
+    from src.service.solver import _model_tickets, _solve_lexicographic, _solve_single_pass_weighted
+
+    midnight, modelled, unassigned = _model_tickets(tickets, engineers, DAY)
+    lex = _solve_lexicographic(
+        tickets,
+        engineers,
+        matrices,
+        modelled,
+        list(unassigned),
+        midnight=midnight,
+        time_limit=LIMIT,
+        started=perf_time.monotonic(),
+    )
+    base = _solve_single_pass_weighted(
+        tickets,
+        engineers,
+        matrices,
+        modelled,
+        list(unassigned),
+        midnight=midnight,
+        time_limit=LIMIT,
+        started=perf_time.monotonic(),
+    )
+    assert_feasible(lex, tickets, engineers, matrices)
+    if base.status is not SolveStatus.INFEASIBLE:
+        assert_feasible(base, tickets, engineers, matrices)
+    return lex, base
+
+
+def test_lexicographic_uses_no_more_engineers_than_single_pass() -> None:
+    """R-260921032323-17: an intentional shortage of qualified brigades (2 of 4 have the
+    ticket's skill) — the lexicographic plan uses no more brigades than the single-pass
+    baseline on the same input. On this particular input both strategies happen to fit every
+    ticket on one brigade, so the comparison here is not the discriminating case (1 <= 1
+    either way); the randomised companion below is what actually exercises inputs where the
+    two searches can disagree."""
+    engineers = [
+        engineer(1, [LOCAL]),
+        engineer(2, [LOCAL]),
+        engineer(3, [CONNECTION]),
+        engineer(4, [CONNECTION]),
+    ]
+    tickets = [ticket(i, LOCAL, window=(at(9), at(22)), duration=90) for i in range(1, 7)]
+    matrices = line([0, 1, 2, 3, 10, 12, 14, 16, 18, 20])
+    lex, base = _lex_vs_single_pass(tickets, engineers, matrices)
+    assert sum(1 for r in lex.routes if r.visits) <= sum(1 for r in base.routes if r.visits)
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_lexicographic_uses_no_more_engineers_than_single_pass_random(seed: int) -> None:
+    tickets, engineers, matrices = _random_instance(seed)
+    lex, base = _lex_vs_single_pass(tickets, engineers, matrices)
+    assert sum(1 for r in lex.routes if r.visits) <= sum(1 for r in base.routes if r.visits)
+
+
+def test_bound_coverage_and_bound_fleet_actually_cut() -> None:
+    """`_bound_coverage`/`_bound_fleet` on their own, not only through the phases that call
+    them: a bound no feasible solution can satisfy must make the model infeasible, proving each
+    constraint really cuts solutions rather than merely being present. Every ticket here can be
+    left unassigned (the disjunction), so a fleet bound alone never bites — pairing it with a
+    coverage bound that forces every ticket to be served is what makes `_bound_fleet` bite too."""
+    from src.service.solver import (
+        _bound_coverage,
+        _bound_fleet,
+        _build_model,
+        _model_tickets,
+        _set_costs,
+    )
+
+    engineers = [engineer(1), engineer(2)]
+    tickets = [ticket(1, duration=30), ticket(2, duration=30)]
+    matrices = line([0, 0, 1, 1])
+    _, modelled, _ = _model_tickets(tickets, engineers, DAY)
+
+    impossible_coverage = _build_model(engineers, matrices, modelled, penalty_floor=1)
+    _set_costs(
+        impossible_coverage, engineers, arc_cb=lambda _e: impossible_coverage.zero_cb, fixed_cost=0
+    )
+    _bound_coverage(impossible_coverage, max_penalty=-1)  # no non-negative penalty sum fits
+    assert (
+        impossible_coverage.routing.SolveWithParameters(pywrapcp.DefaultRoutingSearchParameters())
+        is None
+    )
+
+    full_coverage_no_fleet = _build_model(engineers, matrices, modelled, penalty_floor=1)
+    _set_costs(
+        full_coverage_no_fleet,
+        engineers,
+        arc_cb=lambda _e: full_coverage_no_fleet.zero_cb,
+        fixed_cost=0,
+    )
+    _bound_coverage(full_coverage_no_fleet, max_penalty=0)  # forces every ticket served
+    _bound_fleet(full_coverage_no_fleet, max_used=0, n_vehicles=len(engineers))  # forbids serving
+    assert (
+        full_coverage_no_fleet.routing.SolveWithParameters(
+            pywrapcp.DefaultRoutingSearchParameters()
+        )
+        is None
+    )
+
+
+def test_solver_phase_finished_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    json_logs()
+    solve(*_random_instance(4))
+    phases = events(capsys, "solver_phase_finished")
+    assert [p["phase"] for p in phases] == [1, 2, 3]
+    for p in phases:
+        assert p["level"] == "info"
+        assert isinstance(p["objective"], int)
+        assert isinstance(p["duration_ms"], int)
+
+
+def test_idle_time_computed() -> None:
+    plan = solve(
+        [ticket(1, duration=30, window=(at(10), at(20)))],
+        [engineer(1, shift=(time(10), time(18)))],
+        line([0, 10]),
+    )
+    (visit,) = visits_of(plan, 1)
+    assert visit.travel_min == 10
+    (route,) = plan.routes
+    assert route.idle_min == 8 * 60 - 10 - 30
+
+
+def test_idle_time_whole_shift_when_unused() -> None:
+    plan = solve(
+        [ticket(1, EMERGENCY)],
+        [engineer(1, [LOCAL], shift=(time(9), time(17)))],
+        line([0, 1]),
+    )
+    assert plan.unassigned == (1,)
+    (route,) = plan.routes
+    assert route.idle_min == 8 * 60
+
+
 # --- Бригада — одна «машина»; результат ---
 
 
@@ -477,7 +631,7 @@ def test_no_tickets() -> None:
     plan = solve([], [engineer(1), engineer(2)], line([0, 0]))
     assert plan == DayPlan(
         status=SolveStatus.OPTIMAL,
-        routes=(EngineerRoute(1, ()), EngineerRoute(2, ())),
+        routes=(EngineerRoute(1, (), 810), EngineerRoute(2, (), 810)),
         unassigned=(),
     )
 
@@ -566,7 +720,7 @@ def _feasible() -> tuple[DayPlan, list[Ticket], list[Engineer], dict]:
     matrices = line([0, 10])
     plan = DayPlan(
         status=SolveStatus.FEASIBLE,
-        routes=(EngineerRoute(1, (Visit(1, at(10, 10), at(11), at(11, 30), 10, 10000),)),),
+        routes=(EngineerRoute(1, (Visit(1, at(10, 10), at(11), at(11, 30), 10, 10000),), 440),),
         unassigned=(),
     )
     assert_feasible(plan, tickets, engineers, matrices)
@@ -575,7 +729,7 @@ def _feasible() -> tuple[DayPlan, list[Ticket], list[Engineer], dict]:
 
 def _with_visit(plan: DayPlan, **changes: object) -> DayPlan:
     visit = replace(plan.routes[0].visits[0], **changes)  # type: ignore[arg-type]
-    return replace(plan, routes=(EngineerRoute(1, (visit,)),))
+    return replace(plan, routes=(EngineerRoute(1, (visit,), 0),))
 
 
 def test_checker_fails_on_skill() -> None:
