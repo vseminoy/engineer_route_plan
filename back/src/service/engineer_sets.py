@@ -67,7 +67,9 @@ class EngineerSets:
     ) -> EngineerSet:
         """Raises `InvalidInput` before touching the database if the region is not
         loaded or the shares would leave fewer than `MIN_FULL_DAY_ENGINEERS` full-day
-        brigades — the same rule the region's own configuration is checked against."""
+        brigades — the same rule the region's own configuration is checked against.
+        Both checks are pure config lookups, so a request that fails either one never
+        costs a round trip to the database."""
         region = self.regions.get(region_code)
         full_day = self.regions.shifts.split(engineers, morning_share, evening_share)[2]
         if full_day < MIN_FULL_DAY_ENGINEERS:
