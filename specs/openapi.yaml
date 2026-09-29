@@ -153,19 +153,129 @@ paths:
           $ref: "./common.yaml#/components/responses/ServiceUnavailable"
           description: Недоступна база данных. Данные региона не изменились.
 
-  /api/v1/engineers:
+  /api/v1/engineer-sets:
     get:
-      operationId: list_engineers
-      summary: Бригады региона
+      operationId: list_engineer_sets
+      summary: Наборы бригад региона
       description: >-
-        Бригады только выбранного региона, по возрастанию id. id бригады не
-        меняется при повторной загрузке данных региона. Регион без загруженных
-        данных — пустой список.
+        Все наборы бригад выбранного региона: набор `default` (создаётся
+        первой загрузкой данных региона, его нельзя удалить) и, если созданы,
+        дополнительные наборы. Регион без загруженных данных — пустой список.
       parameters:
         - $ref: "#/components/parameters/RegionQuery"
       responses:
         "200":
-          description: Бригады региона
+          description: Наборы бригад региона
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EngineerSet"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+          description: region не из конфигурации или не передан.
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных.
+    post:
+      operationId: create_engineer_set
+      summary: Создать дополнительный набор бригад региона
+      description: >-
+        Создаёт набор тем же генератором, что и набор `default`, со своими
+        параметрами (`engineers`, `morning_share`, `evening_share`, `seed`):
+        бригад на весь день (их не меньше 4) вместе — все навыки и все виды
+        транспорта, у каждой бригады 1–3 навыка, смены — в пределах суток.
+        Регион должен иметь загруженные данные — иначе 400. План и baseline
+        по набору строятся отдельным запросом `POST /plan/build` с этим
+        `engineer_set_id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EngineerSetCreateRequest"
+      responses:
+        "201":
+          description: Набор создан
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EngineerSet"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+          description: >-
+            Регион не из конфигурации или не загружен (`fields`), параметр
+            набора вне предела (`fields`), либо бригад на весь день после
+            разбивки по долям смен получилось бы меньше 4 (`message`).
+        "409":
+          $ref: "./common.yaml#/components/responses/Conflict"
+          description: В регионе уже есть набор с таким name.
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных. Набор не создан.
+
+  /api/v1/engineer-sets/{engineer_set_id}:
+    delete:
+      operationId: delete_engineer_set
+      summary: Удалить дополнительный набор бригад вместе с его планами
+      description: >-
+        Удаляет набор, его бригады, его планы (в т.ч. baseline) и их визиты и
+        события перепланирования, в одной транзакции. Набор `default`
+        удалить нельзя — 409: у региона всегда должен быть хотя бы один набор.
+      parameters:
+        - name: engineer_set_id
+          in: path
+          required: true
+          description: Идентификатор набора бригад на сервере
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 9223372036854775807
+      responses:
+        "204":
+          description: Набор, его бригады и его планы удалены
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+          description: Набора с таким engineer_set_id нет.
+        "409":
+          $ref: "./common.yaml#/components/responses/Conflict"
+          description: engineer_set_id называет набор default.
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных. Набор не удалён.
+
+  /api/v1/engineers:
+    get:
+      operationId: list_engineers
+      summary: Бригады региона или одного набора бригад
+      description: >-
+        Бригады только выбранного региона, по возрастанию id. Без
+        engineer_set_id — бригады набора `default`; с engineer_set_id —
+        бригады этого набора, если он принадлежит региону. id бригады не
+        меняется при повторной загрузке данных региона. Регион без загруженных
+        данных — пустой список.
+      parameters:
+        - $ref: "#/components/parameters/RegionQuery"
+        - $ref: "#/components/parameters/EngineerSetIdQuery"
+      responses:
+        "200":
+          description: Бригады региона или набора
           headers:
             X-Request-ID:
               $ref: "./common.yaml#/components/headers/X-Request-ID"
@@ -177,6 +287,9 @@ paths:
                   $ref: "#/components/schemas/Engineer"
         "400":
           $ref: "./common.yaml#/components/responses/BadRequest"
+          description: >-
+            region не из конфигурации или не передан, либо engineer_set_id не
+            из этого региона (`fields`).
         "500":
           $ref: "./common.yaml#/components/responses/InternalError"
         "503":
@@ -293,6 +406,11 @@ paths:
         весь запрос 400, план не ставится в очередь.
 
 
+        `engineer_set_id` выбирает, по какому набору бригад региона строить
+        план (без него — набор default); план хранит свой набор, и
+        перепланирование этого плана идёт по бригадам того же набора.
+
+
         Число точек будущей маршрутной матрицы (бригады + заявки) проверяется
         до постановки в очередь — больше предела OSRM отклоняет запрос 400.
         Время в пути и расстояние считаются по дорожному графу (OSRM) уже в
@@ -392,8 +510,10 @@ paths:
         по обязательным метрикам (`engineers_used`, `total_distance_km`) —
         по одной записи на каждую. Оба плана должны быть в состоянии
         `status=done`: метрики строящегося или не сложившегося плана не
-        определены. `idle_time` в сравнение не входит — она только для
-        отображения (см. `PlanMetrics.idle_time_by_engineer_min`).
+        определены. Оба плана должны быть одного набора бригад
+        (`engineer_set_id`) — иначе сравнение бессмысленно: у планов разных
+        наборов разное число бригад. `idle_time` в сравнение не входит — она
+        только для отображения (см. `PlanMetrics.idle_time_by_engineer_min`).
       parameters:
         - name: plan_id
           in: path
@@ -427,7 +547,8 @@ paths:
           $ref: "./common.yaml#/components/responses/BadRequest"
           description: >-
             plan_id или baseline_plan_id вне допустимого диапазона (`fields`),
-            либо один из двух планов ещё не done (`message`).
+            либо один из двух планов ещё не done или у планов разные
+            engineer_set_id (`message`).
         "404":
           $ref: "./common.yaml#/components/responses/NotFound"
           description: Плана с таким plan_id или baseline_plan_id нет.
@@ -446,7 +567,9 @@ paths:
         событию перепланирования (Contract Net: объявление задания
         бригадам-кандидатам, локальные ставки, победитель с минимальной
         ставкой) и сохраняет результат новым планом с `parent_plan_id =
-        plan_id`. План-родитель должен быть в состоянии `status=done` —
+        plan_id`. Новый план наследует `engineer_set_id` плана-родителя —
+        перепланирование пересчитывает бригады того же набора, набор сменить
+        нельзя. План-родитель должен быть в состоянии `status=done` —
         иначе `400`. Пересчёт идёт от состояния бригад на момент
         `triggered_at` события: заявки `completed`/`cancelled` исключены,
         `in_progress` зафиксирована (бригада освобождается не раньше
@@ -553,6 +676,18 @@ components:
         сервера, — ошибка 400 у параметра region.
       schema:
         $ref: "#/components/schemas/RegionCode"
+    EngineerSetIdQuery:
+      name: engineer_set_id
+      in: query
+      required: false
+      description: >-
+        Набор бригад региона. Без параметра — набор default. Набор, которого
+        нет или который принадлежит другому региону, — ошибка 400 у параметра
+        engineer_set_id.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 9223372036854775807
   schemas:
     HealthStatus:
       type: object
@@ -791,7 +926,7 @@ components:
         engineers:
           type: integer
           minimum: 0
-          description: Сколько бригад теперь у региона
+          description: Сколько бригад теперь во всех наборах региона вместе
         tickets:
           type: integer
           minimum: 1
@@ -809,6 +944,99 @@ components:
           items:
             $ref: "#/components/schemas/InvalidRow"
           description: Строки-заявки, которые не загружены, по возрастанию номера строки
+
+    EngineerSetKind:
+      type: string
+      enum: [demo, generated]
+      description: >-
+        demo — набор default, создаётся первой загрузкой данных региона и
+        обновляется вместе с ней (как сегодняшние бригады региона); удалить
+        нельзя. generated — дополнительный набор, создан POST /engineer-sets.
+
+    EngineerSet:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - kind
+        - engineers
+        - morning_share
+        - evening_share
+        - seed
+        - description
+      properties:
+        id:
+          type: integer
+          description: Идентификатор набора бригад на сервере
+        name:
+          type: string
+          description: >-
+            Название набора, уникальное в регионе; у набора kind=demo всегда
+            "default"
+        kind:
+          $ref: "#/components/schemas/EngineerSetKind"
+        engineers:
+          type: integer
+          minimum: 1
+          maximum: 30
+          description: Сколько бригад в наборе
+        morning_share:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Доля бригад на утренней смене, которой создан набор
+        evening_share:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Доля бригад на вечерней смене, которой создан набор
+        seed:
+          type: string
+          description: Зерно генератора, которым создан набор
+        description:
+          type: string
+          description: >-
+            Параметры генератора набора текстом для пользователя (число
+            бригад, доли смен, seed) — чтобы отличить наборы одного региона
+            друг от друга на фронтенде
+
+    EngineerSetCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [region, name, engineers, morning_share, evening_share, seed]
+      properties:
+        region:
+          $ref: "#/components/schemas/RegionCode"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            Название набора, уникальное в регионе; "default" занято набором
+            региона, если регион загружен
+        engineers:
+          type: integer
+          minimum: 1
+          maximum: 30
+          description: Сколько бригад создать
+        morning_share:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: >-
+            Доля бригад на утренней смене (округляется вниз); вместе с
+            evening_share не должна оставлять меньше 4 бригад на весь день
+        evening_share:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Доля бригад на вечерней смене (округляется вниз)
+        seed:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Зерно генератора; тот же seed и те же остальные параметры дают тот же набор
 
     PlanAlgorithm:
       type: string
@@ -832,6 +1060,17 @@ components:
             на эту дату
         algorithm:
           $ref: "#/components/schemas/PlanAlgorithm"
+        engineer_set_id:
+          anyOf:
+            - type: integer
+              minimum: 1
+              maximum: 9223372036854775807
+            - type: "null"
+          default: null
+          description: >-
+            Набор бригад региона, для которого строится план; null или
+            отсутствует — набор default. Набор, которого нет или который
+            принадлежит другому региону, — ошибка 400 у поля engineer_set_id
 
     UnassignedReason:
       type: string
@@ -1033,7 +1272,7 @@ components:
     Plan:
       type: object
       additionalProperties: false
-      required: [plan_id, algorithm, status]
+      required: [plan_id, algorithm, status, engineer_set_id]
       properties:
         plan_id:
           type: integer
@@ -1042,6 +1281,11 @@ components:
           $ref: "#/components/schemas/PlanAlgorithm"
         status:
           $ref: "#/components/schemas/PlanStatus"
+        engineer_set_id:
+          type: integer
+          description: >-
+            Набор бригад, для которого построен план — тот же, что был передан
+            (или default) в POST /plan/build, каким бы ни был status
         engineers:
           anyOf:
             - type: array
@@ -1297,6 +1541,7 @@ components:
         - parent_plan_id
         - algorithm
         - status
+        - engineer_set_id
         - engineers
         - unassigned
         - metrics
@@ -1311,6 +1556,9 @@ components:
         algorithm:
           $ref: "#/components/schemas/PlanAlgorithm"
           description: Тот же алгоритм, что у plan_id
+        engineer_set_id:
+          type: integer
+          description: Тот же набор бригад, что у plan_id — перепланирование не меняет набор
         status:
           type: string
           enum: [done]
