@@ -9,6 +9,7 @@ import { ErrorToast } from '@/components/common/ErrorToast';
 import { FullScreenErrorNotice } from '@/components/common/FullScreenErrorNotice';
 import { usePlan } from '@/queries/usePlan';
 import { useEngineers } from '@/queries/useEngineers';
+import { useEngineerSets } from '@/queries/useEngineerSets';
 import { useTickets } from '@/queries/useTickets';
 import { useUiStore } from '@/store/useUiStore';
 import { describeError, planFailedReasonText } from '@/lib/labels';
@@ -29,20 +30,23 @@ export function PlanScreen() {
   const [rebuildError, setRebuildError] = useState<string | null>(null);
 
   const planQuery = usePlan(planId);
-  const engineersQuery = useEngineers(selectedRegion);
+  const engineersQuery = useEngineers(selectedRegion, planQuery.data?.engineerSetId ?? null);
   const ticketsQuery = useTickets(selectedRegion);
+  const engineerSetsQuery = useEngineerSets(selectedRegion);
 
   const ticketById = useMemo(
     () => new Map((ticketsQuery.data ?? []).map((t) => [t.ticketId, t])),
     [ticketsQuery.data]
   );
 
-  async function rebuild(algorithm: 'or_tools' | 'baseline_fcfs') {
+  const engineerSetName = engineerSetsQuery.data?.find((s) => s.id === planQuery.data?.engineerSetId)?.name;
+
+  async function rebuild(algorithm: 'or_tools' | 'baseline_fcfs', engineerSetId: number) {
     if (!selectedRegion) return;
     setRebuildError(null);
     setRebuilding(true);
     try {
-      const rebuilt = await buildPlan(selectedRegion, PLAN_DATE, algorithm);
+      const rebuilt = await buildPlan(selectedRegion, PLAN_DATE, algorithm, engineerSetId);
       navigate(`/plan/${rebuilt.planId}`);
     } catch (err) {
       setRebuildError(describeError(err, 'POST /plan/build'));
@@ -82,7 +86,7 @@ export function PlanScreen() {
         message={rebuildError ?? reason}
         retryLabel="Построить заново"
         retrying={rebuilding}
-        onRetry={() => rebuild(plan.algorithm)}
+        onRetry={() => rebuild(plan.algorithm, plan.engineerSetId)}
       />
     );
   }
@@ -90,6 +94,7 @@ export function PlanScreen() {
   const donePlan: DonePlan = {
     planId: plan.planId,
     algorithm: plan.algorithm,
+    engineerSetId: plan.engineerSetId,
     parentPlanId: plan.parentPlanId,
     engineers: plan.engineers ?? [],
     unassigned: plan.unassigned ?? [],
@@ -108,7 +113,10 @@ export function PlanScreen() {
     <div className="plan-screen">
       <div className="plan-screen__header">
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-          <h1 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>Диспетчер{selectedRegion ? ` · ${selectedRegion}` : ''}</h1>
+          <h1 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
+            Диспетчер{selectedRegion ? ` · ${selectedRegion}` : ''}
+            {engineerSetName ? ` · ${engineerSetName}` : ''}
+          </h1>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--color-text-secondary)' }}>
           <span>Бригад в плане: {donePlan.engineers.length}</span>
@@ -128,6 +136,7 @@ export function PlanScreen() {
           plan={donePlan}
           roster={engineersQuery.data ?? []}
           ticketById={ticketById}
+          engineerSetName={engineerSetName}
           onReplanned={(newPlanId) => navigate(`/plan/${newPlanId}`)}
         />
       </div>

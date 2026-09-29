@@ -2,6 +2,7 @@ import type {
   DataLoadResult as ApiDataLoadResult,
   Engineer,
   EngineerRoute as ApiEngineerRoute,
+  EngineerSet as ApiEngineerSet,
   Plan as GeneratedPlan,
   PlanComparisonEntry,
   PlanDiff as ApiPlanDiff,
@@ -18,6 +19,8 @@ import type {
   DataLoadResult,
   EngineerRoster,
   EngineerRoute,
+  EngineerSet,
+  EngineerSetKind,
   Plan,
   PlanCompare,
   PlanDiff,
@@ -125,7 +128,12 @@ function mapDiff(d: ApiPlanDiff): PlanDiff {
 // the former (engineers/unassigned/metrics all null until then), failed has
 // the latter.
 export function mapPlan(api: GeneratedPlan): Plan {
-  const base = { planId: api.plan_id, algorithm: api.algorithm as Algorithm, status: api.status as PlanStatus };
+  const base = {
+    planId: api.plan_id,
+    algorithm: api.algorithm as Algorithm,
+    status: api.status as PlanStatus,
+    engineerSetId: api.engineer_set_id
+  };
 
   if (api.status === 'done') {
     const engineers = (api.engineers ?? []).map(mapEngineerRoute);
@@ -162,6 +170,7 @@ export function mapPlanReplanResult(api: PlanReplanResult): Plan {
     planId: api.plan_id,
     algorithm: api.algorithm as Algorithm,
     status: 'done',
+    engineerSetId: api.engineer_set_id,
     parentPlanId: api.parent_plan_id,
     engineers: api.engineers.map(mapEngineerRoute),
     unassigned: api.unassigned.map(mapUnassignedTicket),
@@ -184,6 +193,19 @@ export function mapEngineerRoster(api: Engineer): EngineerRoster {
     shiftEndMin: minutesSinceMidnight(api.shift_end),
     startLat: api.start.lat,
     startLon: api.start.lon
+  };
+}
+
+export function mapEngineerSet(api: ApiEngineerSet): EngineerSet {
+  return {
+    id: api.id,
+    name: api.name,
+    kind: api.kind as EngineerSetKind,
+    engineers: api.engineers,
+    morningShare: api.morning_share,
+    eveningShare: api.evening_share,
+    seed: api.seed,
+    description: api.description
   };
 }
 

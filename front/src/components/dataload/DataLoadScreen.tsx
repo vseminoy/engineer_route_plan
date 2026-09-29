@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { RegionSelect } from './RegionSelect';
+import { EngineerSetSelect } from './EngineerSetSelect';
+import { EngineerSetCreateForm } from './EngineerSetCreateForm';
+import { EngineerSetDeleteConfirm } from './EngineerSetDeleteConfirm';
 import { FileUploadForm } from './FileUploadForm';
 import { DemoDatasetButton } from './DemoDatasetButton';
 import { DataLoadSummary } from './DataLoadSummary';
@@ -17,7 +20,7 @@ import { fieldErrorsFromApi, fieldErrorsFromZod, isFieldErrors, type FieldErrorM
 import { ApiError } from '@/api/client';
 import { UploadRegionDataBody } from '@/api/generated/zod/engineerRoutePlanAPI';
 import { PLAN_DATE } from '@/lib/planDate';
-import type { DataLoadResult, RegionCode } from '@/types/domain';
+import type { DataLoadResult, EngineerSet, RegionCode } from '@/types/domain';
 
 const regionField = UploadRegionDataBody.shape.region;
 
@@ -26,12 +29,16 @@ export function DataLoadScreen() {
   const queryClient = useQueryClient();
   const selectedRegion = useUiStore((s) => s.selectedRegion);
   const setSelectedRegion = useUiStore((s) => s.setSelectedRegion);
+  const selectedEngineerSetId = useUiStore((s) => s.selectedEngineerSetId);
+  const setSelectedEngineerSetId = useUiStore((s) => s.setSelectedEngineerSetId);
   const buildPlanMutation = useBuildPlan();
   const [loadingText, setLoadingText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [buildError, setBuildError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrorMap>({});
   const [loadResult, setLoadResult] = useState<DataLoadResult | null>(null);
+  const [creatingSet, setCreatingSet] = useState(false);
+  const [deletingSet, setDeletingSet] = useState<EngineerSet | null>(null);
 
   function setFieldError(field: string, message: string | null) {
     setFieldErrors((prev) => {
@@ -57,7 +64,11 @@ export function DataLoadScreen() {
     setBuildError(null);
     setLoadingText('Строим план…');
     try {
-      const { main } = await buildPlanMutation.mutateAsync({ region: selectedRegion, planDate: PLAN_DATE });
+      const { main } = await buildPlanMutation.mutateAsync({
+        region: selectedRegion,
+        planDate: PLAN_DATE,
+        engineerSetId: selectedEngineerSetId
+      });
       navigate(`/plan/${main.planId}`);
     } catch (err) {
       // Preliminary checks failed before the build even queued — a full-screen
@@ -74,6 +85,7 @@ export function DataLoadScreen() {
   async function afterLoad(region: RegionCode, result: DataLoadResult) {
     queryClient.invalidateQueries({ queryKey: queryKeys.tickets(region) });
     queryClient.invalidateQueries({ queryKey: queryKeys.engineers(region) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.engineerSets(region) });
     if (result.invalidRows.length === 0) {
       await runBuild();
     } else {
@@ -144,6 +156,15 @@ export function DataLoadScreen() {
             error={fieldErrors.region}
           />
 
+          <EngineerSetSelect
+            region={selectedRegion}
+            value={selectedEngineerSetId}
+            onChange={setSelectedEngineerSetId}
+            onCreateClick={() => setCreatingSet(true)}
+            onDeleteClick={setDeletingSet}
+            disabled={loadingText !== null}
+          />
+
           <DemoDatasetButton disabled={!selectedRegion || loadingText !== null} onClick={handleDemo} />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: 'var(--color-text-muted)', fontSize: 13 }}>
@@ -171,6 +192,26 @@ export function DataLoadScreen() {
         />
       )}
       {error && <ErrorToast message={error} onDismiss={() => setError(null)} />}
+
+      {creatingSet && selectedRegion && (
+        <EngineerSetCreateForm
+          region={selectedRegion}
+          onCreated={(set) => {
+            setCreatingSet(false);
+            setSelectedEngineerSetId(set.id);
+          }}
+          onCancel={() => setCreatingSet(false)}
+        />
+      )}
+
+      {deletingSet && selectedRegion && (
+        <EngineerSetDeleteConfirm
+          region={selectedRegion}
+          engineerSet={deletingSet}
+          onDeleted={() => setDeletingSet(null)}
+          onCancel={() => setDeletingSet(null)}
+        />
+      )}
     </div>
   );
 }

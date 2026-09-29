@@ -69,7 +69,10 @@ const endpointStatusMessage: Record<string, string> = {
   'POST /data/upload 413': 'Файл слишком большой (предел — 1 МБ).',
   'PATCH /tickets/{id}/status 404': 'Заявка не найдена',
   'GET /plan/{id} 404': 'План не найден — возможно, ссылка устарела',
-  'POST /plan/{id}/replan 409': 'Заявка ещё не отмечена отменённой — сначала измените её статус'
+  'POST /plan/{id}/replan 409': 'Заявка ещё не отмечена отменённой — сначала измените её статус',
+  'POST /engineer-sets 409': 'Набор с таким названием уже есть в регионе',
+  'DELETE /engineer-sets/{id} 404': 'Набор уже удалён',
+  'DELETE /engineer-sets/{id} 409': 'Набор по умолчанию удалить нельзя'
 };
 
 function textForStatus(endpoint: string, status: number): string {

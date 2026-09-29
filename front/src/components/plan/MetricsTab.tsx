@@ -8,14 +8,18 @@ import type { DonePlan } from '@/types/domain';
 
 interface Props {
   plan: DonePlan;
+  engineerSetName?: string;
 }
 
-export function MetricsTab({ plan }: Props) {
+export function MetricsTab({ plan, engineerSetName }: Props) {
   const compareQuery = usePlanCompare(plan.planId);
   const compare = compareQuery.data;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {engineerSetName && (
+        <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Сравнение в пределах набора «{engineerSetName}»</div>
+      )}
       {compare ? (
         <>
           <MetricComparisonCard

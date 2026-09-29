@@ -16,6 +16,7 @@ vi.mock('react-router-dom', async () => {
 vi.mock('@/components/map/MapView', () => ({ MapView: () => <div data-testid="map-view" /> }));
 
 vi.mock('@/queries/useEngineers', () => ({ useEngineers: () => ({ data: [], isError: false }) }));
+vi.mock('@/queries/useEngineerSets', () => ({ useEngineerSets: () => ({ data: [] }) }));
 vi.mock('@/queries/useTickets', () => ({ useTickets: () => ({ data: [], isError: false }) }));
 
 const usePlanMock = vi.fn();
@@ -45,7 +46,7 @@ afterEach(() => {
 
 describe('PlanScreen — running/done/failed transitions', () => {
   it('shows the waiting message while the build is still running (polling handled by usePlan itself)', () => {
-    usePlanMock.mockReturnValue(planQueryResult({ planId: 42, algorithm: 'or_tools', status: 'running' }));
+    usePlanMock.mockReturnValue(planQueryResult({ planId: 42, algorithm: 'or_tools', status: 'running', engineerSetId: 7 }));
 
     renderPlanScreen();
 
@@ -59,6 +60,7 @@ describe('PlanScreen — running/done/failed transitions', () => {
         planId: 42,
         algorithm: 'or_tools',
         status: 'done',
+        engineerSetId: 7,
         engineers: [],
         unassigned: [],
         metrics: {
@@ -81,9 +83,9 @@ describe('PlanScreen — running/done/failed transitions', () => {
 
   it('shows the failure reason and a rebuild button when the build failed, and rebuilds on click', async () => {
     usePlanMock.mockReturnValue(
-      planQueryResult({ planId: 42, algorithm: 'or_tools', status: 'failed', failedReason: 'osrm_unavailable' })
+      planQueryResult({ planId: 42, algorithm: 'or_tools', status: 'failed', engineerSetId: 7, failedReason: 'osrm_unavailable' })
     );
-    buildPlanMock.mockResolvedValue({ planId: 99, algorithm: 'or_tools', status: 'running' });
+    buildPlanMock.mockResolvedValue({ planId: 99, algorithm: 'or_tools', status: 'running', engineerSetId: 7 });
 
     renderPlanScreen();
 
@@ -93,6 +95,6 @@ describe('PlanScreen — running/done/failed transitions', () => {
     await act(async () => fireEvent.click(button));
 
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/plan/99'));
-    expect(buildPlanMock).toHaveBeenCalledWith('east', expect.any(String), 'or_tools');
+    expect(buildPlanMock).toHaveBeenCalledWith('east', expect.any(String), 'or_tools', 7);
   });
 });

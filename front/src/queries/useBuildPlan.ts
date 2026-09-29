@@ -13,10 +13,18 @@ export function useBuildPlan() {
   const setBaselinePlanId = useUiStore((s) => s.setBaselinePlanId);
 
   return useMutation({
-    mutationFn: async ({ region, planDate }: { region: RegionCode; planDate: string }) => {
+    mutationFn: async ({
+      region,
+      planDate,
+      engineerSetId
+    }: {
+      region: RegionCode;
+      planDate: string;
+      engineerSetId?: number | null;
+    }) => {
       const [main, baseline] = await Promise.all([
-        buildPlan(region, planDate, 'or_tools'),
-        buildPlan(region, planDate, 'baseline_fcfs')
+        buildPlan(region, planDate, 'or_tools', engineerSetId),
+        buildPlan(region, planDate, 'baseline_fcfs', engineerSetId)
       ]);
       return { main, baseline };
     },

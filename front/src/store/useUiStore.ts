@@ -11,6 +11,11 @@ interface UiState {
   selectedRegion: RegionCode | null;
   setSelectedRegion: (region: RegionCode | null) => void;
 
+  // null — the region's default set. Cleared whenever the region changes,
+  // since a set id only ever names a set of the region it was created in.
+  selectedEngineerSetId: number | null;
+  setSelectedEngineerSetId: (engineerSetId: number | null) => void;
+
   activeTab: PanelTab;
   setActiveTab: (tab: PanelTab) => void;
 
@@ -32,7 +37,10 @@ interface UiState {
 
 export const useUiStore = create<UiState>((set, get) => ({
   selectedRegion: null,
-  setSelectedRegion: (region) => set({ selectedRegion: region }),
+  setSelectedRegion: (region) => set({ selectedRegion: region, selectedEngineerSetId: null }),
+
+  selectedEngineerSetId: null,
+  setSelectedEngineerSetId: (engineerSetId) => set({ selectedEngineerSetId: engineerSetId }),
 
   activeTab: 'engineers',
   setActiveTab: (tab) => set({ activeTab: tab }),

@@ -3,7 +3,10 @@ import {
   buildPlan as postPlanBuild,
   changeTicketStatus,
   comparePlan as getPlanCompareRequest,
+  createEngineerSet as postEngineerSet,
+  deleteEngineerSet as deleteEngineerSetRequest,
   getPlan as getPlanRequest,
+  listEngineerSets,
   listEngineers,
   listRegions,
   listTickets,
@@ -14,6 +17,7 @@ import {
 import {
   mapDataLoadResult,
   mapEngineerRoster,
+  mapEngineerSet,
   mapPlan,
   mapPlanCompare,
   mapPlanReplanResult,
@@ -23,6 +27,8 @@ import {
 import type {
   DataLoadResult as ApiDataLoadResult,
   Engineer,
+  EngineerSet as ApiEngineerSet,
+  EngineerSetCreateRequest,
   Plan as ApiPlanGenerated,
   PlanComparisonEntry,
   PlanReplanResult,
@@ -34,6 +40,7 @@ import type {
   Algorithm,
   DataLoadResult,
   EngineerRoster,
+  EngineerSet,
   Plan,
   PlanCompare,
   RegionCode,
@@ -47,8 +54,23 @@ export function getRegions(): Promise<Region[]> {
   return unwrap<ApiRegion[]>(listRegions(), 200).then((rows) => rows.map(mapRegion));
 }
 
-export function getEngineers(region: RegionCode): Promise<EngineerRoster[]> {
-  return unwrap<Engineer[]>(listEngineers({ region }), 200).then((rows) => rows.map(mapEngineerRoster));
+export function getEngineers(region: RegionCode, engineerSetId?: number | null): Promise<EngineerRoster[]> {
+  return unwrap<Engineer[]>(
+    listEngineers(engineerSetId ? { region, engineer_set_id: engineerSetId } : { region }),
+    200
+  ).then((rows) => rows.map(mapEngineerRoster));
+}
+
+export function getEngineerSets(region: RegionCode): Promise<EngineerSet[]> {
+  return unwrap<ApiEngineerSet[]>(listEngineerSets({ region }), 200).then((rows) => rows.map(mapEngineerSet));
+}
+
+export function createEngineerSet(request: EngineerSetCreateRequest): Promise<EngineerSet> {
+  return unwrap<ApiEngineerSet>(postEngineerSet(request), 201).then(mapEngineerSet);
+}
+
+export function deleteEngineerSet(engineerSetId: number): Promise<void> {
+  return unwrap<void>(deleteEngineerSetRequest(engineerSetId), 204);
 }
 
 export function getTickets(region: RegionCode): Promise<TicketSummary[]> {
@@ -66,9 +88,18 @@ export function uploadDataset(region: RegionCode, ticketsFile: File): Promise<Da
 }
 
 // Queues the build and returns the 202 stub (status: 'running', plan_id) — the
-// caller polls getPlan(planId) for the result.
-export function buildPlan(region: RegionCode, planDate: string, algorithm: Algorithm): Promise<Plan> {
-  return unwrap<ApiPlanGenerated>(postPlanBuild({ region, plan_date: planDate, algorithm }), 202).then(mapPlan);
+// caller polls getPlan(planId) for the result. No engineerSetId (or null) —
+// the backend builds for the region's default set.
+export function buildPlan(
+  region: RegionCode,
+  planDate: string,
+  algorithm: Algorithm,
+  engineerSetId?: number | null
+): Promise<Plan> {
+  return unwrap<ApiPlanGenerated>(
+    postPlanBuild({ region, plan_date: planDate, algorithm, engineer_set_id: engineerSetId ?? null }),
+    202
+  ).then(mapPlan);
 }
 
 export function getPlan(planId: number): Promise<Plan> {

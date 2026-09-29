@@ -15,7 +15,8 @@ const buildPlanMock = vi.fn();
 vi.mock('@/api/endpoints', () => ({
   loadDemoDataset: (...args: unknown[]) => loadDemoDatasetMock(...args),
   uploadDataset: vi.fn(),
-  buildPlan: (...args: unknown[]) => buildPlanMock(...args)
+  buildPlan: (...args: unknown[]) => buildPlanMock(...args),
+  getEngineerSets: vi.fn().mockResolvedValue([])
 }));
 
 function renderScreen() {
@@ -48,7 +49,7 @@ describe('DataLoadScreen — POST /plan/build failing before it even queues', ()
 
     renderScreen();
 
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'east' } });
+    fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'east' } });
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Использовать демо-набор' })));
 
     await waitFor(() =>

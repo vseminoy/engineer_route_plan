@@ -21,12 +21,21 @@ const emptyMetrics = {
 };
 
 function donePlanResult(planId: number): Plan {
-  return { planId, algorithm: 'or_tools', status: 'done', engineers: [], unassigned: [], metrics: emptyMetrics };
+  return {
+    planId,
+    algorithm: 'or_tools',
+    status: 'done',
+    engineerSetId: 1,
+    engineers: [],
+    unassigned: [],
+    metrics: emptyMetrics
+  };
 }
 
 const plan: DonePlan = {
   planId: 42,
   algorithm: 'or_tools',
+  engineerSetId: 1,
   engineers: [
     {
       engineerId: 3,

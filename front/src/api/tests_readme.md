@@ -6,8 +6,10 @@
 - [`src/api/mappers.ts` — маппинг сгенерированных типов в доменные](#srcapimappersts--маппинг-сгенерированных-типов-в-доменные)
 - [`src/api/mappers.ts` — `mapPlanCompare`](#srcapimappersts--mapplancompare)
 - [`src/api/mappers.ts` — `mapPlanReplanResult`](#srcapimappersts--mapplanreplanresult)
+- [`src/api/mappers.ts` — `mapEngineerSet`](#srcapimappersts--mapengineerset)
 - [`src/api/endpoints.ts` — `setTicketStatus`](#srcapiendpointsts--setticketstatus)
 - [`src/api/endpoints.ts` — `replan`](#srcapiendpointsts--replan)
+- [`src/api/endpoints.ts` — наборы бригад региона](#srcapiendpointsts--наборы-бригад-региона)
 
 ---
 
@@ -58,6 +60,14 @@
 |---|---|---|
 | `maps the synchronous replan response to a done plan with its diff` | `PlanReplanResult` с `parent_plan_id`, метриками и `diff` | Доменный `Plan` — `status: 'done'`, `parentPlanId`, метрики и `diff` замаплены напрямую |
 
+## `src/api/mappers.ts` — `mapEngineerSet`
+
+Файл: `mappers.test.ts` (`vitest`), там же, где остальные мапперы.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `translates the generator parameters to camelCase, keeping the display description as-is` | `EngineerSet` из `GET /engineer-sets` с `morning_share`/`evening_share` и `description` | Доменный `EngineerSet` — camelCase-поля генератора, `description` без изменений |
+
 ## `src/api/endpoints.ts` — `setTicketStatus`
 
 Файл: `src/api/endpoints.test.ts` (`vitest`), тот же приём со стабом глобального `fetch`, что и у `client.test.ts` — `changeTicketStatus` (сгенерированный клиент) ходит через него же.
@@ -77,3 +87,15 @@
 | `maps the synchronous 200 response to a done plan with its diff` | `fetch` отвечает `200` готовым планом | `replan` возвращает `Plan` со `status: 'done'` и `parentPlanId` из ответа |
 | `rejects an invalid field with a 400 fields response` | `fetch` отвечает `400` с `{"fields": [...]}` | `ApiError.body.fields` — тот же массив |
 | `rejects a cancel event for a ticket not yet cancelled with a bodyless 409` | `fetch` отвечает `409` без тела | `ApiError` со статусом `409` и `body === undefined` |
+
+## `src/api/endpoints.ts` — наборы бригад региона
+
+Файл: `src/api/endpoints.test.ts` (`vitest`), тот же приём со стабом глобального `fetch` — `listEngineerSets`/`createEngineerSet`/`deleteEngineerSet` (сгенерированный клиент) ходят через него же.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `maps the array response to domain engineer sets` | `fetch` отвечает `200` списком наборов | `getEngineerSets` возвращает массив доменных `EngineerSet` |
+| `maps the 201 response to a domain engineer set` | `fetch` отвечает `201` созданным набором | `createEngineerSet` возвращает доменный `EngineerSet` |
+| `rejects a duplicate name in the region with a bodyless 409` | `fetch` отвечает `409` без тела | `ApiError` со статусом `409` и `body === undefined` |
+| `resolves on a bodyless 204` | `fetch` отвечает `204` без тела | `deleteEngineerSet` резолвится в `undefined` |
+| `rejects deleting the default set with a bodyless 409` | `fetch` отвечает `409` без тела | `ApiError` со статусом `409` и `body === undefined` |

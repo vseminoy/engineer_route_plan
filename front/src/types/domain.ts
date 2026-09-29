@@ -33,6 +33,22 @@ export interface Region {
   name: string;
 }
 
+// demo — the region's default set, created by its first data load and updated
+// with it; cannot be deleted. generated — an extra set, created by the
+// dispatcher through POST /engineer-sets.
+export type EngineerSetKind = 'demo' | 'generated';
+
+export interface EngineerSet {
+  id: number;
+  name: string;
+  kind: EngineerSetKind;
+  engineers: number;
+  morningShare: number;
+  eveningShare: number;
+  seed: string;
+  description: string; // generator parameters as text, to tell same-region sets apart in the UI
+}
+
 export interface RouteStop {
   ticketId: number;
   sequenceNo: number;
@@ -95,6 +111,7 @@ export interface Plan {
   planId: number;
   algorithm: Algorithm;
   status: PlanStatus;
+  engineerSetId: number; // the set this plan was built for, whatever its status
   parentPlanId?: number;
   // Present only once status === 'done'.
   engineers?: EngineerRoute[];
@@ -112,6 +129,7 @@ export interface Plan {
 export interface DonePlan {
   planId: number;
   algorithm: Algorithm;
+  engineerSetId: number;
   parentPlanId?: number;
   engineers: EngineerRoute[];
   unassigned: UnassignedTicket[];

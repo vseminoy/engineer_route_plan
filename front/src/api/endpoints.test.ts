@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { replan, setTicketStatus } from './endpoints';
+import { createEngineerSet, deleteEngineerSet, getEngineerSets, replan, setTicketStatus } from './endpoints';
 import { ApiError } from './client';
 import type { Ticket } from './generated/schemas';
 import type { ReplanEvent } from '@/types/domain';
@@ -161,5 +161,110 @@ describe('replan', () => {
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(409);
     expect(err.body).toBeUndefined();
+  });
+});
+
+describe('getEngineerSets', () => {
+  it('maps the array response to domain engineer sets', async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify([
+          {
+            id: 1,
+            name: 'default',
+            kind: 'demo',
+            engineers: 10,
+            morning_share: 0.5,
+            evening_share: 0.5,
+            seed: 'demo',
+            description: '10 бригад, 50%/50%, seed demo'
+          }
+        ]),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    const sets = await getEngineerSets('east');
+
+    expect(sets).toEqual([
+      {
+        id: 1,
+        name: 'default',
+        kind: 'demo',
+        engineers: 10,
+        morningShare: 0.5,
+        eveningShare: 0.5,
+        seed: 'demo',
+        description: '10 бригад, 50%/50%, seed demo'
+      }
+    ]);
+  });
+});
+
+describe('createEngineerSet', () => {
+  it('maps the 201 response to a domain engineer set', async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify({
+          id: 7,
+          name: '13 бригад',
+          kind: 'generated',
+          engineers: 13,
+          morning_share: 0.6,
+          evening_share: 0.4,
+          seed: 'demo-13',
+          description: '13 бригад, 60%/40%, seed demo-13'
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    const set = await createEngineerSet({
+      region: 'east',
+      name: '13 бригад',
+      engineers: 13,
+      morning_share: 0.6,
+      evening_share: 0.4,
+      seed: 'demo-13'
+    });
+
+    expect(set).toEqual({
+      id: 7,
+      name: '13 бригад',
+      kind: 'generated',
+      engineers: 13,
+      morningShare: 0.6,
+      eveningShare: 0.4,
+      seed: 'demo-13',
+      description: '13 бригад, 60%/40%, seed demo-13'
+    });
+  });
+
+  it('rejects a duplicate name in the region with a bodyless 409', async () => {
+    stubFetch(new Response(null, { status: 409 }));
+
+    const err = (await catchError(
+      createEngineerSet({ region: 'east', name: 'default', engineers: 10, morning_share: 0.5, evening_share: 0.5, seed: 'x' })
+    )) as ApiError;
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(409);
+  });
+});
+
+describe('deleteEngineerSet', () => {
+  it('resolves on a bodyless 204', async () => {
+    stubFetch(new Response(null, { status: 204 }));
+
+    await expect(deleteEngineerSet(7)).resolves.toBeUndefined();
+  });
+
+  it('rejects deleting the default set with a bodyless 409', async () => {
+    stubFetch(new Response(null, { status: 409 }));
+
+    const err = (await catchError(deleteEngineerSet(1))) as ApiError;
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(409);
   });
 });

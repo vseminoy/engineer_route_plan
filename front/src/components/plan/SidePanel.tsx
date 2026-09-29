@@ -9,6 +9,7 @@ interface Props {
   plan: DonePlan;
   roster: EngineerRoster[];
   ticketById: Map<number, TicketSummary>;
+  engineerSetName?: string;
   onReplanned: (newPlanId: number) => void;
 }
 
@@ -19,7 +20,7 @@ const TABS: Array<{ id: PanelTab; label: string }> = [
   { id: 'replan', label: 'События' }
 ];
 
-export function SidePanel({ plan, roster, ticketById, onReplanned }: Props) {
+export function SidePanel({ plan, roster, ticketById, engineerSetName, onReplanned }: Props) {
   const activeTab = useUiStore((s) => s.activeTab);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
 
@@ -59,7 +60,7 @@ export function SidePanel({ plan, roster, ticketById, onReplanned }: Props) {
       <div className="side-panel__body">
         {activeTab === 'engineers' && <EngineerListTab plan={plan} roster={roster} ticketById={ticketById} />}
         {activeTab === 'unassigned' && <UnassignedListTab plan={plan} ticketById={ticketById} />}
-        {activeTab === 'metrics' && <MetricsTab plan={plan} />}
+        {activeTab === 'metrics' && <MetricsTab plan={plan} engineerSetName={engineerSetName} />}
         {activeTab === 'replan' && <ReplanTab plan={plan} ticketById={ticketById} onReplanned={onReplanned} />}
       </div>
     </div>

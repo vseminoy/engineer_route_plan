@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { mapDataLoadResult, mapEngineerRoster, mapPlan, mapPlanCompare, mapPlanReplanResult, mapTicketSummary } from './mappers';
-import type { DataLoadResult, Engineer, Plan, PlanComparisonEntry, PlanReplanResult, Ticket } from './generated/schemas';
+import {
+  mapDataLoadResult,
+  mapEngineerRoster,
+  mapEngineerSet,
+  mapPlan,
+  mapPlanCompare,
+  mapPlanReplanResult,
+  mapTicketSummary
+} from './mappers';
+import type {
+  DataLoadResult,
+  Engineer,
+  EngineerSet,
+  Plan,
+  PlanComparisonEntry,
+  PlanReplanResult,
+  Ticket
+} from './generated/schemas';
 
 describe('mapEngineerRoster', () => {
   it('flattens the start point and converts shift bounds to minutes since midnight', () => {
@@ -25,6 +41,32 @@ describe('mapEngineerRoster', () => {
       shiftEndMin: 1200,
       startLat: 55.75,
       startLon: 37.61
+    });
+  });
+});
+
+describe('mapEngineerSet', () => {
+  it('translates the generator parameters to camelCase, keeping the display description as-is', () => {
+    const api: EngineerSet = {
+      id: 7,
+      name: '13 бригад',
+      kind: 'generated',
+      engineers: 13,
+      morning_share: 0.6,
+      evening_share: 0.4,
+      seed: 'demo-13',
+      description: '13 бригад, 60%/40%, seed demo-13'
+    };
+
+    expect(mapEngineerSet(api)).toEqual({
+      id: 7,
+      name: '13 бригад',
+      kind: 'generated',
+      engineers: 13,
+      morningShare: 0.6,
+      eveningShare: 0.4,
+      seed: 'demo-13',
+      description: '13 бригад, 60%/40%, seed demo-13'
     });
   });
 });
@@ -70,7 +112,7 @@ describe('mapPlan', () => {
   it('maps a running build to a status with no engineers/unassigned/metrics yet', () => {
     const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'running', engineer_set_id: 1 };
 
-    expect(mapPlan(api)).toEqual({ planId: 42, algorithm: 'or_tools', status: 'running' });
+    expect(mapPlan(api)).toEqual({ planId: 42, algorithm: 'or_tools', status: 'running', engineerSetId: 1 });
   });
 
   it('maps a failed build to its reason, with no engineers/unassigned/metrics', () => {
@@ -86,6 +128,7 @@ describe('mapPlan', () => {
       planId: 42,
       algorithm: 'or_tools',
       status: 'failed',
+      engineerSetId: 1,
       failedReason: 'osrm_unavailable'
     });
   });
@@ -136,6 +179,7 @@ describe('mapPlan', () => {
     const plan = mapPlan(api);
 
     expect(plan.status).toBe('done');
+    expect(plan.engineerSetId).toBe(1);
     expect(plan.engineers?.[0].route[0].plannedArrival).toBe('2026-08-17T10:05:00');
     expect(plan.metrics).toEqual({
       engineersUsed: 1,
@@ -215,6 +259,7 @@ describe('mapPlanReplanResult', () => {
 
     expect(plan.status).toBe('done');
     expect(plan.planId).toBe(43);
+    expect(plan.engineerSetId).toBe(1);
     expect(plan.parentPlanId).toBe(42);
     expect(plan.engineers?.[0].route[0].plannedArrival).toBe('2026-08-17T10:05:00');
     expect(plan.diff).toEqual({
