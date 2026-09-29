@@ -28,7 +28,6 @@
 - [`src/service/baseline.py` — baseline FCFS](#srcservicebaselinepy--baseline-fcfs)
 - [`src/service/explain.py` — атрибуция причины отказа и объяснения](#srcserviceexplainpy--атрибуция-причины-отказа-и-объяснения)
 - [`src/service/solver_pool.py` — пул солвера, переживающий kill воркера](#srcservicesolver_poolpy--пул-солвера-переживающий-kill-воркера)
-- [`src/service/ticket_status.py` — переходы статусов заявки](#srcserviceticket_statuspy--переходы-статусов-заявки)
 - [`src/clients/nominatim.py` — клиент Nominatim](#srcclientsnominatimpy--клиент-nominatim)
 - [`src/clients/osrm.py` — клиент OSRM](#srcclientsosrmpy--клиент-osrm)
 - [`scripts/build_geocache.py` — сборка гео-кэша](#scriptsbuild_geocachepy--сборка-гео-кэша)
