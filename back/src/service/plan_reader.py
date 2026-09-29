@@ -83,10 +83,12 @@ class ComparisonEntryRead:
 
 @dataclass(frozen=True)
 class PlanRead:
-    """`engineers`/`unassigned`/`metrics` are `None` unless `status == "done"`."""
+    """`engineers`/`unassigned`/`metrics` are `None` unless `status == "done"`;
+    `engineer_set_id` is always set — it is part of the plan row, not of the outcome."""
 
     plan_id: int
     algorithm: str
+    engineer_set_id: int
     status: str
     failed_reason: str | None
     engineers: tuple[EngineerRouteRead, ...] | None
@@ -110,19 +112,21 @@ class PlanReader:
                 return PlanRead(
                     plan_id=row.id,
                     algorithm=row.algorithm,
+                    engineer_set_id=row.engineer_set_id,
                     status=row.status,
                     failed_reason=row.failed_reason,
                     engineers=None,
                     unassigned=None,
                     metrics=None,
                 )
-            engineers = await self.list_engineers(conn, row.region_id)
+            engineers = await self.list_engineers(conn, row.engineer_set_id)
             assignments = await self.list_plan_assignments(conn, plan_id)
         routes = tuple(_engineer_routes(engineers, assignments))
         unassigned = tuple(_unassigned(assignments))
         return PlanRead(
             plan_id=row.id,
             algorithm=row.algorithm,
+            engineer_set_id=row.engineer_set_id,
             status=row.status,
             failed_reason=None,
             engineers=routes,
@@ -132,11 +136,19 @@ class PlanReader:
 
     async def compare(self, plan_id: int, baseline_plan_id: int) -> tuple[ComparisonEntryRead, ...]:
         """Both plans go through `get`, one at a time — `plan_id` first, so a problem
-        with it (not found, not `done`) never touches `baseline_plan_id` at all."""
+        with it (not found, not `done`) never touches `baseline_plan_id` at all. Both
+        must share `engineer_set_id`: comparing plans of different sets is meaningless
+        (different brigade counts)."""
         main = await self.get(plan_id)
         _require_done(main)
         baseline = await self.get(baseline_plan_id)
         _require_done(baseline)
+        if main.engineer_set_id != baseline.engineer_set_id:
+            raise InvalidInput(
+                "engineer_set_mismatch",
+                message="Планы построены для разных наборов бригад",
+                params={"plan_id": plan_id, "baseline_plan_id": baseline_plan_id},
+            )
         assert main.metrics is not None
         assert baseline.metrics is not None
         return tuple(

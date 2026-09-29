@@ -39,7 +39,8 @@ ListTickets = Callable[[AsyncConnection[Any], int], Awaitable[list[Ticket]]]
 ListPlanAssignments = Callable[[AsyncConnection[Any], int], Awaitable[list[AssignmentRow]]]
 InsertTicket = Callable[[AsyncConnection[Any], int, TicketDraft], Awaitable[int]]
 InsertReplannedPlan = Callable[
-    [AsyncConnection[Any], int, date, str, int, datetime, list[AssignmentWrite]], Awaitable[int]
+    [AsyncConnection[Any], int, int, date, str, int, datetime, list[AssignmentWrite]],
+    Awaitable[int],
 ]
 
 # A ticket's server-assigned fields for `new_urgent_ticket`; on-site time is a fixed
@@ -127,6 +128,7 @@ class ReplanOutcome:
     plan_id: int
     parent_plan_id: int
     algorithm: str
+    engineer_set_id: int
     diff: PlanDiff
 
 
@@ -226,7 +228,7 @@ class Replanner:
                     message="Момент события не приходится на дату плана",
                     params={"plan_id": plan_id},
                 )
-            engineers = await self.list_engineers(conn, plan.region_id)
+            engineers = await self.list_engineers(conn, plan.engineer_set_id)
             tickets = await self.list_tickets(conn, plan.region_id)
             parent_rows = await self.list_plan_assignments(conn, plan_id)
 
@@ -261,7 +263,9 @@ class Replanner:
                 raise NotFound("ticket_not_found", params={"ticket_id": event.ticket_id})
             if ticket.status is not TicketStatus.CANCELLED:
                 raise Conflict("ticket_not_cancelled", params={"ticket_id": event.ticket_id})
-            writes = await self._ticket_cancelled(plan, event, engineers, tickets_by_id, parent_rows)
+            writes = await self._ticket_cancelled(
+                plan, event, engineers, tickets_by_id, parent_rows
+            )
             event_type = "ticket_cancelled"
 
         async with database_errors("plan_replan_write"), self.connect() as conn:
@@ -270,7 +274,14 @@ class Replanner:
                 writes = _remap_ticket_id(writes, _PLACEHOLDER_TICKET_ID, ticket_id)
             diff = _diff(parent_rows, writes)
             new_plan_id = await self.insert_replanned_plan(
-                conn, plan.region_id, plan.plan_date, plan.algorithm, plan.id, self.clock(), writes
+                conn,
+                plan.region_id,
+                plan.engineer_set_id,
+                plan.plan_date,
+                plan.algorithm,
+                plan.id,
+                self.clock(),
+                writes,
             )
 
         logger.info(
@@ -281,7 +292,11 @@ class Replanner:
             plan_stability=diff.plan_stability,
         )
         return ReplanOutcome(
-            plan_id=new_plan_id, parent_plan_id=plan_id, algorithm=plan.algorithm, diff=diff
+            plan_id=new_plan_id,
+            parent_plan_id=plan_id,
+            algorithm=plan.algorithm,
+            engineer_set_id=plan.engineer_set_id,
+            diff=diff,
         )
 
     async def _new_urgent_ticket(
@@ -324,7 +339,9 @@ class Replanner:
 
         if bids:
             winner = _select_winner(bids, event.triggered_at, event.reaction_min)
-            note = _incident_note(winner.engineer, ticket_id, event.triggered_at, event.reaction_min)
+            note = _incident_note(
+                winner.engineer, ticket_id, event.triggered_at, event.reaction_min
+            )
             touched[winner.engineer.id] = _writes_from_bid(winner.engineer, winner, note)
             return _assemble(parent_rows, touched, unassigned_writes)
 
@@ -332,7 +349,9 @@ class Replanner:
         naive_bids = [b for e in candidates if (b := _bid(states[e.id], strict=False)) is not None]
         if not naive_bids:
             unassigned_writes.append(
-                _unassigned_write(ticket_id, no_slot_reason, _incident_unassigned_text(no_slot_reason))
+                _unassigned_write(
+                    ticket_id, no_slot_reason, _incident_unassigned_text(no_slot_reason)
+                )
             )
             return _assemble(parent_rows, touched, unassigned_writes)
 
@@ -355,7 +374,9 @@ class Replanner:
 
         if eviction_bid is None or evicted_node is None:
             unassigned_writes.append(
-                _unassigned_write(ticket_id, no_slot_reason, _incident_unassigned_text(no_slot_reason))
+                _unassigned_write(
+                    ticket_id, no_slot_reason, _incident_unassigned_text(no_slot_reason)
+                )
             )
             return _assemble(parent_rows, touched, unassigned_writes)
 
@@ -429,7 +450,11 @@ class Replanner:
             anchor_point, anchor_time, frozen, tail = _state_at(
                 rows_by_engineer.get(engineer.id, ()), tickets_by_id, engineer, event.triggered_at
             )
-            points = [anchor_point, *(tickets_by_id[r.ticket_id].location for r in tail), target.location]
+            points = [
+                anchor_point,
+                *(tickets_by_id[r.ticket_id].location for r in tail),
+                target.location,
+            ]
             matrix = await self.osrm.table(engineer.vehicle_type, points)
             shift_end = datetime.combine(plan.plan_date, engineer.shift_end)
             found = _free_slot_position(matrix, anchor_time, tail, tickets_by_id, target, shift_end)
@@ -465,7 +490,12 @@ class Replanner:
             _copy_write(best.engineer, r, offset + best.position + 1 + i)
             for i, r in enumerate(best.tail[best.position :], start=1)
         ]
-        touched = {best.engineer.id: _frozen_writes(best.engineer, best.frozen) + before + [new_write] + after}
+        touched = {
+            best.engineer.id: _frozen_writes(best.engineer, best.frozen)
+            + before
+            + [new_write]
+            + after
+        }
         return _assemble(parent_rows, touched, [])
 
     async def _ticket_cancelled(
@@ -539,9 +569,7 @@ def _incident_draft(plan_date: date, event: NewUrgentTicketEvent) -> TicketDraft
 
 def _validate_regular_ticket_window(plan_date: date, ticket: RegularTicketInput) -> None:
     if ticket.window_start >= ticket.window_end:
-        raise InvalidInput(
-            "window_order", message="Начало окна заявки должно быть раньше конца"
-        )
+        raise InvalidInput("window_order", message="Начало окна заявки должно быть раньше конца")
     if ticket.window_start.date() != plan_date or ticket.window_end.date() != plan_date:
         raise InvalidInput(
             "window_date_mismatch", message="Окно заявки не приходится на дату плана"
@@ -883,7 +911,9 @@ def _writes_from_bid(
     return _frozen_writes(engineer, bid.frozen) + tail_writes
 
 
-def _unassigned_write(ticket_id: int, reason: UnassignedReason, explanation: str) -> AssignmentWrite:
+def _unassigned_write(
+    ticket_id: int, reason: UnassignedReason, explanation: str
+) -> AssignmentWrite:
     return AssignmentWrite(
         ticket_id=ticket_id,
         engineer_id=None,
@@ -916,7 +946,9 @@ def _incident_note(
                 engineer, result.arrival, "маршрут пересчитан из-за вставки аварийной заявки"
             )
         within = result.arrival <= deadline
-        placed = "вставлена вытеснением менее приоритетной заявки" if evicted else "вставлена в маршрут"
+        placed = (
+            "вставлена вытеснением менее приоритетной заявки" if evicted else "вставлена в маршрут"
+        )
         reaction = (
             f"в пределах целевой реакции {reaction_min} мин"
             if within
@@ -938,7 +970,9 @@ def _reoffer_note(engineer: Engineer) -> Callable[[_StopResult], str]:
 
 def _cancel_note(engineer: Engineer) -> Callable[[_StopResult], str]:
     def note(result: _StopResult) -> str:
-        return _visit_text(engineer, result.arrival, "время визита пересчитано после отмены другой заявки")
+        return _visit_text(
+            engineer, result.arrival, "время визита пересчитано после отмены другой заявки"
+        )
 
     return note
 
@@ -977,7 +1011,9 @@ def _regular_unassigned_text(reason: UnassignedReason) -> str:
     return "Свободного интервала без сдвига уже стоящих заявок не нашлось ни у одной бригады."
 
 
-def _remap_ticket_id(writes: Sequence[AssignmentWrite], old: int, new: int) -> list[AssignmentWrite]:
+def _remap_ticket_id(
+    writes: Sequence[AssignmentWrite], old: int, new: int
+) -> list[AssignmentWrite]:
     return [replace(w, ticket_id=new) if w.ticket_id == old else w for w in writes]
 
 

@@ -18,6 +18,16 @@ async def get_region_id(conn: AsyncConnection[Any], code: str) -> int | None:
     return region_id
 
 
+async def get_region_office(conn: AsyncConnection[Any], region_id: int) -> Point:
+    """The region's office point, for generating a set's brigades outside a file load.
+    `region_id` is assumed loaded — the caller has already checked that."""
+    row = await run_query(
+        "get_region_office", lambda: queries.get_region_office(conn, region_id=region_id)
+    )
+    lat, lon = row
+    return Point(lat=lat, lon=lon)
+
+
 async def list_engineers(conn: AsyncConnection[Any], engineer_set_id: int) -> list[Engineer]:
     rows = await run_query(
         "list_engineers_by_set",

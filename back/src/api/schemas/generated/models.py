@@ -357,17 +357,6 @@ class PlanAlgorithm(StrEnum):
     baseline_fcfs = "baseline_fcfs"
 
 
-class EngineerSetId(RootModel[int]):
-    root: Annotated[
-        int,
-        Field(
-            description="Набор бригад региона, для которого строится план; null или отсутствует — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у поля engineer_set_id",
-            ge=1,
-            le=9223372036854775807,
-        ),
-    ] = None
-
-
 class PlanBuildRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -381,9 +370,11 @@ class PlanBuildRequest(BaseModel):
     ]
     algorithm: PlanAlgorithm
     engineer_set_id: Annotated[
-        EngineerSetId | None,
+        int | None,
         Field(
-            description="Набор бригад региона, для которого строится план; null или отсутствует — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у поля engineer_set_id"
+            description="Набор бригад региона, для которого строится план; null или отсутствует — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у поля engineer_set_id",
+            ge=1,
+            le=9223372036854775807,
         ),
     ] = None
 

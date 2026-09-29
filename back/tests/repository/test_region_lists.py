@@ -7,6 +7,7 @@ from psycopg import AsyncConnection
 
 from src.domain import (
     EngineerDraft,
+    EngineerSetParams,
     Point,
     RegionDraft,
     Skill,
@@ -15,6 +16,7 @@ from src.domain import (
     VehicleType,
 )
 from src.errors import DependencyUnavailable
+from src.repository.engineer_sets import get_default_engineer_set_id
 from src.repository.region_data import replace_region_data
 from src.repository.region_lists import get_region_id, list_engineers, list_tickets
 from tests.conftest import RW_PASSWORD, Database
@@ -64,7 +66,7 @@ async def conn(migrated_db: Database) -> AsyncIterator[AsyncConnection[Any]]:
     """`app_rw` on a database emptied of data before the test."""
     with migrated_db.connect() as owner:
         owner.execute(
-            "TRUNCATE replan_events, assignments, plans, tickets, engineers, regions"
+            "TRUNCATE replan_events, assignments, plans, tickets, engineers, engineer_sets, regions"
             " RESTART IDENTITY"
         )
         owner.commit()
@@ -78,21 +80,40 @@ async def conn(migrated_db: Database) -> AsyncIterator[AsyncConnection[Any]]:
         yield c
 
 
+def _params(engineers: list[EngineerDraft], seed: str) -> EngineerSetParams:
+    return EngineerSetParams(
+        engineers=len(engineers) or 1, morning_share=0.25, evening_share=0.25, seed=seed
+    )
+
+
+async def _write(
+    conn: AsyncConnection[Any],
+    region: RegionDraft,
+    engineers: list[EngineerDraft],
+    tickets: list[TicketDraft],
+) -> Any:
+    return await replace_region_data(
+        conn, region, _params(engineers, region.code), lambda *_a: engineers, tickets
+    )
+
+
 async def test_get_region_id(conn: AsyncConnection[Any]) -> None:
-    written = await replace_region_data(conn, _region("east"), [_engineer(1)], [_ticket("1")])
+    written = await _write(conn, _region("east"), [_engineer(1)], [_ticket("1")])
     await conn.commit()
     assert await get_region_id(conn, "east") == written.region_id
     assert await get_region_id(conn, "south_east") is None
 
 
-async def test_list_engineers_of_region(conn: AsyncConnection[Any]) -> None:
+async def test_list_engineers_of_set(conn: AsyncConnection[Any]) -> None:
     start = Point(lat=55.4363, lon=37.7662)
-    east = await replace_region_data(
+    east = await _write(
         conn, _region("east"), [_engineer(1, start), _engineer(2)], [_ticket("1")]
     )
-    await replace_region_data(conn, _region("south_east"), [_engineer(9)], [_ticket("2")])
+    await _write(conn, _region("south_east"), [_engineer(9)], [_ticket("2")])
     await conn.commit()
-    engineers = await list_engineers(conn, east.region_id)
+    default_set_id = await get_default_engineer_set_id(conn, east.region_id)
+    assert default_set_id is not None
+    engineers = await list_engineers(conn, default_set_id)
     assert [e.name for e in engineers] == ["Бригада 1", "Бригада 2"]
     assert engineers[0].id < engineers[1].id
     first = engineers[0]
@@ -104,13 +125,13 @@ async def test_list_engineers_of_region(conn: AsyncConnection[Any]) -> None:
 
 async def test_list_tickets_of_region(conn: AsyncConnection[Any]) -> None:
     location = Point(lat=55.6, lon=37.9)
-    east = await replace_region_data(
+    east = await _write(
         conn,
         _region("east"),
         [_engineer(1)],
         [_ticket("1", location), _ticket("2"), _ticket("3")],
     )
-    await replace_region_data(conn, _region("south_east"), [_engineer(1)], [_ticket("9")])
+    await _write(conn, _region("south_east"), [_engineer(1)], [_ticket("9")])
     await conn.commit()
     tickets = await list_tickets(conn, east.region_id)
     assert [t.external_id for t in tickets] == ["1", "2", "3"]
@@ -138,4 +159,4 @@ async def test_lists_db_unavailable(
         await list_engineers(conn, 1)
     assert e.value.reason == "db_unavailable"
     failed = events(capsys, "db_query_failed")
-    assert failed[-1]["query"] == "list_engineers_by_region"
+    assert failed[-1]["query"] == "list_engineers_by_set"

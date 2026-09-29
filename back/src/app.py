@@ -11,11 +11,13 @@ from src.api.body_limit import BodyLimitMiddleware
 from src.api.deps import (
     create_data_services,
     create_db_pool,
+    create_engineer_sets_service,
     create_plan_services,
     create_ticket_statuses,
 )
 from src.api.errors import REQUEST_ID_HEADER, register_error_handlers, route_path
 from src.api.routes.data import router as data_router
+from src.api.routes.engineer_sets import router as engineer_sets_router
 from src.api.routes.health import router as health_router
 from src.api.routes.not_implemented import add_not_implemented_stub
 from src.api.routes.plan import router as plan_router
@@ -72,14 +74,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.loader, app.state.region_lists, ticket_types = create_data_services(
                 app_settings, db_pool, nominatim
             )
+            app.state.engineer_sets = create_engineer_sets_service(
+                app.state.region_lists.regions, db_pool
+            )
             app.state.ticket_statuses = create_ticket_statuses(db_pool)
-            app.state.plan_builder, app.state.plan_reader, app.state.replanner = create_plan_services(
-                app_settings,
-                db_pool,
-                app.state.region_lists.regions,
-                osrm_client,
-                plan_pool,
-                ticket_types,
+            app.state.plan_builder, app.state.plan_reader, app.state.replanner = (
+                create_plan_services(
+                    app_settings,
+                    db_pool,
+                    app.state.region_lists.regions,
+                    osrm_client,
+                    plan_pool,
+                    ticket_types,
+                )
             )
             # Before yield: no request is served until any plan an earlier, ungraceful
             # stop left `running` is closed. A short connection timeout of its own — an
@@ -154,6 +161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(regions_router)
+    app.include_router(engineer_sets_router)
     app.include_router(data_router)
     app.include_router(plan_router)
     add_not_implemented_stub(app)

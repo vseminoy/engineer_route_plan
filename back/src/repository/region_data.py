@@ -124,7 +124,9 @@ async def replace_region_data(
                 ],
             ),
         )
-    return RegionWritten(region_id=region_id, engineers=total_engineers, engineers_kept=engineers_kept)
+    return RegionWritten(
+        region_id=region_id, engineers=total_engineers, engineers_kept=engineers_kept
+    )
 
 
 async def _store_engineer_set(

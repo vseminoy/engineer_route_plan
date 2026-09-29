@@ -15,12 +15,32 @@ CODES = sorted(REGIONS.regions)
 FULL_DAY = (time(10, 0), time(23, 30))
 
 
-def _generate(code: str, districts: set[str] | None = None) -> list[EngineerDraft]:
-    return generate_engineers(REGIONS.regions[code], REGIONS, OFFICE, districts or {"Выхино"})
+def _generate(
+    code: str,
+    districts: set[str] | None = None,
+    engineers: int | None = None,
+    morning_share: float | None = None,
+    evening_share: float | None = None,
+    seed: str | None = None,
+) -> list[EngineerDraft]:
+    """Defaults to the region's own config parameters — the same input the demo set is
+    generated with in `loader.py`."""
+    region = REGIONS.regions[code]
+    assert REGIONS.shifts.morning.share is not None
+    assert REGIONS.shifts.evening.share is not None
+    return generate_engineers(
+        REGIONS,
+        engineers if engineers is not None else region.engineers,
+        morning_share if morning_share is not None else REGIONS.shifts.morning.share,
+        evening_share if evening_share is not None else REGIONS.shifts.evening.share,
+        seed if seed is not None else code,
+        OFFICE,
+        districts or {"Выхино"},
+    )
 
 
-def test_count_from_region_config() -> None:
-    assert len(_generate("east")) == 13
+def test_count_from_param() -> None:
+    assert len(_generate("east", engineers=13)) == 13
 
 
 @pytest.mark.parametrize("code", CODES)
@@ -46,6 +66,19 @@ def test_shift_kinds_split() -> None:
     }
 
 
+def test_shift_kinds_split_custom_shares() -> None:
+    """Doles are the set's own parameter, not the region's configuration."""
+    shifts = Counter(
+        (e.shift_start, e.shift_end)
+        for e in _generate("east", engineers=15, morning_share=0.2, evening_share=0.2)
+    )
+    assert shifts == {
+        (time(10, 0), time(18, 0)): 3,
+        (time(15, 30), time(23, 30)): 3,
+        FULL_DAY: 9,
+    }
+
+
 @pytest.mark.parametrize("code", CODES)
 def test_full_day_covers_skills_and_vehicles(code: str) -> None:
     full_day = [e for e in _generate(code) if (e.shift_start, e.shift_end) == FULL_DAY]
@@ -61,6 +94,12 @@ def test_shifts_within_one_day(code: str) -> None:
 
 def test_deterministic() -> None:
     assert _generate("south_east") == _generate("south_east")
+
+
+def test_different_seed_different_roster() -> None:
+    a = _generate("south_east", seed="south_east")
+    b = _generate("south_east", seed="other-seed")
+    assert a != b
 
 
 def test_start_at_office() -> None:

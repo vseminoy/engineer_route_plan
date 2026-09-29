@@ -7,6 +7,7 @@ from psycopg import AsyncConnection
 
 from src.domain import (
     EngineerDraft,
+    EngineerSetParams,
     Point,
     RegionDraft,
     Skill,
@@ -15,6 +16,7 @@ from src.domain import (
     VehicleType,
 )
 from src.errors import DatabaseFailure, DependencyUnavailable
+from src.repository.engineer_sets import get_default_engineer_set_id
 from src.repository.plans import (
     AssignmentWrite,
     get_plan,
@@ -70,7 +72,7 @@ async def conn(migrated_db: Database) -> AsyncIterator[AsyncConnection[Any]]:
     brigade (id 1) and two tickets (ids 1 and 2)."""
     with migrated_db.connect() as owner:
         owner.execute(
-            "TRUNCATE replan_events, assignments, plans, tickets, engineers, regions"
+            "TRUNCATE replan_events, assignments, plans, tickets, engineers, engineer_sets, regions"
             " RESTART IDENTITY"
         )
         owner.commit()
@@ -82,7 +84,9 @@ async def conn(migrated_db: Database) -> AsyncIterator[AsyncConnection[Any]]:
         password=RW_PASSWORD,
     ) as c:
         region = RegionDraft(code="east", name="Восток", office_address="офис", office=OFFICE)
-        await replace_region_data(c, region, [_engineer()], [_ticket("1"), _ticket("2")])
+        engineers = [_engineer()]
+        params = EngineerSetParams(engineers=1, morning_share=0.25, evening_share=0.25, seed="east")
+        await replace_region_data(c, region, params, lambda *_a: engineers, [_ticket("1"), _ticket("2")])
         await c.commit()
         yield c
 
@@ -95,13 +99,14 @@ async def _plan_row(conn: AsyncConnection[Any], plan_id: int) -> tuple[Any, ...]
 
 
 async def test_insert_running_plan(conn: AsyncConnection[Any]) -> None:
-    plan_id = await insert_running_plan(conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    plan_id = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await conn.commit()
 
     assert await _plan_row(conn, plan_id) == ("running", None)
     plan = await get_plan(conn, plan_id)
     assert plan is not None
-    assert (plan.region_id, plan.algorithm, plan.status, plan.failed_reason) == (
+    assert (plan.region_id, plan.engineer_set_id, plan.algorithm, plan.status, plan.failed_reason) == (
+        1,
         1,
         "or_tools",
         "running",
@@ -114,7 +119,7 @@ async def test_get_plan_missing(conn: AsyncConnection[Any]) -> None:
 
 
 async def test_mark_plan_done_writes_assignments(conn: AsyncConnection[Any]) -> None:
-    plan_id = await insert_running_plan(conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    plan_id = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await conn.commit()
 
     await mark_plan_done(
@@ -158,7 +163,7 @@ async def test_mark_plan_done_writes_assignments(conn: AsyncConnection[Any]) -> 
 async def test_mark_plan_done_rolls_back_together(conn: AsyncConnection[Any]) -> None:
     """A row that violates a constraint rolls back the whole transaction: the plan stays
     `running`, not partially `done`."""
-    plan_id = await insert_running_plan(conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    plan_id = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await conn.commit()
 
     with pytest.raises(DatabaseFailure):
@@ -184,7 +189,7 @@ async def test_mark_plan_done_rolls_back_together(conn: AsyncConnection[Any]) ->
 
 
 async def test_mark_plan_failed(conn: AsyncConnection[Any]) -> None:
-    plan_id = await insert_running_plan(conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    plan_id = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await conn.commit()
 
     await mark_plan_failed(conn, plan_id, "osrm_unavailable")
@@ -209,16 +214,24 @@ async def test_sweep_running_plans_closes_all_regions(conn: AsyncConnection[Any]
     other_region = RegionDraft(
         code="south_east", name="Юго-Восток", office_address="офис", office=OFFICE
     )
-    other = await replace_region_data(conn, other_region, [_engineer()], [_ticket("3")])
+    other_engineers = [_engineer()]
+    other_params = EngineerSetParams(
+        engineers=1, morning_share=0.25, evening_share=0.25, seed="south_east"
+    )
+    other = await replace_region_data(
+        conn, other_region, other_params, lambda *_a: other_engineers, [_ticket("3")]
+    )
     await conn.commit()
+    other_set_id = await get_default_engineer_set_id(conn, other.region_id)
+    assert other_set_id is not None
 
     running_east = await insert_running_plan(
-        conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
+        conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
     )
     running_other = await insert_running_plan(
-        conn, other.region_id, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
+        conn, other.region_id, other_set_id, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
     )
-    done = await insert_running_plan(conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    done = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await mark_plan_done(conn, done, [])
     await conn.commit()
 
@@ -232,7 +245,7 @@ async def test_sweep_running_plans_closes_all_regions(conn: AsyncConnection[Any]
 
 
 async def test_sweep_running_plans_no_running_plans(conn: AsyncConnection[Any]) -> None:
-    done = await insert_running_plan(conn, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    done = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await mark_plan_done(conn, done, [])
     await conn.commit()
 

@@ -127,6 +127,7 @@ def _plan(p: PlanRead) -> api.Plan:
         plan_id=p.plan_id,
         algorithm=api.PlanAlgorithm(p.algorithm),
         status=api.PlanStatus(p.status),
+        engineer_set_id=p.engineer_set_id,
         engineers=[_engineer_route(r) for r in p.engineers] if p.engineers is not None else None,
         unassigned=[_unassigned(u) for u in p.unassigned] if p.unassigned is not None else None,
         metrics=_metrics(p.metrics) if p.metrics is not None else None,
@@ -142,7 +143,7 @@ async def build_plan(
     region = body.region.root
     algorithm = body.algorithm.value
     try:
-        queued = await builder.enqueue(region, plan_date, algorithm)
+        queued = await builder.enqueue(region, plan_date, algorithm, body.engineer_set_id)
     except AppError as e:
         _log_failed("plan_build_failed", e, region=region, plan_date=str(plan_date))
         raise
@@ -153,6 +154,7 @@ async def build_plan(
         plan_id=queued.plan_id,
         algorithm=api.PlanAlgorithm(queued.algorithm),
         status=api.PlanStatus.running,
+        engineer_set_id=queued.engineer_set_id,
     )
 
 
@@ -281,6 +283,7 @@ async def replan_plan(
         plan_id=outcome.plan_id,
         parent_plan_id=outcome.parent_plan_id,
         algorithm=api.PlanAlgorithm(outcome.algorithm),
+        engineer_set_id=outcome.engineer_set_id,
         status=api.Status1.done,
         engineers=[_engineer_route(r) for r in plan.engineers],
         unassigned=[_unassigned(u) for u in plan.unassigned],

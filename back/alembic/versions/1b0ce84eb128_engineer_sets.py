@@ -20,6 +20,7 @@ file has not changed since. A region no longer in that file falls back to its cu
 brigade count and a seed of its own code, with both shift shares 0 — display-only values
 for a region that cannot be regenerated with them again anyway.
 """
+
 import tomllib
 from collections.abc import Sequence
 from pathlib import Path
@@ -29,8 +30,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '1b0ce84eb128'
-down_revision: str | Sequence[str] | None = 'c124884e0c63'
+revision: str = "1b0ce84eb128"
+down_revision: str | Sequence[str] | None = "c124884e0c63"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

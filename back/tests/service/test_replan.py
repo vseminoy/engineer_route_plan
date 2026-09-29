@@ -21,7 +21,9 @@ from src.service.replan import (
 )
 from src.service.ticket_types import TicketTypes
 
-TICKET_TYPES = TicketTypes.from_file(Path(__file__).resolve().parents[2] / "data" / "ticket_types.toml")
+TICKET_TYPES = TicketTypes.from_file(
+    Path(__file__).resolve().parents[2] / "data" / "ticket_types.toml"
+)
 
 DAY = date(2026, 9, 1)
 TRIGGERED_AT = datetime(2026, 9, 1, 12, 0)
@@ -143,14 +145,16 @@ class FakeRepo:
     next_ticket_id: int = 100
     next_plan_id: int = 2
     inserted_tickets: list[TicketDraft] = field(default_factory=list)
-    inserted_plans: list[tuple[int, date, str, int, datetime, list[AssignmentWrite]]] = field(
+    inserted_plans: list[tuple[int, int, date, str, int, datetime, list[AssignmentWrite]]] = field(
         default_factory=list
     )
+    list_engineers_calls: list[int] = field(default_factory=list)
 
     async def get_plan(self, _conn: Any, plan_id: int) -> PlanRow | None:
         return self.plan if plan_id == self.plan.id else None
 
-    async def list_engineers(self, _conn: Any, _region_id: int) -> list[Engineer]:
+    async def list_engineers(self, _conn: Any, engineer_set_id: int) -> list[Engineer]:
+        self.list_engineers_calls.append(engineer_set_id)
         return self.engineers
 
     async def list_tickets(self, _conn: Any, _region_id: int) -> list[Ticket]:
@@ -169,6 +173,7 @@ class FakeRepo:
         self,
         _conn: Any,
         region_id: int,
+        engineer_set_id: int,
         plan_date: date,
         algorithm: str,
         parent_plan_id: int,
@@ -176,7 +181,15 @@ class FakeRepo:
         assignments: list[AssignmentWrite],
     ) -> int:
         self.inserted_plans.append(
-            (region_id, plan_date, algorithm, parent_plan_id, created_at, assignments)
+            (
+                region_id,
+                engineer_set_id,
+                plan_date,
+                algorithm,
+                parent_plan_id,
+                created_at,
+                assignments,
+            )
         )
         plan_id = self.next_plan_id
         self.next_plan_id += 1
@@ -198,14 +211,20 @@ def _replanner(repo: FakeRepo, osrm: FakeOsrm) -> Replanner:
     )
 
 
-def _plan(status: str = "done", region_id: int = 1) -> PlanRow:
+def _plan(status: str = "done", region_id: int = 1, engineer_set_id: int = 50) -> PlanRow:
     return PlanRow(
-        id=10, region_id=region_id, plan_date=DAY, algorithm="or_tools", status=status, failed_reason=None
+        id=10,
+        region_id=region_id,
+        engineer_set_id=engineer_set_id,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status=status,
+        failed_reason=None,
     )
 
 
 def _writes_of(repo: FakeRepo) -> list[AssignmentWrite]:
-    return repo.inserted_plans[0][5]
+    return repo.inserted_plans[0][6]
 
 
 def _by_ticket(writes: list[AssignmentWrite], ticket_id: int) -> AssignmentWrite:
@@ -599,7 +618,11 @@ async def test_new_ticket_no_free_interval_is_unassigned() -> None:
 async def test_new_ticket_window_order_is_rejected() -> None:
     repo = FakeRepo(plan=_plan(), engineers=[], tickets=[], assignments=[])
     replanner = _replanner(repo, FakeOsrm())
-    bad = replace(REGULAR_TICKET, window_start=datetime(2026, 9, 1, 12, 0), window_end=datetime(2026, 9, 1, 12, 0))
+    bad = replace(
+        REGULAR_TICKET,
+        window_start=datetime(2026, 9, 1, 12, 0),
+        window_end=datetime(2026, 9, 1, 12, 0),
+    )
     event = NewTicketEvent(triggered_at=TRIGGERED_AT, ticket=bad)
 
     with pytest.raises(InvalidInput) as e:
@@ -692,3 +715,23 @@ async def test_untouched_engineer_row_is_copied_forward_unchanged() -> None:
     assert write.planned_arrival == datetime(2026, 9, 1, 9, 30)
     assert write.explanation == "назначено"
     assert not any(c.ticket_id == 60 for c in outcome.diff.changed_assignments)
+
+
+async def test_candidates_from_plan_engineer_set_not_whole_region() -> None:
+    """`list_engineers`/`insert_replanned_plan` use the parent plan's own
+    `engineer_set_id`, not its `region_id` — replan is scoped to one набор бригад, not
+    the whole region."""
+    winner = _engineer(1, (Skill.EMERGENCY,))
+    repo = FakeRepo(
+        plan=_plan(region_id=1, engineer_set_id=77),
+        engineers=[winner],
+        tickets=[],
+        assignments=[],
+    )
+    replanner = _replanner(repo, FakeOsrm())
+    event = NewUrgentTicketEvent(triggered_at=TRIGGERED_AT, ticket=INCIDENT, reaction_min=120)
+
+    await replanner.replan(10, event)
+
+    assert repo.list_engineers_calls == [77]
+    assert repo.inserted_plans[0][1] == 77

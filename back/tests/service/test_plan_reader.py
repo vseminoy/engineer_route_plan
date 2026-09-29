@@ -67,7 +67,7 @@ class FakeConnect:
 
 
 class FakeRepo:
-    """`plans`/`engineers_by_region`/`assignments_by_plan` (keyed by id) let `compare`'s
+    """`plans`/`engineers_by_set`/`assignments_by_plan` (keyed by id) let `compare`'s
     two `get` calls each see a different plan; the single-plan `plan`/`engineers`/
     `assignments` keep every other test's fixtures unchanged."""
 
@@ -78,7 +78,7 @@ class FakeRepo:
         assignments: list[AssignmentRow] | None = None,
         error: Exception | None = None,
         plans: dict[int, PlanRow] | None = None,
-        engineers_by_region: dict[int, list[Engineer]] | None = None,
+        engineers_by_set: dict[int, list[Engineer]] | None = None,
         assignments_by_plan: dict[int, list[AssignmentRow]] | None = None,
     ) -> None:
         self.plan = plan
@@ -86,7 +86,7 @@ class FakeRepo:
         self.assignments = assignments or []
         self.error = error
         self.plans = plans
-        self.engineers_by_region = engineers_by_region
+        self.engineers_by_set = engineers_by_set
         self.assignments_by_plan = assignments_by_plan
         self.get_plan_calls: list[int] = []
 
@@ -98,9 +98,9 @@ class FakeRepo:
             return self.plans.get(plan_id)
         return self.plan
 
-    async def list_engineers(self, _conn: Any, region_id: int) -> list[Engineer]:
-        if self.engineers_by_region is not None:
-            return self.engineers_by_region.get(region_id, [])
+    async def list_engineers(self, _conn: Any, engineer_set_id: int) -> list[Engineer]:
+        if self.engineers_by_set is not None:
+            return self.engineers_by_set.get(engineer_set_id, [])
         return self.engineers
 
     async def list_plan_assignments(self, _conn: Any, plan_id: int) -> list[AssignmentRow]:
@@ -137,7 +137,13 @@ async def test_plan_not_found() -> None:
 
 async def test_running_plan_has_no_routes() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="running", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="running",
+        failed_reason=None,
     )
     result = await _reader(FakeRepo(plan)).get(1)
     assert result.status == "running"
@@ -150,6 +156,7 @@ async def test_failed_plan_carries_reason() -> None:
     plan = PlanRow(
         id=1,
         region_id=9,
+        engineer_set_id=70,
         plan_date=DAY,
         algorithm="or_tools",
         status="failed",
@@ -163,9 +170,15 @@ async def test_failed_plan_carries_reason() -> None:
     assert result.metrics is None
 
 
-async def test_done_plan_lists_every_region_engineer() -> None:
+async def test_done_plan_lists_every_set_engineer() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
     )
     repo = FakeRepo(
         plan,
@@ -186,7 +199,13 @@ async def test_done_plan_lists_every_region_engineer() -> None:
 
 async def test_visit_fields_and_distance_rounding() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
     )
     row = _assigned(10, 1, 1, travel_min=12, distance_m=1234)
     repo = FakeRepo(plan, engineers=[_engineer(1)], assignments=[row])
@@ -203,7 +222,13 @@ async def test_visit_fields_and_distance_rounding() -> None:
 
 async def test_idle_time_is_shift_minus_travel_and_duration() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
     )
     engineer = _engineer(1, shift_start=time(10, 0), shift_end=time(12, 0))  # 120 min shift
     repo = FakeRepo(
@@ -221,7 +246,13 @@ async def test_idle_time_is_shift_minus_travel_and_duration() -> None:
 
 async def test_visits_sorted_by_sequence_no() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
     )
     repo = FakeRepo(
         plan,
@@ -234,7 +265,13 @@ async def test_visits_sorted_by_sequence_no() -> None:
 
 async def test_engineer_without_assignments_has_full_shift_idle() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
     )
     engineer = _engineer(1, shift_start=time(9, 0), shift_end=time(18, 0))
     repo = FakeRepo(plan, engineers=[engineer], assignments=[])
@@ -255,7 +292,13 @@ async def test_get_plan_dependency_unavailable_propagates() -> None:
 
 async def test_metrics_engineers_used_counts_used_only() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
     )
     repo = FakeRepo(plan, engineers=[_engineer(1), _engineer(2)], assignments=[_assigned(10, 1, 1)])
 
@@ -267,7 +310,13 @@ async def test_metrics_engineers_used_counts_used_only() -> None:
 
 async def test_metrics_total_distance_km_sums_all_routes() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
     )
     repo = FakeRepo(
         plan,
@@ -286,7 +335,13 @@ async def test_metrics_total_distance_km_sums_all_routes() -> None:
 
 async def test_metrics_distance_and_idle_by_engineer_cover_every_engineer() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
     )
     unused = _engineer(2, shift_start=time(9, 0), shift_end=time(18, 0))
     repo = FakeRepo(plan, engineers=[_engineer(1), unused], assignments=[_assigned(10, 1, 1)])
@@ -302,7 +357,13 @@ async def test_metrics_distance_and_idle_by_engineer_cover_every_engineer() -> N
 
 async def test_metrics_assigned_and_unassigned_counts() -> None:
     plan = PlanRow(
-        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+        id=1,
+        region_id=9,
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
     )
     repo = FakeRepo(
         plan,
@@ -323,14 +384,17 @@ def _multi_repo(
     main_status: str = "done",
     baseline_status: str = "done",
     plan_ids: frozenset[int] = frozenset({1, 2}),
+    baseline_engineer_set_id: int = 100,
 ) -> FakeRepo:
-    """Region 100 (plan 1, `main`): 2 brigades, both used, 30.0 km total. Region 200
-    (plan 2, `baseline`): 3 brigades, all used, 40.0 km total. `plan_ids` drops one of
-    the two plans out of `get_plan`'s dict, as if it never existed."""
+    """Both plans built for engineer set 100 (5 brigades) by default — `compare` requires
+    a shared set. Plan 1 (`main`) uses 2 of them, 30.0 km total; plan 2 (`baseline`) the
+    other 3, 40.0 km total. `plan_ids` drops one of the two plans out of `get_plan`'s
+    dict, as if it never existed."""
     plans = {
         1: PlanRow(
             id=1,
             region_id=100,
+            engineer_set_id=100,
             plan_date=DAY,
             algorithm="or_tools",
             status=main_status,
@@ -338,7 +402,8 @@ def _multi_repo(
         ),
         2: PlanRow(
             id=2,
-            region_id=200,
+            region_id=100,
+            engineer_set_id=baseline_engineer_set_id,
             plan_date=DAY,
             algorithm="baseline_fcfs",
             status=baseline_status,
@@ -347,9 +412,9 @@ def _multi_repo(
     }
     return FakeRepo(
         plans={k: v for k, v in plans.items() if k in plan_ids},
-        engineers_by_region={
-            100: [_engineer(1), _engineer(2)],
-            200: [_engineer(3), _engineer(4), _engineer(5)],
+        engineers_by_set={
+            100: [_engineer(1), _engineer(2), _engineer(3), _engineer(4), _engineer(5)],
+            200: [_engineer(1), _engineer(2), _engineer(3), _engineer(4), _engineer(5)],
         },
         assignments_by_plan={
             1: [
@@ -386,6 +451,20 @@ async def test_compare_excludes_idle_time() -> None:
     entries = await _reader(_multi_repo()).compare(1, 2)
 
     assert "idle_time" not in {e.metric for e in entries}
+
+
+async def test_compare_engineer_set_mismatch() -> None:
+    repo = _multi_repo(baseline_engineer_set_id=200)
+
+    with pytest.raises(InvalidInput) as e:
+        await _reader(repo).compare(1, 2)
+
+    assert e.value.reason == "engineer_set_mismatch"
+
+
+async def test_compare_same_engineer_set_ok() -> None:
+    entries = await _reader(_multi_repo(baseline_engineer_set_id=100)).compare(1, 2)
+    assert [e.metric for e in entries] == ["engineers_used", "total_distance_km"]
 
 
 async def test_compare_main_not_found() -> None:

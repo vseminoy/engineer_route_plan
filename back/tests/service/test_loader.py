@@ -9,7 +9,14 @@ from typing import Any
 import pytest
 from psycopg_pool import PoolTimeout
 
-from src.domain import EngineerDraft, Point, RegionDraft, RegionWritten, TicketDraft
+from src.domain import (
+    EngineerDraft,
+    EngineerSetParams,
+    Point,
+    RegionDraft,
+    RegionWritten,
+    TicketDraft,
+)
 from src.errors import DatabaseFailure, DependencyUnavailable, InvalidInput
 from src.service.geocoding import GeoCache, Geocoder
 from src.service.loader import Loader
@@ -48,6 +55,9 @@ CSV = ("\n".join([HEADER, *FILE_ROWS]) + "\n").encode("cp1251")
 
 
 class FakeRepository:
+    """Stands in for `replace_region_data`: calls the given generator once, for the
+    region's `default` set only — this test module does not exercise additional sets."""
+
     def __init__(self, error: Exception | None = None, engineers_kept: bool = False) -> None:
         self.error = error
         self.engineers_kept = engineers_kept
@@ -57,13 +67,22 @@ class FakeRepository:
         self,
         _conn: Any,
         region: RegionDraft,
-        engineers: list[EngineerDraft],
+        default_set_params: EngineerSetParams,
+        generate_engineers: Any,
         tickets: list[TicketDraft],
     ) -> RegionWritten:
         if self.error:
             raise self.error
-        self.calls.append((region, engineers, tickets))
-        return RegionWritten(region_id=1, engineers_kept=self.engineers_kept)
+        drafts = generate_engineers(
+            default_set_params.engineers,
+            default_set_params.morning_share,
+            default_set_params.evening_share,
+            default_set_params.seed,
+        )
+        self.calls.append((region, drafts, tickets))
+        return RegionWritten(
+            region_id=1, engineers=len(drafts), engineers_kept={"default": self.engineers_kept}
+        )
 
 
 class FakeConnect:
@@ -141,7 +160,7 @@ async def test_load_csv(capsys: pytest.CaptureFixture[str]) -> None:
         "rows_skipped": 3,
         "rows_invalid": 1,
         "engineers": 13,
-        "engineers_kept": True,
+        "engineers_kept": {"default": True},
         "tickets": 3,
     }
     assert record["invalid_by_reason"] == {"bad_datetime": 1}
@@ -399,14 +418,15 @@ class SlowRepository(FakeRepository):
         self,
         conn: Any,
         region: RegionDraft,
-        engineers: list[EngineerDraft],
+        default_set_params: EngineerSetParams,
+        generate_engineers: Any,
         tickets: list[TicketDraft],
     ) -> RegionWritten:
         self.running += 1
         self.most_at_once = max(self.most_at_once, self.running)
         await asyncio.sleep(0.02)
         self.running -= 1
-        return await super().__call__(conn, region, engineers, tickets)
+        return await super().__call__(conn, region, default_set_params, generate_engineers, tickets)
 
 
 async def test_writes_one_at_a_time(capsys: pytest.CaptureFixture[str]) -> None:

@@ -197,7 +197,9 @@ class Loader:
             evening_share=self.regions.shifts.evening.share,
             seed=region.code,
         )
-        generate = partial(generate_engineers, self.regions, office=draft.office, districts=districts)
+        generate = partial(
+            generate_engineers, self.regions, office=draft.office, districts=districts
+        )
         queued = time.monotonic()
         async with self._write_turn:
             wait_ms += _since(queued)

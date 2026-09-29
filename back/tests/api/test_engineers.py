@@ -25,7 +25,45 @@ def test_list_engineers() -> None:
             "start": {"lat": 55.72, "lon": 37.74},
         }
     ]
-    assert lists.calls == [("engineers", "east")]
+    assert lists.calls == [("engineers", "east", None)]
+
+
+def test_list_engineers_given_set() -> None:
+    lists = FakeLists()
+    response = client(lists).get(
+        "/api/v1/engineers", params={"region": "east", "engineer_set_id": 9}
+    )
+
+    assert response.status_code == 200
+    assert lists.calls == [("engineers", "east", 9)]
+
+
+@pytest.mark.parametrize("engineer_set_id", ["0", "-1", "abc"])
+def test_list_engineers_set_id_invalid(engineer_set_id: str) -> None:
+    lists = FakeLists()
+    response = client(lists).get(
+        "/api/v1/engineers", params={"region": "east", "engineer_set_id": engineer_set_id}
+    )
+
+    assert response.status_code == 400
+    assert [f["name"] for f in response.json()["fields"]] == ["engineer_set_id"]
+    assert lists.calls == []
+
+
+def test_list_engineers_set_not_in_region(capsys: pytest.CaptureFixture[str]) -> None:
+    error = InvalidInput(
+        "engineer_set_not_in_region",
+        fields=[("engineer_set_id", "Набор не принадлежит региону")],
+        params={"engineer_set_id": 9, "region": "east"},
+    )
+    response = client(FakeLists(error=error)).get(
+        "/api/v1/engineers", params={"region": "east", "engineer_set_id": 9}
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "fields": [{"name": "engineer_set_id", "message": "Набор не принадлежит региону"}]
+    }
 
 
 def test_list_engineers_empty() -> None:

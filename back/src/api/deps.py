@@ -9,6 +9,13 @@ from psycopg_pool import AsyncConnectionPool
 from src.clients.nominatim import NominatimClient
 from src.clients.osrm import OsrmClient
 from src.config import Settings
+from src.repository.engineer_sets import (
+    delete_engineer_set,
+    get_default_engineer_set_id,
+    get_engineer_set,
+    insert_generated_engineer_set,
+    list_engineer_sets,
+)
 from src.repository.plans import (
     get_plan,
     insert_replanned_plan,
@@ -20,11 +27,13 @@ from src.repository.plans import (
 from src.repository.region_data import replace_region_data
 from src.repository.region_lists import (
     get_region_id,
+    get_region_office,
     list_engineers,
     list_open_tickets,
     list_tickets,
 )
 from src.repository.tickets import insert_ticket, lock_ticket, update_ticket_status
+from src.service.engineer_sets import EngineerSets
 from src.service.geocoding import GeoCache, Geocoder
 from src.service.loader import DATA_DIR, Loader
 from src.service.plan_builder import PlanBuilder
@@ -67,8 +76,30 @@ def create_data_services(
     )
     ticket_types = TicketTypes.from_file(DATA_DIR / "ticket_types.toml")
     loader = Loader(regions, ticket_types, geocoder, db_pool.connection, replace_region_data)
-    lists = RegionLists(regions, db_pool.connection, get_region_id, list_engineers, list_tickets)
+    lists = RegionLists(
+        regions,
+        db_pool.connection,
+        get_region_id,
+        get_default_engineer_set_id,
+        get_engineer_set,
+        list_engineers,
+        list_tickets,
+    )
     return loader, lists, ticket_types
+
+
+def create_engineer_sets_service(regions: Regions, db_pool: AsyncConnectionPool) -> EngineerSets:
+    return EngineerSets(
+        regions=regions,
+        connect=db_pool.connection,
+        get_region_id=get_region_id,
+        get_region_office=get_region_office,
+        list_tickets=list_tickets,
+        list_engineer_sets=list_engineer_sets,
+        insert_generated_engineer_set=insert_generated_engineer_set,
+        get_engineer_set=get_engineer_set,
+        delete_engineer_set=delete_engineer_set,
+    )
 
 
 def create_ticket_statuses(db_pool: AsyncConnectionPool) -> TicketStatuses:
@@ -87,6 +118,8 @@ def create_plan_services(
         regions=regions,
         connect=db_pool.connection,
         get_region_id=get_region_id,
+        get_default_engineer_set_id=get_default_engineer_set_id,
+        get_engineer_set=get_engineer_set,
         list_open_tickets=list_open_tickets,
         list_engineers=list_engineers,
         insert_running_plan=insert_running_plan,
@@ -126,6 +159,11 @@ def get_loader(request: Request) -> Loader:
 def get_region_lists(request: Request) -> RegionLists:
     lists: RegionLists = request.app.state.region_lists
     return lists
+
+
+def get_engineer_sets(request: Request) -> EngineerSets:
+    sets: EngineerSets = request.app.state.engineer_sets
+    return sets
 
 
 def get_ticket_statuses(request: Request) -> TicketStatuses:

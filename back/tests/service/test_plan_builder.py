@@ -9,7 +9,16 @@ from typing import Any
 import pytest
 
 from src.clients.osrm import TravelMatrix
-from src.domain import Engineer, Point, Skill, Ticket, TicketStatus, VehicleType
+from src.domain import (
+    Engineer,
+    EngineerSetKind,
+    EngineerSetWithRegion,
+    Point,
+    Skill,
+    Ticket,
+    TicketStatus,
+    VehicleType,
+)
 from src.errors import DatabaseFailure, DependencyUnavailable, InvalidInput
 from src.repository.plans import AssignmentWrite
 from src.service.plan_builder import PlanBuilder, QueuedPlan, sweep_running_plans
@@ -154,6 +163,9 @@ class FakeSolverPool:
         self._executor.shutdown(cancel_futures=cancel_futures)
 
 
+DEFAULT_SET_ID = 70
+
+
 class FakeRepo:
     def __init__(
         self,
@@ -164,6 +176,8 @@ class FakeRepo:
         insert_error: Exception | None = None,
         mark_done_error: Exception | None = None,
         mark_failed_error: Exception | None = None,
+        default_set_id: int | None = DEFAULT_SET_ID,
+        engineer_set_region: dict[int, int] | None = None,
     ) -> None:
         self.region_id = region_id
         self.tickets = [_ticket()] if tickets is None else tickets
@@ -172,21 +186,53 @@ class FakeRepo:
         self.insert_error = insert_error
         self.mark_done_error = mark_done_error
         self.mark_failed_error = mark_failed_error
+        self.default_set_id = default_set_id
+        self.engineer_set_region = engineer_set_region or (
+            {DEFAULT_SET_ID: region_id} if region_id is not None else {}
+        )
         self.done_calls: list[tuple[int, list[AssignmentWrite]]] = []
         self.failed_calls: list[tuple[int, str]] = []
+        self.insert_running_plan_calls: list[tuple[int, int]] = []
 
     async def get_region_id(self, _conn: Any, _code: str) -> int | None:
         return self.region_id
 
+    async def get_default_engineer_set_id(self, _conn: Any, _region_id: int) -> int | None:
+        return self.default_set_id
+
+    async def get_engineer_set(
+        self, _conn: Any, engineer_set_id: int
+    ) -> EngineerSetWithRegion | None:
+        region_id = self.engineer_set_region.get(engineer_set_id)
+        if region_id is None:
+            return None
+        return EngineerSetWithRegion(
+            id=engineer_set_id,
+            region_id=region_id,
+            name="Вариант Б",
+            kind=EngineerSetKind.GENERATED,
+            engineers=13,
+            morning_share=0.25,
+            evening_share=0.25,
+            seed="east",
+        )
+
     async def list_open_tickets(self, _conn: Any, _region_id: int) -> list[Ticket]:
         return self.tickets
 
-    async def list_engineers(self, _conn: Any, _region_id: int) -> list[Engineer]:
+    async def list_engineers(self, _conn: Any, _engineer_set_id: int) -> list[Engineer]:
         return self.engineers
 
     async def insert_running_plan(
-        self, _conn: Any, _region_id: int, _plan_date: date, _algorithm: str, _created_at: datetime
+        self,
+        _conn: Any,
+        region_id: int,
+        engineer_set_id: int,
+        _plan_date: date,
+        _algorithm: str,
+        _created_at: datetime,
     ) -> int:
+        self.insert_running_plan_calls.append((region_id, engineer_set_id))
         if self.insert_error:
             raise self.insert_error
         return self.plan_id
@@ -218,6 +264,8 @@ def _builder(
         regions=regions or REGIONS,
         connect=connect or FakeConnect(),
         get_region_id=repo.get_region_id,
+        get_default_engineer_set_id=repo.get_default_engineer_set_id,
+        get_engineer_set=repo.get_engineer_set,
         list_open_tickets=repo.list_open_tickets,
         list_engineers=repo.list_engineers,
         insert_running_plan=repo.insert_running_plan,
@@ -236,22 +284,42 @@ def _builder(
 
 async def test_enqueue_queues_a_running_plan() -> None:
     repo = FakeRepo(plan_id=42)
-    queued = await _builder(repo).enqueue("east", DAY, "or_tools")
+    queued = await _builder(repo).enqueue("east", DAY, "or_tools", None)
 
     assert queued == QueuedPlan(
-        plan_id=42, algorithm="or_tools", tickets=repo.tickets, engineers=repo.engineers
+        plan_id=42,
+        algorithm="or_tools",
+        engineer_set_id=DEFAULT_SET_ID,
+        tickets=repo.tickets,
+        engineers=repo.engineers,
     )
+    assert repo.insert_running_plan_calls == [(1, DEFAULT_SET_ID)]
+
+
+async def test_enqueue_given_engineer_set() -> None:
+    repo = FakeRepo(engineer_set_region={9: 1})
+    queued = await _builder(repo).enqueue("east", DAY, "or_tools", 9)
+    assert queued.engineer_set_id == 9
+    assert repo.insert_running_plan_calls == [(1, 9)]
+
+
+async def test_enqueue_engineer_set_not_in_region() -> None:
+    repo = FakeRepo(region_id=1, engineer_set_region={9: 2})
+    with pytest.raises(InvalidInput) as e:
+        await _builder(repo).enqueue("east", DAY, "or_tools", 9)
+    assert e.value.fields == [("engineer_set_id", "Набор не принадлежит региону")]
+    assert repo.insert_running_plan_calls == []
 
 
 async def test_enqueue_unknown_region() -> None:
     with pytest.raises(InvalidInput) as e:
-        await _builder(FakeRepo()).enqueue("nonexistent", DAY, "or_tools")
+        await _builder(FakeRepo()).enqueue("nonexistent", DAY, "or_tools", None)
     assert e.value.reason == "unknown_region"
 
 
 async def test_enqueue_region_not_loaded() -> None:
     with pytest.raises(InvalidInput) as e:
-        await _builder(FakeRepo(region_id=None)).enqueue("east", DAY, "or_tools")
+        await _builder(FakeRepo(region_id=None)).enqueue("east", DAY, "or_tools", None)
     assert e.value.reason == "region_not_loaded"
 
 
@@ -265,21 +333,21 @@ async def test_enqueue_plan_date_mismatch() -> None:
     )
     repo = FakeRepo(tickets=[mismatched])
     with pytest.raises(InvalidInput) as e:
-        await _builder(repo).enqueue("east", DAY, "or_tools")
+        await _builder(repo).enqueue("east", DAY, "or_tools", None)
     assert e.value.reason == "plan_date_mismatch"
 
 
 async def test_enqueue_too_many_points() -> None:
     repo = FakeRepo(tickets=[_ticket(1)], engineers=[_engineer(1)])
     with pytest.raises(InvalidInput) as e:
-        await _builder(repo, max_table_size=1).enqueue("east", DAY, "or_tools")
+        await _builder(repo, max_table_size=1).enqueue("east", DAY, "or_tools", None)
     assert e.value.reason == "too_many_points"
 
 
 async def test_enqueue_insert_failure_propagates() -> None:
     repo = FakeRepo(insert_error=DependencyUnavailable(reason="db_unavailable"))
     with pytest.raises(DependencyUnavailable):
-        await _builder(repo).enqueue("east", DAY, "or_tools")
+        await _builder(repo).enqueue("east", DAY, "or_tools", None)
 
 
 # --- build --------------------------------------------------------------------------
@@ -488,9 +556,7 @@ async def test_build_or_tools_timeout_does_not_cancel_a_concurrent_build() -> No
 
 
 class FakeSweepRepo:
-    def __init__(
-        self, closed_ids: list[int] | None = None, error: Exception | None = None
-    ) -> None:
+    def __init__(self, closed_ids: list[int] | None = None, error: Exception | None = None) -> None:
         self.closed_ids = [] if closed_ids is None else closed_ids
         self.error = error
         self.calls: list[str] = []

@@ -62,6 +62,7 @@ def test_replan_new_urgent_ticket_returns_the_new_plan() -> None:
     plan = PlanRead(
         plan_id=2,
         algorithm="or_tools",
+        engineer_set_id=70,
         status="done",
         failed_reason=None,
         engineers=(),
@@ -79,6 +80,7 @@ def test_replan_new_urgent_ticket_returns_the_new_plan() -> None:
         plan_id=2,
         parent_plan_id=1,
         algorithm="or_tools",
+        engineer_set_id=70,
         diff=PlanDiff(
             changed_assignments=[
                 AssignmentChange(
@@ -103,6 +105,7 @@ def test_replan_new_urgent_ticket_returns_the_new_plan() -> None:
     body = response.json()
     assert body["plan_id"] == 2
     assert body["parent_plan_id"] == 1
+    assert body["engineer_set_id"] == 70
     assert body["status"] == "done"
     assert body["diff"] == {
         "changed_assignments": [
@@ -244,7 +247,8 @@ def test_replan_ticket_not_cancelled_is_conflict() -> None:
 
 
 @pytest.mark.parametrize(
-    "error", [DependencyUnavailable(reason="osrm_unavailable"), DatabaseFailure(reason="db_query_failed")]
+    "error",
+    [DependencyUnavailable(reason="osrm_unavailable"), DatabaseFailure(reason="db_query_failed")],
 )
 def test_replan_dependency_failure(error: AppError) -> None:
     replanner = FakeReplanner(error=error)

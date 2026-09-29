@@ -25,7 +25,13 @@ UNKNOWN_REGION = InvalidInput(
 
 def test_build_plan_returns_202_running() -> None:
     builder = FakePlanBuilder(
-        queued=QueuedPlan(plan_id=42, algorithm="or_tools", tickets=[TICKET], engineers=[ENGINEER])
+        queued=QueuedPlan(
+            plan_id=42,
+            algorithm="or_tools",
+            engineer_set_id=70,
+            tickets=[TICKET],
+            engineers=[ENGINEER],
+        )
     )
     response = client(plan_builder=builder).post(
         BUILD_URL, json={"region": "east", "plan_date": "2026-09-01", "algorithm": "or_tools"}
@@ -36,13 +42,39 @@ def test_build_plan_returns_202_running() -> None:
         "plan_id": 42,
         "algorithm": "or_tools",
         "status": "running",
+        "engineer_set_id": 70,
         "engineers": None,
         "unassigned": None,
         "metrics": None,
         "failed_reason": None,
     }
-    assert builder.enqueue_calls == [("east", date(2026, 9, 1), "or_tools")]
+    assert builder.enqueue_calls == [("east", date(2026, 9, 1), "or_tools", None)]
     assert builder.build_calls == [(42, [TICKET], [ENGINEER], date(2026, 9, 1), "or_tools")]
+
+
+def test_build_plan_given_engineer_set() -> None:
+    builder = FakePlanBuilder(
+        queued=QueuedPlan(
+            plan_id=42,
+            algorithm="or_tools",
+            engineer_set_id=9,
+            tickets=[TICKET],
+            engineers=[ENGINEER],
+        )
+    )
+    response = client(plan_builder=builder).post(
+        BUILD_URL,
+        json={
+            "region": "east",
+            "plan_date": "2026-09-01",
+            "algorithm": "or_tools",
+            "engineer_set_id": 9,
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["engineer_set_id"] == 9
+    assert builder.enqueue_calls == [("east", date(2026, 9, 1), "or_tools", 9)]
 
 
 def test_build_plan_invalid_date() -> None:
@@ -80,6 +112,30 @@ def test_build_plan_unknown_region(capsys: pytest.CaptureFixture[str]) -> None:
     assert builder.build_calls == []
 
 
+def test_build_plan_engineer_set_not_in_region() -> None:
+    error = InvalidInput(
+        "engineer_set_not_in_region",
+        fields=[("engineer_set_id", "Набор не принадлежит региону")],
+        params={"engineer_set_id": 9, "region": "east"},
+    )
+    builder = FakePlanBuilder(error=error)
+    response = client(plan_builder=builder).post(
+        BUILD_URL,
+        json={
+            "region": "east",
+            "plan_date": "2026-09-01",
+            "algorithm": "or_tools",
+            "engineer_set_id": 9,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "fields": [{"name": "engineer_set_id", "message": "Набор не принадлежит региону"}]
+    }
+    assert builder.build_calls == []
+
+
 @pytest.mark.parametrize(
     "error",
     [DependencyUnavailable(reason="db_unavailable"), DatabaseFailure(reason="db_query_failed")],
@@ -98,6 +154,7 @@ def test_get_running_plan() -> None:
         PlanRead(
             plan_id=1,
             algorithm="or_tools",
+            engineer_set_id=70,
             status="running",
             failed_reason=None,
             engineers=None,
@@ -112,6 +169,7 @@ def test_get_running_plan() -> None:
         "plan_id": 1,
         "algorithm": "or_tools",
         "status": "running",
+        "engineer_set_id": 70,
         "engineers": None,
         "unassigned": None,
         "metrics": None,
@@ -124,6 +182,7 @@ def test_get_failed_plan() -> None:
         PlanRead(
             plan_id=1,
             algorithm="baseline_fcfs",
+            engineer_set_id=70,
             status="failed",
             failed_reason="osrm_unavailable",
             engineers=None,
@@ -138,6 +197,7 @@ def test_get_failed_plan() -> None:
         "plan_id": 1,
         "algorithm": "baseline_fcfs",
         "status": "failed",
+        "engineer_set_id": 70,
         "failed_reason": "osrm_unavailable",
         "engineers": None,
         "unassigned": None,
@@ -149,6 +209,7 @@ def test_get_done_plan() -> None:
     plan = PlanRead(
         plan_id=1,
         algorithm="or_tools",
+        engineer_set_id=70,
         status="done",
         failed_reason=None,
         engineers=(
@@ -189,6 +250,7 @@ def test_get_done_plan() -> None:
         "plan_id": 1,
         "algorithm": "or_tools",
         "status": "done",
+        "engineer_set_id": 70,
         "engineers": [
             {
                 "engineer_id": 11,
@@ -325,6 +387,21 @@ def test_compare_plan_not_ready() -> None:
 
     assert response.status_code == 400
     assert response.json() == {"message": "План ещё не готов для сравнения"}
+
+
+def test_compare_plan_engineer_set_mismatch() -> None:
+    reader = FakePlanReader(
+        compare_error=InvalidInput(
+            "engineer_set_mismatch",
+            message="Планы построены для разных наборов бригад",
+            params={"plan_id": 1, "baseline_plan_id": 2},
+        )
+    )
+
+    response = client(plan_reader=reader).get(COMPARE_URL, params={"baseline_plan_id": 2})
+
+    assert response.status_code == 400
+    assert response.json() == {"message": "Планы построены для разных наборов бригад"}
 
 
 @pytest.mark.parametrize(

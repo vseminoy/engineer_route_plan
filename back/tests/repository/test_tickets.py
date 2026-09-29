@@ -9,6 +9,7 @@ from psycopg import AsyncConnection
 
 from src.domain import (
     EngineerDraft,
+    EngineerSetParams,
     Point,
     RegionDraft,
     Skill,
@@ -70,13 +71,17 @@ async def conn(migrated_db: Database) -> AsyncIterator[AsyncConnection[Any]]:
     tickets, ids 1 and 2."""
     with migrated_db.connect() as owner:
         owner.execute(
-            "TRUNCATE replan_events, assignments, plans, tickets, engineers, regions"
+            "TRUNCATE replan_events, assignments, plans, tickets, engineers, engineer_sets, regions"
             " RESTART IDENTITY"
         )
         owner.commit()
     async with await _connect(migrated_db) as c:
         region = RegionDraft(code="east", name="Восток", office_address="офис", office=OFFICE)
-        await replace_region_data(c, region, [_engineer()], [_ticket("1"), _ticket("2")])
+        engineers = [_engineer()]
+        params = EngineerSetParams(engineers=1, morning_share=0.25, evening_share=0.25, seed="east")
+        await replace_region_data(
+            c, region, params, lambda *_a: engineers, [_ticket("1"), _ticket("2")]
+        )
         await c.commit()
         yield c
 

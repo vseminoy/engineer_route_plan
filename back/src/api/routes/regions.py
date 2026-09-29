@@ -16,6 +16,8 @@ router = APIRouter(prefix="/api/v1", tags=["regions"])
 
 # The `region` query parameter as `RegionCode` in the contract.
 RegionQuery = Annotated[str, Query(min_length=1, max_length=50, pattern="^[a-z][a-z0-9_]*$")]
+# The `engineer_set_id` query parameter as in the contract: a BIGINT key, optional.
+EngineerSetIdQuery = Annotated[int | None, Query(ge=1, le=9223372036854775807)]
 Lists = Annotated[RegionLists, Depends(get_region_lists)]
 # The `ticket_id` path parameter as in the contract: a BIGINT key.
 TicketId = Annotated[int, Path(ge=1, le=9223372036854775807)]
@@ -68,11 +70,13 @@ async def list_regions(lists: Lists) -> list[api.Region]:
 
 
 @router.get("/engineers", response_model=list[api.Engineer], operation_id="list_engineers")
-async def list_engineers(region: RegionQuery, lists: Lists) -> list[api.Engineer]:
+async def list_engineers(
+    region: RegionQuery, lists: Lists, engineer_set_id: EngineerSetIdQuery = None
+) -> list[api.Engineer]:
     try:
-        engineers = await lists.engineers(region)
+        engineers = await lists.engineers(region, engineer_set_id)
     except AppError as e:
-        _log_failed("list_engineers_failed", e, region=region)
+        _log_failed("list_engineers_failed", e, region=region, engineer_set_id=engineer_set_id)
         raise
     return [_engineer(e) for e in engineers]
 

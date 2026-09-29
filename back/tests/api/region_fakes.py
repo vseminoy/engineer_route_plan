@@ -6,6 +6,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from src.api.deps import (
+    get_engineer_sets,
     get_loader,
     get_plan_builder,
     get_plan_reader,
@@ -15,7 +16,16 @@ from src.api.deps import (
 )
 from src.app import create_app
 from src.config import Settings
-from src.domain import Engineer, Point, Skill, Ticket, TicketStatus, VehicleType
+from src.domain import (
+    Engineer,
+    EngineerSet,
+    EngineerSetKind,
+    Point,
+    Skill,
+    Ticket,
+    TicketStatus,
+    VehicleType,
+)
 from src.service.loader import LoadResult
 from src.service.plan_builder import QueuedPlan
 from src.service.plan_reader import ComparisonEntryRead, MetricsRead, PlanRead
@@ -57,6 +67,15 @@ RESULT = LoadResult(
     rows_skipped=3,
     rows_invalid=[InvalidRow(5, "bad_datetime", "Начало")],
 )
+ENGINEER_SET = EngineerSet(
+    id=70,
+    name="default",
+    kind=EngineerSetKind.DEMO,
+    engineers=13,
+    morning_share=0.25,
+    evening_share=0.25,
+    seed="east",
+)
 
 
 class FakeLists:
@@ -69,7 +88,7 @@ class FakeLists:
         self._engineers = [ENGINEER] if engineers is None else engineers
         self._tickets = [TICKET] if tickets is None else tickets
         self.error = error
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, int | None] | tuple[str, str]] = []
 
     def all_regions(self) -> list[Region]:
         return [
@@ -79,8 +98,8 @@ class FakeLists:
             ),
         ]
 
-    async def engineers(self, region: str) -> list[Engineer]:
-        self.calls.append(("engineers", region))
+    async def engineers(self, region: str, engineer_set_id: int | None = None) -> list[Engineer]:
+        self.calls.append(("engineers", region, engineer_set_id))
         if self.error:
             raise self.error
         return self._engineers
@@ -122,14 +141,20 @@ class FakeStatuses:
 class FakePlanBuilder:
     def __init__(self, queued: "QueuedPlan | None" = None, error: Exception | None = None) -> None:
         self.queued = queued or QueuedPlan(
-            plan_id=1, algorithm="or_tools", tickets=[TICKET], engineers=[ENGINEER]
+            plan_id=1,
+            algorithm="or_tools",
+            engineer_set_id=70,
+            tickets=[TICKET],
+            engineers=[ENGINEER],
         )
         self.error = error
-        self.enqueue_calls: list[tuple[str, date, str]] = []
+        self.enqueue_calls: list[tuple[str, date, str, int | None]] = []
         self.build_calls: list[tuple[Any, ...]] = []
 
-    async def enqueue(self, region: str, plan_date: date, algorithm: str) -> QueuedPlan:
-        self.enqueue_calls.append((region, plan_date, algorithm))
+    async def enqueue(
+        self, region: str, plan_date: date, algorithm: str, engineer_set_id: int | None
+    ) -> QueuedPlan:
+        self.enqueue_calls.append((region, plan_date, algorithm, engineer_set_id))
         if self.error:
             raise self.error
         return self.queued
@@ -156,6 +181,7 @@ class FakePlanReader:
         self.plan = plan or PlanRead(
             plan_id=1,
             algorithm="or_tools",
+            engineer_set_id=70,
             status="done",
             failed_reason=None,
             engineers=(),
@@ -201,6 +227,7 @@ class FakeReplanner:
             plan_id=2,
             parent_plan_id=1,
             algorithm="or_tools",
+            engineer_set_id=70,
             diff=PlanDiff(
                 changed_assignments=[], newly_assigned=[], newly_unassigned=[], plan_stability=0
             ),
@@ -215,6 +242,48 @@ class FakeReplanner:
         return self.outcome
 
 
+class FakeEngineerSets:
+    def __init__(
+        self,
+        sets: list[EngineerSet] | None = None,
+        created: EngineerSet | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._sets = [ENGINEER_SET] if sets is None else sets
+        self._created = created or ENGINEER_SET.model_copy(
+            update={"id": 71, "name": "Вариант Б", "kind": EngineerSetKind.GENERATED}
+        )
+        self.error = error
+        self.list_calls: list[str] = []
+        self.create_calls: list[tuple[str, str, int, float, float, str]] = []
+        self.delete_calls: list[int] = []
+
+    async def list(self, region: str) -> list[EngineerSet]:
+        self.list_calls.append(region)
+        if self.error:
+            raise self.error
+        return self._sets
+
+    async def create(
+        self,
+        region: str,
+        name: str,
+        engineers: int,
+        morning_share: float,
+        evening_share: float,
+        seed: str,
+    ) -> EngineerSet:
+        self.create_calls.append((region, name, engineers, morning_share, evening_share, seed))
+        if self.error:
+            raise self.error
+        return self._created
+
+    async def delete(self, engineer_set_id: int) -> None:
+        self.delete_calls.append(engineer_set_id)
+        if self.error:
+            raise self.error
+
+
 def client(
     lists: FakeLists | None = None,
     loader: FakeLoader | None = None,
@@ -223,6 +292,7 @@ def client(
     plan_builder: FakePlanBuilder | None = None,
     plan_reader: FakePlanReader | None = None,
     replanner: FakeReplanner | None = None,
+    engineer_sets: FakeEngineerSets | None = None,
 ) -> TestClient:
     """The application with fake data services; built inside the test, so its JSON logs go
     to the stderr `capsys` reads."""
@@ -242,4 +312,5 @@ def client(
     app.dependency_overrides[get_plan_builder] = lambda: plan_builder or FakePlanBuilder()
     app.dependency_overrides[get_plan_reader] = lambda: plan_reader or FakePlanReader()
     app.dependency_overrides[get_replanner] = lambda: replanner or FakeReplanner()
+    app.dependency_overrides[get_engineer_sets] = lambda: engineer_sets or FakeEngineerSets()
     return TestClient(app)

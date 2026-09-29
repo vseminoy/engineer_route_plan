@@ -8,7 +8,7 @@ import aiosql
 import psycopg.errors
 from psycopg import AsyncConnection
 
-from src.domain import EngineerSet, EngineerSetKind, EngineerSetWithRegion
+from src.domain import EngineerDraft, EngineerSet, EngineerSetKind, EngineerSetWithRegion
 from src.errors import Conflict, DatabaseFailure
 from src.repository.db import fetch_all, run_query
 
@@ -77,27 +77,49 @@ async def insert_generated_engineer_set(
     morning_share: float,
     evening_share: float,
     seed: str,
+    drafts: list[EngineerDraft],
 ) -> int:
-    """Raises `Conflict` when `name` is already taken in the region (`"default"` included)."""
+    """Inserts the set and its already-generated brigades in one transaction. Raises
+    `Conflict` when `name` is already taken in the region (`"default"` included)."""
     try:
-        row = await run_query(
-            "insert_generated_engineer_set",
-            lambda: queries.insert_generated_engineer_set(
-                conn,
-                region_id=region_id,
-                name=name,
-                engineers=engineers,
-                morning_share=morning_share,
-                evening_share=evening_share,
-                seed=seed,
-            ),
-        )
+        async with conn.transaction():
+            row = await run_query(
+                "insert_generated_engineer_set",
+                lambda: queries.insert_generated_engineer_set(
+                    conn,
+                    region_id=region_id,
+                    name=name,
+                    engineers=engineers,
+                    morning_share=morning_share,
+                    evening_share=evening_share,
+                    seed=seed,
+                ),
+            )
+            set_id: int = row[0]
+            await run_query(
+                "insert_engineers",
+                lambda: queries.insert_engineers(
+                    conn,
+                    [
+                        {
+                            "engineer_set_id": set_id,
+                            "name": e.name,
+                            "start_lon": e.start.lon,
+                            "start_lat": e.start.lat,
+                            "shift_start": e.shift_start,
+                            "shift_end": e.shift_end,
+                            "vehicle_type": e.vehicle_type.value,
+                            "skills": [s.value for s in e.skills],
+                        }
+                        for e in drafts
+                    ],
+                ),
+            )
     except DatabaseFailure as e:
         if isinstance(e.__cause__, psycopg.errors.UniqueViolation):
             raise Conflict("name_taken", params={"region_id": region_id, "name": name}) from e
         raise
-    id_: int = row[0]
-    return id_
+    return set_id
 
 
 async def delete_engineer_set(conn: AsyncConnection[Any], engineer_set_id: int) -> None:
