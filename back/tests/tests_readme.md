@@ -12,6 +12,7 @@
 - [`src/repository/region_data.py` — замена данных региона](#srcrepositoryregion_datapy--замена-данных-региона)
 - [`src/repository/region_lists.py` — чтение бригад и заявок региона](#srcrepositoryregion_listspy--чтение-бригад-и-заявок-региона)
 - [`src/repository/tickets.py` — статус заявки](#srcrepositoryticketspy--статус-заявки)
+- [`src/repository/plans.py` — sweep зависших планов](#srcrepositoryplanspy--sweep-зависших-планов)
 - [`src/service/ticket_file.py` — чтение файла заявок](#srcserviceticket_filepy--чтение-файла-заявок)
 - [`src/service/ticket_types.py` — таблица соответствия типов заявок](#srcserviceticket_typespy--таблица-соответствия-типов-заявок)
 - [`src/service/regions.py` — конфигурация регионов](#srcserviceregionspy--конфигурация-регионов)
@@ -23,6 +24,8 @@
 - [`src/service/solver.py` — модель солвера, ступенчатая (лексикографическая) оптимизация](#srcservicesolverpy--модель-солвера-ступенчатая-лексикографическая-оптимизация)
 - [`src/service/baseline.py` — baseline FCFS](#srcservicebaselinepy--baseline-fcfs)
 - [`src/service/explain.py` — атрибуция причины отказа и объяснения](#srcserviceexplainpy--атрибуция-причины-отказа-и-объяснения)
+- [`src/service/solver_pool.py` — пул солвера, переживающий kill воркера](#srcservicesolver_poolpy--пул-солвера-переживающий-kill-воркера)
+- [`src/service/ticket_status.py` — переходы статусов заявки](#srcserviceticket_statuspy--переходы-статусов-заявки)
 - [`src/clients/nominatim.py` — клиент Nominatim](#srcclientsnominatimpy--клиент-nominatim)
 - [`src/clients/osrm.py` — клиент OSRM](#srcclientsosrmpy--клиент-osrm)
 - [`scripts/build_geocache.py` — сборка гео-кэша](#scriptsbuild_geocachepy--сборка-гео-кэша)
@@ -266,6 +269,21 @@
 | `test_update_ticket_status_check_constraint` | статус `'bogus'` в обход домена | `DatabaseFailure(reason="db_query_failed")`, причина — нарушение `ck_tickets__status`; строка не изменилась |
 | `test_lock_ticket_waits_for_concurrent_change` | соединение A в транзакции взяло `lock_ticket` и записало `en_route`; соединение B вызывает `lock_ticket` той же заявки | B не получает строку, пока A не зафиксировал транзакцию (за 0,3 с ожидания результата нет); после COMMIT у A — B получает заявку со статусом `en_route` |
 | `test_ticket_queries_db_unavailable` (параметризован: `lock_ticket`, `update_ticket_status`) | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` с именем запроса |
+
+## `src/repository/plans.py` — sweep зависших планов
+
+Файл: `tests/repository/test_plans.py`.
+
+> Мока нет: `@pytest.mark.integration`, контейнер PostGIS и ревизия, как в разделе схемы БД;
+> `sweep_running_plans` вызывает `queries.sweep_running_plans` из `queries/plans.sql` через
+> aiosql под ролью `app_rw`. Планы заводятся напрямую `insert_running_plan`/`mark_plan_done`,
+> без реального построения.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_sweep_running_plans_closes_all_regions` | два региона, у каждого по одному `running`-плану и по одному `done` | оба `running`-плана получают `status='failed', failed_reason='shutdown'`; `done`-планы не тронуты; возвращены оба id `running`-планов |
+| `test_sweep_running_plans_no_running_plans` | у всех планов региона `status` не `running` | пустой список; ни одна строка `plans` не изменена |
+| `test_sweep_running_plans_db_unavailable` | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` с именем запроса |
 
 ## `src/service/ticket_file.py` — чтение файла заявок
 
@@ -718,12 +736,16 @@
 Файл: `tests/service/test_plan_builder.py`.
 
 > Замена стабами: `connect`/`get_region_id`/`list_open_tickets`/`list_engineers`/
-> `insert_running_plan`/`mark_plan_done`/`mark_plan_failed` — асинхронные функции без
-> реальной БД; OSRM — фейк с `table()`, возвращающий заданные матрицы или ошибку; пул
-> солвера — `SyncPool` (наследник `concurrent.futures.Executor`), выполняющий переданную
-> функцию синхронно в текущем процессе вместо реального подпроцесса. `solve_day`,
-> `baseline.solve_day` и `explain` вызываются по-настоящему — на входе в 1 бригаду и 1
-> заявку, без нужды подделывать их результат.
+> `insert_running_plan`/`mark_plan_done`/`mark_plan_failed`/`mark_running_plans_failed` —
+> асинхронные функции без реальной БД; OSRM — фейк с `table()`, возвращающий заданные
+> матрицы или ошибку; пул солвера — `FakeSolverPool` (реализует протокол `SolverPool` из
+> `solver_pool.py`): `.executor` — либо `SyncPool` (выполняет переданную функцию синхронно
+> в текущем процессе), либо `HangingPool` (никогда не завершает future — исключительно для
+> теста таймаута), `.restart()` записывает факт вызова вместо реального kill/пересоздания
+> процесса (это уже проверено в `test_solver_pool.py` на настоящем `ProcessPoolExecutor`).
+> `solve_day`, `baseline.solve_day` и `explain` вызываются по-настоящему — на входе в
+> 1 бригаду и 1 заявку, без нужды подделывать их результат. `solver_watchdog_margin_s` в
+> тестах — доли секунды, чтобы таймаут-тест не ждал реальные `SOLVER_TIME_LIMIT_S`.
 
 ### `enqueue`
 
@@ -749,6 +771,35 @@
 | `test_build_persist_database_failure_marks_build_error` | `mark_plan_done` поднимает `DatabaseFailure` | `status=failed, failed_reason=build_error` (уже залогировано `database_errors`, повторно не логируется) |
 | `test_build_mark_failed_swallows_its_own_failure` | и `mark_plan_done`, и `mark_plan_failed` падают | `build` не поднимает исключение — план остаётся `running`, как после рестарта backend |
 | `test_build_logs_finished` | успешное построение | запись `plan_build_finished` с `plan_id` и `algorithm` |
+| `test_build_or_tools_timeout_marks_failed` | `algorithm="or_tools"`, `HangingPool`, `solver_time_limit + margin` = 0.05 с | план помечен `status=failed, failed_reason='timeout'`; `FakeSolverPool.restart()` вызван ровно один раз; `mark_plan_done` не вызван |
+| `test_build_baseline_never_times_out` | `algorithm="baseline_fcfs"`, тот же короткий `margin` | `baseline_fcfs` не заходит в `run_in_executor` вовсе — `status=done`, `FakeSolverPool.restart()` не вызван |
+| `test_build_or_tools_within_margin_not_treated_as_timeout` | `algorithm="or_tools"`, `SyncPool` укладывается в `time_limit + margin` | `status=done`; `restart()` не вызван |
+
+### `sweep_running_plans`
+
+Модульная функция (не метод `PlanBuilder` — не привязана к региону, вызывается один раз
+из `app.py`'s `lifespan` до `yield`, а не из обработчика запроса).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_sweep_running_plans_returns_closed_ids` | `mark_running_plans_failed` возвращает `[3, 7]` | функция возвращает `[3, 7]`; запись `plan_startup_sweep_finished` уровня `info` с `count=2` |
+| `test_sweep_running_plans_no_plans_no_log` | `mark_running_plans_failed` возвращает `[]` | функция возвращает `[]`; записи `plan_startup_sweep_finished` нет — старт с пустой БД не засоряет лог |
+| `test_sweep_running_plans_db_unavailable_does_not_raise` | `connect`/`mark_running_plans_failed` поднимает `DependencyUnavailable` | функция возвращает `[]`, исключение не прокидывается — недоступность БД на старте не должна ронять `lifespan` |
+
+## `src/service/solver_pool.py` — пул солвера, переживающий kill воркера
+
+Файл: `tests/service/test_solver_pool.py`.
+
+> Мока нет: `ProcessSolverPool` проверяется на настоящем `ProcessPoolExecutor` — сам смысл
+> класса в том, что происходит с реальным процессом ОС при `kill()`, подделать это фейком
+> было бы проверкой не того, что нужно защитить. Каждый тест — секунды, без внешних
+> сервисов.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_restart_survives_a_killed_worker` | воркеру дан бесконечный `time.sleep`; `restart()` вызван без ожидания завершения | старый `Future` не завершается (worker убит до результата); новый тривиальный вызов на `.executor` после `restart()` успешно возвращает результат — пул не остался `BrokenProcessPool` |
+| `test_restart_replaces_the_executor_instance` | вызов `restart()` | `.executor` до и после — разные объекты `ProcessPoolExecutor` |
+| `test_shutdown_stops_accepting_new_work` | `shutdown()`, затем `submit` на `.executor` | `RuntimeError` («cannot schedule new futures after shutdown») |
 
 ## `src/service/plan_reader.py` — чтение плана
 
@@ -1030,7 +1081,10 @@
 ## `src/app.py` — app factory и lifespan
 
 > Замена стабами: конструктор пула БД и `create_osrm_client` (проверяем, что
-> `lifespan` их вызывает и потом закрывает, а не что они реально открывают соединения).
+> `lifespan` их вызывает и потом закрывает, а не что они реально открывают соединения);
+> `sweep_running_plans` — стаб-корутина, записывающая факт и аргументы вызова (само
+> поведение sweep — недоступность БД, что именно логируется — уже проверено у
+> `plan_builder.py`, здесь важно только то, что `lifespan` его вызывает, и когда).
 
 | Test | Scenario | Expected result |
 |---|---|---|
@@ -1038,6 +1092,9 @@
 | `test_lifespan_creates_osrm_client` | запуск `lifespan` | `app.state.osrm_client` — `OsrmClient`, собранный `create_osrm_client(settings)`; сетевых вызовов при старте нет — backend поднимается, пока графы OSRM ещё строятся |
 | `test_lifespan_closes_pool_and_client_on_shutdown` | завершение `lifespan` | `pool.close()` и `osrm_client.aclose()` вызваны по одному разу |
 | `test_lifespan_closes_pool_when_data_files_fail` | сборка загрузчика и сервиса списков при старте поднимает ошибку (битый файл конфигурации) | старт падает с этой ошибкой; пул БД и HTTP-клиент OSRM закрыты |
+| `test_lifespan_calls_startup_sweep_before_serving` | стаб `sweep_running_plans`, приложение поднято через `TestClient` | стаб вызван ровно один раз ещё до того, как контекст `with TestClient(app)` возвращает управление — sweep отрабатывает до `yield`, ни один запрос до него не обслуживается |
+| `test_lifespan_uses_process_solver_pool` | запуск `lifespan` | `app.state.plan_builder.pool` — экземпляр `ProcessSolverPool`, не голый `ProcessPoolExecutor` |
+| `test_lifespan_shutdown_stops_solver_pool_without_waiting` | завершение `lifespan` | `ProcessSolverPool.shutdown(cancel_futures=True)` вызван один раз (spy на методе) — `finally` не ждёт идущую сборку и не пишет в БД |
 | `test_create_app_registers_health_route` | `create_app()` | в `app.routes` присутствует `GET /health` |
 | `test_create_app_registers_error_handlers` | `create_app()` | в `app.exception_handlers` есть обработчики `AppError`, `RequestValidationError`, `StarletteHTTPException`, `Exception` |
 | `test_create_app_registers_not_implemented_stub_last` | `create_app()` | последний элемент `app.routes` — заглушка `/api/v1/{path:path}`: любой роут, объявленный в фабрике, стоит раньше неё и перекрывает её |
