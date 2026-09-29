@@ -166,6 +166,20 @@
 | `test_type_hd_upgrade_fails_on_null` | на ревизии `5d23f2956ce7` владельцем схемы вставлена заявка с `type_hd = NULL`; `upgrade head` | `NotNullViolation`; `alembic_version` = `5d23f2956ce7`, заявка не изменена — пустой тип не заполняется выдуманным значением |
 | `test_type_hd_downgrade` | `downgrade 5d23f2956ce7`, вставка заявки с `type_hd = NULL`, удаление её, `upgrade head` | после отката `NULL` принимается, прежний комментарий колонки; повторный накат проходит |
 
+## `alembic/versions/c124884e0c63_plans_status.py` — статус построения плана
+
+Файл: `tests/db/test_schema.py`.
+
+> Мока нет: `@pytest.mark.integration`, контейнер PostGIS, окружение и роли — как в разделе
+> схемы БД. Состояние до ревизии — `upgrade cb3db41d521a`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_plan_status_valid` (`running`/`done`/`failed`) | вставка плана с этим `status` (`failed` — с `failed_reason`) | принято |
+| `test_plan_status_closed_set` | `status = 'queued'` | `CheckViolation`, `ck_plans__status` |
+| `test_plan_failed_reason_closed_set` | `status = 'failed', failed_reason = 'timeout'` | `CheckViolation`, `ck_plans__failed_reason` |
+| `test_plan_status_failed_reason_shape` (`failed` без причины / `done` или `running` с причиной) | несогласованная пара `status`/`failed_reason` | `CheckViolation`, `ck_plans__status_failed_reason` |
+
 ## `alembic/env.py` — запуск миграций
 
 > Мока нет: `@pytest.mark.integration`, контейнер PostGIS как в предыдущем разделе.
@@ -698,6 +712,63 @@
 | `test_unassigned_reasons_summary_logged` | 3 неназначенные: 2 `no_skill`, 1 `shift_overflow` | 1 запись `unassigned_reasons_summary` уровня `info` со счётчиками `{"no_skill": 2, "shift_overflow": 1}` |
 | `test_logs_no_ticket_data_beyond_id` | план с назначенными и неназначенными заявками | ни в одной записи лога нет адресов, точек и текста объяснения — только `ticket_id`, коды причин и счётчики |
 
+## `src/service/plan_builder.py` — постановка в очередь и фоновая сборка плана
+
+Файл: `tests/service/test_plan_builder.py`.
+
+> Замена стабами: `connect`/`get_region_id`/`list_open_tickets`/`list_engineers`/
+> `insert_running_plan`/`mark_plan_done`/`mark_plan_failed` — асинхронные функции без
+> реальной БД; OSRM — фейк с `table()`, возвращающий заданные матрицы или ошибку; пул
+> солвера — `SyncPool` (наследник `concurrent.futures.Executor`), выполняющий переданную
+> функцию синхронно в текущем процессе вместо реального подпроцесса. `solve_day`,
+> `baseline.solve_day` и `explain` вызываются по-настоящему — на входе в 1 бригаду и 1
+> заявку, без нужды подделывать их результат.
+
+### `enqueue`
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_enqueue_queues_a_running_plan` | валидный вход | `QueuedPlan` с `plan_id`, `algorithm` и теми же `tickets`/`engineers`, что вернули стабы |
+| `test_enqueue_unknown_region` | код региона не из `regions.toml` | `InvalidInput(reason="unknown_region")`; строка плана не вставляется |
+| `test_enqueue_region_not_loaded` | `get_region_id` возвращает `None` | `InvalidInput(reason="region_not_loaded")` |
+| `test_enqueue_plan_date_mismatch` | у заявки окно не на дату плана | `InvalidInput(reason="plan_date_mismatch")` |
+| `test_enqueue_too_many_points` | бригад + заявок больше `max_table_size` | `InvalidInput(reason="too_many_points")` |
+| `test_enqueue_insert_failure_propagates` | `insert_running_plan` поднимает `DependencyUnavailable` | ошибка поднята как есть |
+
+### `build`
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_build_or_tools_persists_done` | `algorithm="or_tools"`, OSRM отвечает | `mark_plan_done` вызван с назначениями по заявке |
+| `test_build_baseline_persists_done` | `algorithm="baseline_fcfs"` | то же, солвер (пул) не используется |
+| `test_build_no_engineers_no_matrix_calls` | 0 бригад | OSRM не вызывается ни для одного типа транспорта; заявка уходит неназначенной |
+| `test_build_osrm_unavailable_marks_failed` | OSRM поднимает `DependencyUnavailable` | план помечен `status=failed, failed_reason=osrm_unavailable`; `mark_plan_done` не вызван |
+| `test_build_unexpected_error_marks_build_error` | OSRM поднимает `ValueError` | `status=failed, failed_reason=build_error`; запись лога `plan_build_failed` уровня `error` |
+| `test_build_persist_dependency_unavailable_marks_failed` | `mark_plan_done` поднимает `DependencyUnavailable` | `status=failed, failed_reason=db_unavailable` |
+| `test_build_persist_database_failure_marks_build_error` | `mark_plan_done` поднимает `DatabaseFailure` | `status=failed, failed_reason=build_error` (уже залогировано `database_errors`, повторно не логируется) |
+| `test_build_mark_failed_swallows_its_own_failure` | и `mark_plan_done`, и `mark_plan_failed` падают | `build` не поднимает исключение — план остаётся `running`, как после рестарта backend |
+| `test_build_logs_finished` | успешное построение | запись `plan_build_finished` с `plan_id` и `algorithm` |
+
+## `src/service/plan_reader.py` — чтение плана
+
+Файл: `tests/service/test_plan_reader.py`.
+
+> Замена стабами: `connect`/`get_plan`/`list_engineers`/`list_plan_assignments` — без
+> реальной БД. Идентичность бригады и её визитов проверяется на маленьком синтетическом
+> входе (1–2 бригады, 1–2 назначения).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_plan_not_found` | `get_plan` возвращает `None` | `NotFound(reason="plan_not_found")` |
+| `test_running_plan_has_no_routes` | `status="running"` | `engineers`/`unassigned` — `None` |
+| `test_failed_plan_carries_reason` | `status="failed"`, `failed_reason` задан | тот же `failed_reason` в ответе; `engineers`/`unassigned` — `None` |
+| `test_done_plan_lists_every_region_engineer` | 2 бригады региона, назначение только у одной | обе в ответе, по возрастанию `engineer_id`; у незадействованной — пустой маршрут |
+| `test_visit_fields_and_distance_rounding` | визит с `travel_distance_m=1234` | `travel_distance_km == 1.2` (округление до 0.1 км), остальные поля визита как в строке |
+| `test_idle_time_is_shift_minus_travel_and_duration` | смена 120 мин, 2 визита (15+5 мин переезда, 30+20 мин на объекте) | `idle_time_min == 120 - 20 - 50` |
+| `test_visits_sorted_by_sequence_no` | строки назначений в БД в произвольном порядке | маршрут отсортирован по `sequence_no` |
+| `test_engineer_without_assignments_has_full_shift_idle` | у бригады нет ни одного назначения | `idle_time_min` — вся смена, `total_travel_time_min`/`total_distance_km` — 0 |
+| `test_get_plan_dependency_unavailable_propagates` | `get_plan` поднимает `DependencyUnavailable` | ошибка поднята как есть |
+
 ## `src/clients/nominatim.py` — клиент Nominatim
 
 Файл: `tests/clients/test_nominatim.py`.
@@ -978,6 +1049,31 @@
 | `test_change_ticket_status_too_large` | тело больше предела 1024 байта | `413` без тела; сервис не вызван |
 | `test_ticket_status_get_not_implemented` | `GET /api/v1/tickets/87/status` | `501` без тела (метода нет у операции); сервис не вызван |
 
+## `api` — POST /api/v1/plan/build, GET /api/v1/plan/{plan_id}
+
+Файл: `tests/api/test_plan.py`.
+
+> Замена стабами: `PlanBuilder`/`PlanReader` — фейки через `app.dependency_overrides`
+> (`FakePlanBuilder`/`FakePlanReader` в `tests/api/region_fakes.py`), которые запоминают
+> вызовы и возвращают заданный результат или поднимают заданное исключение; БД, OSRM и
+> солвер не участвуют. `background_tasks.add_task` в `TestClient` выполняется до
+> возврата ответа клиенту, так что `build_calls` фейка проверяется сразу после запроса.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_build_plan_returns_202_running` | валидный запрос | `202`, тело `Plan` со `status=running` и без `engineers`/`unassigned`; `enqueue` вызван с `(region, plan_date, algorithm)`; фоновая задача `build` поставлена с `plan_id`, теми же `tickets`/`engineers`, что вернул `enqueue`, `plan_date` и `algorithm` |
+| `test_build_plan_invalid_date` | `plan_date="2026-02-30"` (несуществующая дата, форму регулярное выражение спеки принимает) | `400`, `{"fields": [{"name": "plan_date", "message": "Несуществующая дата"}]}` |
+| `test_build_plan_rejects_malformed_body` (параметризован: пустое тело, без `algorithm`, `algorithm` вне перечня, лишнее поле) | запрос с таким телом | `400` |
+| `test_build_plan_unknown_region` | `enqueue` поднимает `InvalidInput(reason="unknown_region", fields=...)` | `400`, `{"fields": [{"name": "region", ...}]}`; фоновая задача не ставится |
+| `test_build_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `enqueue` поднимает эту ошибку | `503` \| `500` без тела |
+| `test_get_running_plan` | `PlanRead(status="running", ...)` | `200`, `engineers`/`unassigned`/`failed_reason` — `null` |
+| `test_get_failed_plan` | `PlanRead(status="failed", failed_reason=...)` | `200`, тот же `failed_reason`; `engineers`/`unassigned` — `null` |
+| `test_get_done_plan` | `PlanRead(status="done", ...)` с одной бригадой и одним визитом, одной неназначенной заявкой | `200`, тело `Plan` с `engineers`/`unassigned`, все поля контракта (`Visit`, `EngineerRoute`, `UnassignedTicket`) заполнены как в `PlanRead` |
+| `test_get_plan_not_found` | `reader.get` поднимает `NotFound` | `404` без тела |
+| `test_get_plan_invalid_id` | `plan_id=0` | `400` |
+| `test_get_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `reader.get` поднимает эту ошибку | `503` \| `500` без тела |
+| `test_build_and_get_failed_events_logged` | `enqueue`/`reader.get` поднимают `InvalidInput`/`NotFound` | записи `plan_build_failed`/`plan_get_failed` уровня `warning` с `reason` |
+
 ## `api` — POST /api/v1/data/upload, POST /api/v1/data/demo
 
 Файл: `tests/api/test_data.py`.
@@ -1111,11 +1207,13 @@
 > `schemathesis` строит кейсы из `specs/openapi.yaml` (ссылки на `specs/common.yaml`
 > разрешаются от корня) и прогоняет их против поднятого приложения в двух режимах —
 > позитивном и негативном; пишется один раз на всё приложение, а не по эндпоинту, и
-> растёт вместе со спекой. Загрузчик и сервис списков заменены через
-> `app.dependency_overrides` фейками, которые возвращают валидный по контракту результат
-> (итог загрузки с невалидной строкой, одна бригада, одна заявка; смена статуса — заявка с
-> запрошенным статусом), а на неизвестный регион поднимают `InvalidInput` — так позитивные
-> кейсы проверяют форму успешных ответов без БД.
+> растёт вместе со спекой. Загрузчик, сервис списков, построитель и читатель плана заменены
+> через `app.dependency_overrides` фейками, которые возвращают валидный по контракту
+> результат (итог загрузки с невалидной строкой, одна бригада, одна заявка; смена статуса —
+> заявка с запрошенным статусом; построение плана — план в очереди с той же бригадой и
+> заявкой; чтение плана — план `done` без маршрутов и неназначенных), а на неизвестный
+> регион поднимают `InvalidInput` — так позитивные кейсы проверяют форму успешных ответов
+> без БД.
 
 | Test | Scenario | Expected result |
 |---|---|---|

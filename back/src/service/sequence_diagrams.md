@@ -565,9 +565,9 @@ sequenceDiagram
 (`{e.vehicle_type for e in engineers}`), точки — старты бригад, затем точки заявок в
 порядке `tickets` (тот же порядок, что берут `solve_day` и `explain`); типы транспорта не
 использует ни одна бригада — не запрашиваются. Запросы идут одновременно
-(`asyncio.gather`), а не по очереди: один недоступный граф не блокирует остальные — первая
-же ошибка отменяет ещё не завершённые запросы и результат — построение завершается
-со `status=failed`.
+(`asyncio.TaskGroup`), а не по очереди: один недоступный граф не блокирует остальные —
+первая же ошибка отменяет ещё не завершённые запросы и результат — построение завершается
+со `status=failed`, `failed_reason=osrm_unavailable`.
 
 **Солвер вне event loop.** `or_tools.solve_day` не отдаёт GIL на всё время поиска —
 известное ограничение нативного решателя, — поэтому вызывается через
@@ -612,8 +612,8 @@ sequenceDiagram
     participant Explain as service (explain)
     participant Repo as queries (планы)
 
-    BG->>Builder: build_in_background(plan_id, region, plan_date, algorithm)
-    Builder->>Builder: region_id, открытые заявки и бригады региона (снова, для фоновой задачи)
+    BG->>Builder: build(plan_id, tickets, engineers, plan_date, algorithm)
+    note over Builder: tickets, engineers — те же объекты, что enqueue() уже прочитал и\nпровалидировал; фоновая задача их не перечитывает
     par на каждый тип транспорта бригад
         Builder->>OSRM: table(vehicle, старты + точки заявок)
     end
@@ -630,15 +630,20 @@ sequenceDiagram
         else algorithm = baseline_fcfs
             Builder->>Builder: baseline.solve_day(...) (в текущем процессе)
         end
-        Builder->>Explain: explain(DayPlan, tickets, engineers, матрицы, plan_date)
-        Explain-->>Builder: ExplainedPlan
-        Builder->>Repo: BEGIN#59; UPDATE plans SET status='done'#59; INSERT assignments ×(заявка)#59; COMMIT
-        alt БД отклонила запрос или недоступна
-            Repo-->>Builder: DependencyUnavailable | DatabaseFailure
-            Builder->>Repo: UPDATE plans SET status='failed', failed_reason='db_unavailable'
+        alt солвер или explain упали непредвиденно
+            Builder->>Builder: лог plan_build_failed (error, exc_info)
+            Builder->>Repo: UPDATE plans SET status='failed', failed_reason='build_error'
         else
-            Repo-->>Builder: OK
-            Builder->>Builder: лог plan_build_finished (info, plan_id, algorithm)
+            Builder->>Explain: explain(DayPlan, tickets, engineers, матрицы, plan_date)
+            Explain-->>Builder: ExplainedPlan
+            Builder->>Repo: BEGIN#59; UPDATE plans SET status='done'#59; INSERT assignments ×(заявка)#59; COMMIT
+            alt БД отклонила запрос или недоступна
+                Repo-->>Builder: DependencyUnavailable | DatabaseFailure
+                Builder->>Repo: UPDATE plans SET status='failed', failed_reason='db_unavailable' | 'build_error'
+            else
+                Repo-->>Builder: OK
+                Builder->>Builder: лог plan_build_finished (info, plan_id, algorithm)
+            end
         end
     end
 ```

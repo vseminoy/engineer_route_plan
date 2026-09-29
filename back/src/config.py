@@ -35,6 +35,9 @@ class Settings(LoggingSettings):
     nominatim_user_agent: str = "engineer-route-plan/0.1"
     # Cache misses of one load sent to Nominatim; the rest stay without a point.
     nominatim_max_lookups: int = Field(default=50, ge=0)
+    # Time budget of one or_tools solve (all three phases together); the build itself has
+    # no deadline of its own — the client polls GET /plan/{id} until it finishes.
+    solver_time_limit_s: float = Field(default=30, gt=0, allow_inf_nan=False)
 
 
 class MigrationSettings(LoggingSettings):

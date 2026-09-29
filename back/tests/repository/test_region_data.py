@@ -89,14 +89,14 @@ async def _one(conn: AsyncConnection[Any], sql: str) -> Any:
 async def _add_plans(conn: AsyncConnection[Any], region_id: int) -> None:
     """Two plans (the second derived from the first), a plan row and a replan event."""
     cur = await conn.execute(
-        "INSERT INTO plans (region_id, plan_date, algorithm, created_at)"
-        " VALUES (%s, '2026-08-17', 'or_tools', '2026-08-17 09:00') RETURNING id",
+        "INSERT INTO plans (region_id, plan_date, algorithm, status, created_at)"
+        " VALUES (%s, '2026-08-17', 'or_tools', 'done', '2026-08-17 09:00') RETURNING id",
         (region_id,),
     )
     p1 = (await cur.fetchone())[0]  # type: ignore[index]  # RETURNING always yields a row
     cur = await conn.execute(
-        "INSERT INTO plans (region_id, plan_date, algorithm, parent_plan_id, created_at)"
-        " VALUES (%s, '2026-08-17', 'or_tools', %s, '2026-08-17 13:00') RETURNING id",
+        "INSERT INTO plans (region_id, plan_date, algorithm, status, parent_plan_id, created_at)"
+        " VALUES (%s, '2026-08-17', 'or_tools', 'done', %s, '2026-08-17 13:00') RETURNING id",
         (region_id, p1),
     )
     p2 = (await cur.fetchone())[0]  # type: ignore[index]  # RETURNING always yields a row

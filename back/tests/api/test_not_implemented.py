@@ -25,7 +25,7 @@ def _client() -> TestClient:
 
 def test_unimplemented_path_returns_501_without_body() -> None:
     with _client() as client:
-        response = client.get("/api/v1/plan/1")
+        response = client.get("/api/v1/plan/1/replan")
 
     assert response.status_code == 501
     assert response.content == b""
@@ -119,7 +119,7 @@ def test_stub_request_is_logged_with_request_id(capsys: pytest.CaptureFixture[st
     # Reads the real JSON stderr: `create_app` reconfigures structlog, which
     # `capture_logs()` would not survive.
     with _client() as client:
-        response = client.get("/api/v1/plan/1")
+        response = client.get("/api/v1/plan/1/replan")
 
     lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
     finished = [e for e in map(json.loads, lines) if e["event"] == "http_request_finished"]

@@ -1,15 +1,23 @@
 """Stand-ins for the data services behind the routes, set through `dependency_overrides`."""
 
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Any
 
 from fastapi.testclient import TestClient
 
-from src.api.deps import get_loader, get_region_lists, get_ticket_statuses
+from src.api.deps import (
+    get_loader,
+    get_plan_builder,
+    get_plan_reader,
+    get_region_lists,
+    get_ticket_statuses,
+)
 from src.app import create_app
 from src.config import Settings
 from src.domain import Engineer, Point, Skill, Ticket, TicketStatus, VehicleType
 from src.service.loader import LoadResult
+from src.service.plan_builder import QueuedPlan
+from src.service.plan_reader import PlanRead
 from src.service.regions import Region
 from src.service.ticket_file import InvalidRow
 
@@ -109,11 +117,59 @@ class FakeStatuses:
         return TICKET.model_copy(update={"id": ticket_id, "status": status})
 
 
+class FakePlanBuilder:
+    def __init__(self, queued: "QueuedPlan | None" = None, error: Exception | None = None) -> None:
+        self.queued = queued or QueuedPlan(
+            plan_id=1, algorithm="or_tools", tickets=[TICKET], engineers=[ENGINEER]
+        )
+        self.error = error
+        self.enqueue_calls: list[tuple[str, date, str]] = []
+        self.build_calls: list[tuple[Any, ...]] = []
+
+    async def enqueue(self, region: str, plan_date: date, algorithm: str) -> QueuedPlan:
+        self.enqueue_calls.append((region, plan_date, algorithm))
+        if self.error:
+            raise self.error
+        return self.queued
+
+    async def build(
+        self,
+        plan_id: int,
+        tickets: list[Ticket],
+        engineers: list[Engineer],
+        plan_date: date,
+        algorithm: str,
+    ) -> None:
+        self.build_calls.append((plan_id, tickets, engineers, plan_date, algorithm))
+
+
+class FakePlanReader:
+    def __init__(self, plan: "PlanRead | None" = None, error: Exception | None = None) -> None:
+        self.plan = plan or PlanRead(
+            plan_id=1,
+            algorithm="or_tools",
+            status="done",
+            failed_reason=None,
+            engineers=(),
+            unassigned=(),
+        )
+        self.error = error
+        self.calls: list[int] = []
+
+    async def get(self, plan_id: int) -> PlanRead:
+        self.calls.append(plan_id)
+        if self.error:
+            raise self.error
+        return self.plan
+
+
 def client(
     lists: FakeLists | None = None,
     loader: FakeLoader | None = None,
     max_body: int | None = None,
     statuses: FakeStatuses | None = None,
+    plan_builder: FakePlanBuilder | None = None,
+    plan_reader: FakePlanReader | None = None,
 ) -> TestClient:
     """The application with fake data services; built inside the test, so its JSON logs go
     to the stderr `capsys` reads."""
@@ -130,4 +186,6 @@ def client(
     app.dependency_overrides[get_region_lists] = lambda: lists or FakeLists()
     app.dependency_overrides[get_loader] = lambda: loader or FakeLoader()
     app.dependency_overrides[get_ticket_statuses] = lambda: statuses or FakeStatuses()
+    app.dependency_overrides[get_plan_builder] = lambda: plan_builder or FakePlanBuilder()
+    app.dependency_overrides[get_plan_reader] = lambda: plan_reader or FakePlanReader()
     return TestClient(app)

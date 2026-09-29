@@ -1,4 +1,6 @@
 from collections.abc import AsyncIterator
+from concurrent.futures import ProcessPoolExecutor
+from datetime import timedelta
 from typing import Any
 
 from fastapi import Request
@@ -8,11 +10,25 @@ from psycopg_pool import AsyncConnectionPool
 from src.clients.nominatim import NominatimClient
 from src.clients.osrm import OsrmClient
 from src.config import Settings
+from src.repository.plans import (
+    get_plan,
+    insert_running_plan,
+    list_plan_assignments,
+    mark_plan_done,
+    mark_plan_failed,
+)
 from src.repository.region_data import replace_region_data
-from src.repository.region_lists import get_region_id, list_engineers, list_tickets
+from src.repository.region_lists import (
+    get_region_id,
+    list_engineers,
+    list_open_tickets,
+    list_tickets,
+)
 from src.repository.tickets import lock_ticket, update_ticket_status
 from src.service.geocoding import GeoCache, Geocoder
 from src.service.loader import DATA_DIR, Loader
+from src.service.plan_builder import PlanBuilder
+from src.service.plan_reader import PlanReader
 from src.service.region_lists import RegionLists
 from src.service.regions import Regions
 from src.service.ticket_status import TicketStatuses
@@ -60,6 +76,36 @@ def create_ticket_statuses(db_pool: AsyncConnectionPool) -> TicketStatuses:
     return TicketStatuses(db_pool.connection, lock_ticket, update_ticket_status)
 
 
+def create_plan_services(
+    settings: Settings,
+    db_pool: AsyncConnectionPool,
+    regions: Regions,
+    osrm: OsrmClient,
+    pool: ProcessPoolExecutor,
+) -> tuple[PlanBuilder, PlanReader]:
+    builder = PlanBuilder(
+        regions=regions,
+        connect=db_pool.connection,
+        get_region_id=get_region_id,
+        list_open_tickets=list_open_tickets,
+        list_engineers=list_engineers,
+        insert_running_plan=insert_running_plan,
+        mark_plan_done=mark_plan_done,
+        mark_plan_failed=mark_plan_failed,
+        osrm=osrm,
+        pool=pool,
+        max_table_size=settings.osrm_max_table_size,
+        solver_time_limit=timedelta(seconds=settings.solver_time_limit_s),
+    )
+    reader = PlanReader(
+        connect=db_pool.connection,
+        get_plan=get_plan,
+        list_engineers=list_engineers,
+        list_plan_assignments=list_plan_assignments,
+    )
+    return builder, reader
+
+
 def get_loader(request: Request) -> Loader:
     loader: Loader = request.app.state.loader
     return loader
@@ -79,3 +125,13 @@ async def get_osrm_client(request: Request) -> AsyncIterator[OsrmClient]:
     """Returns the app-wide client created in `lifespan` — not closed per request,
     so keep-alive connections to OSRM are reused across requests."""
     yield request.app.state.osrm_client
+
+
+def get_plan_builder(request: Request) -> PlanBuilder:
+    builder: PlanBuilder = request.app.state.plan_builder
+    return builder
+
+
+def get_plan_reader(request: Request) -> PlanReader:
+    reader: PlanReader = request.app.state.plan_reader
+    return reader

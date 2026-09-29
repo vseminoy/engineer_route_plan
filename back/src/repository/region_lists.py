@@ -43,3 +43,12 @@ async def list_tickets(conn: AsyncConnection[Any], region_id: int) -> list[Ticke
         lambda: fetch_all(queries.list_tickets_by_region(conn, region_id=region_id)),
     )
     return [ticket_from_row(row) for row in rows]
+
+
+async def list_open_tickets(conn: AsyncConnection[Any], region_id: int) -> list[Ticket]:
+    """Tickets a plan can assign: excludes `completed` and `cancelled`."""
+    rows = await run_query(
+        "list_open_tickets_by_region",
+        lambda: fetch_all(queries.list_open_tickets_by_region(conn, region_id=region_id)),
+    )
+    return [ticket_from_row(row) for row in rows]

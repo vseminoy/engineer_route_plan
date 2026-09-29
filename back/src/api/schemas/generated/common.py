@@ -34,6 +34,19 @@ class LocalTime(RootModel[str]):
     ]
 
 
+class LocalDate(RootModel[str]):
+    root: Annotated[
+        str,
+        Field(
+            description="Дата в местном времени региона, ISO-8601 без времени и часового пояса: 2026-08-17. Месяц 01–12, день 01–31; несуществующую дату (2026-02-30) отклоняет сервер ответом 400.",
+            examples=["2026-08-17"],
+            max_length=10,
+            min_length=10,
+            pattern="^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
+        ),
+    ]
+
+
 class FieldError(BaseModel):
     model_config = ConfigDict(
         extra="forbid",

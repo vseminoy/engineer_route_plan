@@ -106,6 +106,19 @@ class LocalDateTime(RootModel[str]):
     ]
 
 
+class LocalDate(RootModel[str]):
+    root: Annotated[
+        str,
+        Field(
+            description="Дата в местном времени региона, ISO-8601 без времени и часового пояса: 2026-08-17. Месяц 01–12, день 01–31; несуществующую дату (2026-02-30) отклоняет сервер ответом 400.",
+            examples=["2026-08-17"],
+            max_length=10,
+            min_length=10,
+            pattern="^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
+        ),
+    ]
+
+
 class FieldError(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -264,6 +277,140 @@ class DataLoadResult(BaseModel):
         list[InvalidRow],
         Field(description="Строки-заявки, которые не загружены, по возрастанию номера строки"),
     ]
+
+
+class PlanAlgorithm(StrEnum):
+    or_tools = "or_tools"
+    baseline_fcfs = "baseline_fcfs"
+
+
+class PlanBuildRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    region: RegionCode
+    plan_date: Annotated[
+        LocalDate,
+        Field(
+            description="Дата плана; окно каждой открытой заявки региона должно приходиться на эту дату"
+        ),
+    ]
+    algorithm: PlanAlgorithm
+
+
+class UnassignedReason(StrEnum):
+    no_skill = "no_skill"
+    no_vehicle = "no_vehicle"
+    no_time_slot = "no_time_slot"
+    shift_overflow = "shift_overflow"
+    all_eligible_engineers_booked_elsewhere = "all_eligible_engineers_booked_elsewhere"
+
+
+class Visit(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ticket_id: Annotated[int, Field(description="Заявка визита")]
+    sequence_no: Annotated[
+        int, Field(description="Порядковый номер визита в маршруте бригады, с 1", ge=1)
+    ]
+    planned_arrival: Annotated[
+        LocalDateTime,
+        Field(
+            description="Плановое прибытие; может быть раньше начала окна заявки — бригада ждёт открытия окна"
+        ),
+    ]
+    travel_time_min: Annotated[
+        int,
+        Field(
+            description="Время в пути до визита от предыдущей точки маршрута (или от точки старта бригады для первого визита), минуты, с округлением вверх",
+            ge=0,
+        ),
+    ]
+    travel_distance_km: Annotated[
+        float,
+        Field(
+            description="Расстояние до визита от предыдущей точки маршрута, километры, с округлением до 0.1 км",
+            ge=0.0,
+        ),
+    ]
+    explanation: Annotated[
+        str, Field(description="Текст для пользователя, почему заявка назначена этой бригаде")
+    ]
+
+
+class EngineerRoute(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    engineer_id: Annotated[int, Field(description="Бригада маршрута")]
+    name: Annotated[str, Field(description="Название бригады")]
+    route: Annotated[
+        list[Visit],
+        Field(
+            description="Визиты бригады по возрастанию sequence_no; пустой массив — бригада не задействована"
+        ),
+    ]
+    total_distance_km: Annotated[
+        float, Field(description="Суммарное расстояние маршрута, километры", ge=0.0)
+    ]
+    total_travel_time_min: Annotated[
+        int, Field(description="Суммарное время в пути маршрута, минуты", ge=0)
+    ]
+    idle_time_min: Annotated[
+        int,
+        Field(
+            description="Простой бригады: длина смены минус суммарное время визитов и переездов; только для отображения — не входит в целевую функцию построения плана",
+            ge=0,
+        ),
+    ]
+
+
+class UnassignedTicket(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ticket_id: Annotated[int, Field(description="Неназначенная заявка")]
+    reason_code: UnassignedReason
+    explanation: Annotated[
+        str, Field(description="Текст для пользователя, почему заявка не назначена")
+    ]
+
+
+class PlanStatus(StrEnum):
+    running = "running"
+    done = "done"
+    failed = "failed"
+
+
+class PlanFailedReason(StrEnum):
+    osrm_unavailable = "osrm_unavailable"
+    db_unavailable = "db_unavailable"
+    build_error = "build_error"
+
+
+class Plan(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    plan_id: Annotated[int, Field(description="Идентификатор плана на сервере")]
+    algorithm: PlanAlgorithm
+    status: PlanStatus
+    engineers: Annotated[
+        list[EngineerRoute] | None,
+        Field(
+            description="Маршруты всех бригад региона на дату плана, по возрастанию engineer_id; null, если status не done"
+        ),
+    ] = None
+    unassigned: Annotated[
+        list[UnassignedTicket] | None,
+        Field(
+            description="Неназначенные заявки, по возрастанию ticket_id; null, если status не done"
+        ),
+    ] = None
+    failed_reason: Annotated[
+        PlanFailedReason | None, Field(description="Причина отказа; null, если status не failed")
+    ] = None
 
 
 class Engineer(BaseModel):

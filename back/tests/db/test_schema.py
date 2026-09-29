@@ -15,7 +15,7 @@ pytestmark = pytest.mark.integration
 TABLES = ["regions", "engineers", "tickets", "plans", "assignments", "replan_events"]
 POINT = "ST_SetSRID(ST_MakePoint(37.62, 55.75), 4326)"
 INITIAL = "5d23f2956ce7"
-HEAD = "cb3db41d521a"
+HEAD = "c124884e0c63"
 
 
 def _tables(db: Database) -> set[str]:
@@ -120,11 +120,13 @@ def _ticket(conn: psycopg.Connection, region_id: int, **overrides: Any) -> int:
     return int(row[0])
 
 
-def _plan(conn: psycopg.Connection, region_id: int) -> int:
+def _plan(conn: psycopg.Connection, region_id: int, **overrides: Any) -> int:
+    params = {"region_id": region_id, "status": "done", "failed_reason": None, **overrides}
     row = conn.execute(
-        "INSERT INTO plans (region_id, plan_date, algorithm, created_at)"
-        " VALUES (%s, '2026-09-23', 'or_tools', '2026-09-22 20:00') RETURNING id",
-        (region_id,),
+        "INSERT INTO plans (region_id, plan_date, algorithm, status, failed_reason, created_at)"
+        " VALUES (%(region_id)s, '2026-09-23', 'or_tools', %(status)s, %(failed_reason)s,"
+        " '2026-09-22 20:00') RETURNING id",
+        params,
     ).fetchone()
     assert row
     return int(row[0])
@@ -492,6 +494,44 @@ def test_type_hd_downgrade(migrated_db: Database) -> None:
     assert applied_revisions(migrated_db) == [(HEAD,)]
 
 
+# --- plans.status -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", ["running", "done", "failed"])
+def test_plan_status_valid(rw: psycopg.Connection, status: str) -> None:
+    region_id = _region(rw)
+    failed_reason = "build_error" if status == "failed" else None
+    _plan(rw, region_id, status=status, failed_reason=failed_reason)
+
+
+def test_plan_status_closed_set(rw: psycopg.Connection) -> None:
+    region_id = _region(rw)
+    with pytest.raises(psycopg.Error) as raised, rw.transaction():
+        _plan(rw, region_id, status="queued")
+    assert raised.value.diag.constraint_name == "ck_plans__status"
+
+
+def test_plan_failed_reason_closed_set(rw: psycopg.Connection) -> None:
+    region_id = _region(rw)
+    with pytest.raises(psycopg.Error) as raised, rw.transaction():
+        _plan(rw, region_id, status="failed", failed_reason="timeout")
+    assert raised.value.diag.constraint_name == "ck_plans__failed_reason"
+
+
+@pytest.mark.parametrize(
+    ("status", "failed_reason"),
+    [("failed", None), ("done", "build_error"), ("running", "build_error")],
+    ids=["failed_without_reason", "done_with_reason", "running_with_reason"],
+)
+def test_plan_status_failed_reason_shape(
+    rw: psycopg.Connection, status: str, failed_reason: str | None
+) -> None:
+    region_id = _region(rw)
+    with pytest.raises(psycopg.Error) as raised, rw.transaction():
+        _plan(rw, region_id, status=status, failed_reason=failed_reason)
+    assert raised.value.diag.constraint_name == "ck_plans__status_failed_reason"
+
+
 # --- assignments ------------------------------------------------------------------------
 
 
@@ -607,9 +647,9 @@ def test_replan_event_types(rw: psycopg.Connection) -> None:
             f" ARRAY['local_work'])"
         ),
         (
-            "INSERT INTO plans (region_id, plan_date, algorithm, parent_plan_id, created_at)"
-            " VALUES ((SELECT min(id) FROM regions), '2026-09-23', 'or_tools', 999999,"
-            " '2026-09-22 20:00')"
+            "INSERT INTO plans (region_id, plan_date, algorithm, status, parent_plan_id,"
+            " created_at) VALUES ((SELECT min(id) FROM regions), '2026-09-23', 'or_tools',"
+            " 'done', 999999, '2026-09-22 20:00')"
         ),
         (
             "INSERT INTO assignments (plan_id, ticket_id, unassigned_reason, explanation)"

@@ -370,6 +370,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Plan"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+          description: plan_id вне допустимого диапазона.
         "404":
           $ref: "./common.yaml#/components/responses/NotFound"
           description: Плана с таким plan_id нет.
@@ -806,19 +809,24 @@ components:
         status:
           $ref: "#/components/schemas/PlanStatus"
         engineers:
-          type: array
-          items:
-            $ref: "#/components/schemas/EngineerRoute"
+          anyOf:
+            - type: array
+              items:
+                $ref: "#/components/schemas/EngineerRoute"
+            - type: "null"
           description: >-
             Маршруты всех бригад региона на дату плана, по возрастанию engineer_id;
-            присутствует только при status = done
+            null, если status не done
         unassigned:
-          type: array
-          items:
-            $ref: "#/components/schemas/UnassignedTicket"
+          anyOf:
+            - type: array
+              items:
+                $ref: "#/components/schemas/UnassignedTicket"
+            - type: "null"
           description: >-
-            Неназначенные заявки, по возрастанию ticket_id; присутствует только при
-            status = done
+            Неназначенные заявки, по возрастанию ticket_id; null, если status не done
         failed_reason:
-          $ref: "#/components/schemas/PlanFailedReason"
-          description: Присутствует только при status = failed
+          anyOf:
+            - $ref: "#/components/schemas/PlanFailedReason"
+            - type: "null"
+          description: Причина отказа; null, если status не failed

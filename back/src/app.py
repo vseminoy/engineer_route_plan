@@ -2,17 +2,24 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, Request, Response
 
 from src.api.body_limit import BodyLimitMiddleware
-from src.api.deps import create_data_services, create_db_pool, create_ticket_statuses
+from src.api.deps import (
+    create_data_services,
+    create_db_pool,
+    create_plan_services,
+    create_ticket_statuses,
+)
 from src.api.errors import REQUEST_ID_HEADER, register_error_handlers, route_path
 from src.api.routes.data import router as data_router
 from src.api.routes.health import router as health_router
 from src.api.routes.not_implemented import add_not_implemented_stub
+from src.api.routes.plan import router as plan_router
 from src.api.routes.regions import router as regions_router
 from src.clients.nominatim import NominatimClient, create_nominatim_client
 from src.clients.osrm import OsrmClient, create_osrm_client
@@ -45,6 +52,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.db_pool = db_pool
         osrm_client: OsrmClient | None = None
         nominatim: NominatimClient | None = None
+        # One process for the whole app: `or_tools.solve_day` does not release the GIL for
+        # the length of its search, so a thread pool would not free the event loop either —
+        # only a separate process does. A single worker means the server never builds more
+        # than one `or_tools` plan at a time; a concurrent build waits in the executor's queue.
+        plan_pool = ProcessPoolExecutor(max_workers=1)
         try:
             # Inside `try`: a client that fails to build or a malformed data file stops
             # the startup, and whatever was opened before it still gets closed.
@@ -56,9 +68,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app_settings, db_pool, nominatim
             )
             app.state.ticket_statuses = create_ticket_statuses(db_pool)
+            app.state.plan_builder, app.state.plan_reader = create_plan_services(
+                app_settings, db_pool, app.state.region_lists.regions, osrm_client, plan_pool
+            )
             logger.info("app_started", mode=app_settings.app_mode)
             yield
         finally:
+            plan_pool.shutdown(cancel_futures=True)
             if nominatim is not None:
                 await nominatim.aclose()
             if osrm_client is not None:
@@ -121,5 +137,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(regions_router)
     app.include_router(data_router)
+    app.include_router(plan_router)
     add_not_implemented_stub(app)
     return app

@@ -24,6 +24,17 @@ FROM tickets
 WHERE region_id = :region_id
 ORDER BY id;
 
+-- name: list_open_tickets_by_region(region_id)
+-- Open tickets of one region (excludes completed and cancelled), in id order — the input
+-- of plan building. Columns as list_tickets_by_region.
+SELECT id, external_id, type_bk, type_hd, required_skill, required_vehicle,
+       priority, district, address,
+       ST_Y(geom) AS lat, ST_X(geom) AS lon,
+       window_start, window_end, duration_min, status, received_at
+FROM tickets
+WHERE region_id = :region_id AND status NOT IN ('completed', 'cancelled')
+ORDER BY id;
+
 -- name: lock_ticket(ticket_id)^
 -- One ticket by id, row locked until the transaction ends: a concurrent status change of
 -- the same ticket waits and then reads the status this one wrote. None if there is no

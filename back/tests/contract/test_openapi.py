@@ -1,16 +1,33 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
 import schemathesis
 from schemathesis import Case, DataGenerationMethod
 
-from src.api.deps import get_loader, get_region_lists, get_ticket_statuses
+from src.api.deps import (
+    get_loader,
+    get_plan_builder,
+    get_plan_reader,
+    get_region_lists,
+    get_ticket_statuses,
+)
 from src.app import create_app
 from src.config import Settings
 from src.domain import Engineer, Ticket
 from src.errors import InvalidInput
 from src.service.loader import LoadResult
-from tests.api.region_fakes import FakeLists, FakeLoader, FakeStatuses
+from src.service.plan_builder import QueuedPlan
+from src.service.plan_reader import PlanRead
+from tests.api.region_fakes import (
+    ENGINEER,
+    TICKET,
+    FakeLists,
+    FakeLoader,
+    FakePlanBuilder,
+    FakePlanReader,
+    FakeStatuses,
+)
 
 # specs/openapi.yaml declares `openapi: 3.1.0` (profile.yaml, stack.contract). 3.1
 # support in schemathesis is gated behind an experimental flag, without which schema
@@ -48,6 +65,22 @@ class _Loader(FakeLoader):
         return await super().load(region, source, data)
 
 
+class _PlanBuilder(FakePlanBuilder):
+    async def enqueue(self, region: str, plan_date: date, algorithm: str) -> QueuedPlan:
+        _check_region(region)
+        return await super().enqueue(region, plan_date, algorithm)
+
+
+_DONE_PLAN = PlanRead(
+    plan_id=1,
+    algorithm="or_tools",
+    status="done",
+    failed_reason=None,
+    engineers=(),
+    unassigned=(),
+)
+
+
 _app = create_app(
     settings=Settings(
         database_url="postgresql://test/test",
@@ -59,9 +92,15 @@ _app = create_app(
 # The data services stand in for the database: the positive cases then check the shape
 # of successful answers, which a missing database would turn into `503`.
 _lists, _loader, _statuses = _Lists(), _Loader(), FakeStatuses()
+_plan_builder = _PlanBuilder(
+    queued=QueuedPlan(plan_id=1, algorithm="or_tools", tickets=[TICKET], engineers=[ENGINEER])
+)
+_plan_reader = FakePlanReader(_DONE_PLAN)
 _app.dependency_overrides[get_region_lists] = lambda: _lists
 _app.dependency_overrides[get_loader] = lambda: _loader
 _app.dependency_overrides[get_ticket_statuses] = lambda: _statuses
+_app.dependency_overrides[get_plan_builder] = lambda: _plan_builder
+_app.dependency_overrides[get_plan_reader] = lambda: _plan_reader
 
 # Negative cases send requests that break the spec's constraints; the contract
 # answers them with `400`, never `422`.
