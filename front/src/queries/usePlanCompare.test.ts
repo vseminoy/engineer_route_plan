@@ -1,30 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { comparePlanMetrics } from './usePlanCompare';
-import type { PlanMetrics } from '@/types/domain';
+import { planCompareReady } from './usePlanCompare';
 
-function metrics(engineersUsed: number, totalDistanceKm: number): PlanMetrics {
-  return {
-    engineersUsed,
-    totalDistanceKm,
-    distanceByEngineer: {},
-    assignedCount: 0,
-    unassignedCount: 0,
-    idleTimeByEngineerMin: {}
-  };
-}
-
-describe('comparePlanMetrics', () => {
-  it('is undefined while either plan has no metrics yet (still running or failed)', () => {
-    expect(comparePlanMetrics(undefined, metrics(9, 187.3))).toBeUndefined();
-    expect(comparePlanMetrics(metrics(9, 187.3), undefined)).toBeUndefined();
+describe('planCompareReady', () => {
+  it('is false while either plan is still running or failed', () => {
+    expect(planCompareReady(42, 43, 'running', 'done')).toBe(false);
+    expect(planCompareReady(42, 43, 'done', 'failed')).toBe(false);
   });
 
-  it('computes the delta (main - baseline) for both mandatory metrics once both are done', () => {
-    const compare = comparePlanMetrics(metrics(9, 187.3), metrics(13, 244.9));
+  it('is false with no baseline plan selected yet', () => {
+    expect(planCompareReady(42, null, 'done', 'done')).toBe(false);
+  });
 
-    expect(compare).toEqual({
-      engineersUsed: { main: 9, baseline: 13, delta: -4 },
-      totalDistanceKm: { main: 187.3, baseline: 244.9, delta: expect.closeTo(-57.6, 5) }
-    });
+  it('is true once both the main and baseline plans are done', () => {
+    expect(planCompareReady(42, 43, 'done', 'done')).toBe(true);
   });
 });

@@ -4,6 +4,7 @@
 
 - [`src/api/client.ts` — разбор ответа с ошибкой](#srcapiclientts--разбор-ответа-с-ошибкой)
 - [`src/api/mappers.ts` — маппинг сгенерированных типов в доменные](#srcapimappersts--маппинг-сгенерированных-типов-в-доменные)
+- [`src/api/mappers.ts` — `mapPlanCompare`](#srcapimappersts--mapplancompare)
 - [`src/api/endpoints.ts` — `setTicketStatus`](#srcapiendpointsts--setticketstatus)
 
 ---
@@ -35,7 +36,17 @@
 | `translates snake_case counts and invalid rows into the domain shape` | `mapDataLoadResult` на ответе с `rows_invalid` | доменный `DataLoadResult` с `engineersCount`/`ticketsCount`/`rowsTotal`/`rowsSkipped`/`invalidRows` |
 | `maps a running build to a status with no engineers/unassigned/metrics yet` | `mapPlan` на `{status: 'running'}` | `Plan` без `engineers`/`unassigned`/`metrics`/`failedReason` |
 | `maps a failed build to its reason, with no engineers/unassigned/metrics` | `mapPlan` на `{status: 'failed', failed_reason: 'osrm_unavailable'}` | `Plan` с `failedReason`, без `engineers`/`unassigned`/`metrics` |
-| `derives the mandatory comparison metrics from engineers/unassigned when done, and keeps the naive arrival time as-is` | `mapPlan` на `{status: 'done', engineers: [...], unassigned: [...]}` (сервер метрик не присылает) | `metrics` посчитаны из `engineers`/`unassigned` (`engineersUsed`, `totalDistanceKm`, `distanceByEngineer`, `assignedCount`, `unassignedCount`, `idleTimeByEngineerMin`); `plannedArrival` — та же строка без сдвига |
+| `maps a failed build stopped by the server-shutdown sweep` | `mapPlan` на `{status: 'failed', failed_reason: 'shutdown'}` | `failedReason` равен `'shutdown'` |
+| `maps engineers/unassigned/metrics straight from the API response when done, keeping the naive arrival time as-is` | `mapPlan` на `{status: 'done', engineers: [...], unassigned: [...], metrics: {...}}` (сервер теперь всегда присылает `metrics`) | `metrics` — прямой camelCase-маппинг присланного объекта, без клиентского пересчёта; `plannedArrival` — та же строка без сдвига |
+
+## `src/api/mappers.ts` — `mapPlanCompare`
+
+Файл: `mappers.test.ts` (`vitest`), там же, где остальные мапперы.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `reshapes the compare_plan entries into the fixed engineersUsed/totalDistanceKm pair` | Массив `PlanComparisonEntry` из двух записей (`engineers_used`, `total_distance_km`) | Доменный `PlanCompare` — `{main, baseline, delta}` для каждой из двух метрик |
+| `throws if the response is missing a mandatory metric` | Массив с одной записью (`total_distance_km` отсутствует) | Функция бросает исключение — ответ backend, отступающий от контракта, не должен тихо превратиться в `undefined` |
 
 ## `src/api/endpoints.ts` — `setTicketStatus`
 

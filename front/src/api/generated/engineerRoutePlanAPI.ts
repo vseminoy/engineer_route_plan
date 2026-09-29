@@ -5,16 +5,23 @@
  * OpenAPI spec version: 0.1.0
  */
 import type {
+  ComparePlanParams,
   DataLoadResult,
   DemoDataRequest,
   Engineer,
+  EngineerSet,
+  EngineerSetCreateRequest,
   HealthStatus,
+  ListEngineerSetsParams,
   ListEngineersParams,
   ListTicketsParams,
   Plan,
   PlanBuildRequest,
+  PlanComparisonEntry,
+  PlanReplanResult,
   Region,
   RegionDataUpload,
+  ReplanEventRequest,
   Ticket,
   TicketStatusChange,
   ValidationError
@@ -278,6 +285,220 @@ const res = await fetch(getLoadDemoDataUrl(),
 
 
 
+export type listEngineerSetsResponse200 = {
+  data: EngineerSet[]
+  status: 200
+}
+
+export type listEngineerSetsResponse400 = {
+  data: ValidationError
+  status: 400
+}
+
+export type listEngineerSetsResponse500 = {
+  data: void
+  status: 500
+}
+
+export type listEngineerSetsResponse503 = {
+  data: void
+  status: 503
+}
+
+export type listEngineerSetsResponseSuccess = (listEngineerSetsResponse200) & {
+  headers: Headers;
+};
+export type listEngineerSetsResponseError = (listEngineerSetsResponse400 | listEngineerSetsResponse500 | listEngineerSetsResponse503) & {
+  headers: Headers;
+};
+
+export type listEngineerSetsResponse = (listEngineerSetsResponseSuccess | listEngineerSetsResponseError)
+
+export const getListEngineerSetsUrl = (params: ListEngineerSetsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/v1/engineer-sets?${stringifiedParams}` : `/api/v1/engineer-sets`
+}
+
+/**
+ * Все наборы бригад выбранного региона: набор `default` (создаётся первой загрузкой данных региона, его нельзя удалить) и, если созданы, дополнительные наборы. Регион без загруженных данных — пустой список.
+ * @summary Наборы бригад региона
+ */
+export const listEngineerSets = async (params: ListEngineerSetsParams, options?: RequestInit): Promise<listEngineerSetsResponse> => {
+
+  const res = await fetch(getListEngineerSetsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listEngineerSetsResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listEngineerSetsResponse
+}
+
+
+
+export type createEngineerSetResponse201 = {
+  data: EngineerSet
+  status: 201
+}
+
+export type createEngineerSetResponse400 = {
+  data: ValidationError
+  status: 400
+}
+
+export type createEngineerSetResponse409 = {
+  data: void
+  status: 409
+}
+
+export type createEngineerSetResponse500 = {
+  data: void
+  status: 500
+}
+
+export type createEngineerSetResponse503 = {
+  data: void
+  status: 503
+}
+
+export type createEngineerSetResponseSuccess = (createEngineerSetResponse201) & {
+  headers: Headers;
+};
+export type createEngineerSetResponseError = (createEngineerSetResponse400 | createEngineerSetResponse409 | createEngineerSetResponse500 | createEngineerSetResponse503) & {
+  headers: Headers;
+};
+
+export type createEngineerSetResponse = (createEngineerSetResponseSuccess | createEngineerSetResponseError)
+
+export const getCreateEngineerSetUrl = () => {
+
+
+
+
+  return `/api/v1/engineer-sets`
+}
+
+/**
+ * Создаёт набор тем же генератором, что и набор `default`, со своими параметрами (`engineers`, `morning_share`, `evening_share`, `seed`): бригад на весь день (их не меньше 4) вместе — все навыки и все виды транспорта, у каждой бригады 1–3 навыка, смены — в пределах суток. Регион должен иметь загруженные данные — иначе 400. План и baseline по набору строятся отдельным запросом `POST /plan/build` с этим `engineer_set_id`.
+ * @summary Создать дополнительный набор бригад региона
+ */
+export const createEngineerSet = async (engineerSetCreateRequest: EngineerSetCreateRequest, options?: RequestInit): Promise<createEngineerSetResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateEngineerSetUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(engineerSetCreateRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createEngineerSetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createEngineerSetResponse
+}
+
+
+
+export type deleteEngineerSetResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deleteEngineerSetResponse404 = {
+  data: void
+  status: 404
+}
+
+export type deleteEngineerSetResponse409 = {
+  data: void
+  status: 409
+}
+
+export type deleteEngineerSetResponse500 = {
+  data: void
+  status: 500
+}
+
+export type deleteEngineerSetResponse503 = {
+  data: void
+  status: 503
+}
+
+export type deleteEngineerSetResponseSuccess = (deleteEngineerSetResponse204) & {
+  headers: Headers;
+};
+export type deleteEngineerSetResponseError = (deleteEngineerSetResponse404 | deleteEngineerSetResponse409 | deleteEngineerSetResponse500 | deleteEngineerSetResponse503) & {
+  headers: Headers;
+};
+
+export type deleteEngineerSetResponse = (deleteEngineerSetResponseSuccess | deleteEngineerSetResponseError)
+
+export const getDeleteEngineerSetUrl = (engineerSetId: number,) => {
+
+
+
+
+  return `/api/v1/engineer-sets/${engineerSetId}`
+}
+
+/**
+ * Удаляет набор, его бригады, его планы (в т.ч. baseline) и их визиты и события перепланирования, в одной транзакции. Набор `default` удалить нельзя — 409: у региона всегда должен быть хотя бы один набор.
+ * @summary Удалить дополнительный набор бригад вместе с его планами
+ */
+export const deleteEngineerSet = async (engineerSetId: number, options?: RequestInit): Promise<deleteEngineerSetResponse> => {
+
+  const res = await fetch(getDeleteEngineerSetUrl(engineerSetId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: deleteEngineerSetResponse['data'] = body ? JSON.parse(body) : undefined
+  return { data, status: res.status, headers: res.headers } as deleteEngineerSetResponse
+}
+
+
+
 export type listEngineersResponse200 = {
   data: Engineer[]
   status: 200
@@ -323,8 +544,8 @@ export const getListEngineersUrl = (params: ListEngineersParams,) => {
 }
 
 /**
- * Бригады только выбранного региона, по возрастанию id. id бригады не меняется при повторной загрузке данных региона. Регион без загруженных данных — пустой список.
- * @summary Бригады региона
+ * Бригады только выбранного региона, по возрастанию id. Без engineer_set_id — бригады набора `default`; с engineer_set_id — бригады этого набора, если он принадлежит региону. id бригады не меняется при повторной загрузке данных региона. Регион без загруженных данных — пустой список.
+ * @summary Бригады региона или одного набора бригад
  */
 export const listEngineers = async (params: ListEngineersParams, options?: RequestInit): Promise<listEngineersResponse> => {
 
@@ -547,6 +768,8 @@ export const getBuildPlanUrl = () => {
  *
  * Регион должен иметь загруженные данные (`POST /data/upload` или `POST /data/demo`) — иначе 400. Каждая открытая заявка региона должна приходиться на дату plan_date (окно заявки — из файла одной загрузки, все заявки на один день) — несовпадение хотя бы одной заявки отклоняет весь запрос 400, план не ставится в очередь.
  *
+ * `engineer_set_id` выбирает, по какому набору бригад региона строить план (без него — набор default); план хранит свой набор, и перепланирование этого плана идёт по бригадам того же набора.
+ *
  * Число точек будущей маршрутной матрицы (бригады + заявки) проверяется до постановки в очередь — больше предела OSRM отклоняет запрос 400. Время в пути и расстояние считаются по дорожному графу (OSRM) уже в фоне, отдельно для каждого типа транспорта бригад региона. Основной алгоритм выполняется в одном процессе на весь сервер — конкурентное построение встаёт в очередь исполнителя, а не запускается параллельно вторым процессом.
  *
  * Плановое прибытие — расчётное время в пути от предыдущей точки маршрута (или от точки старта бригады) плюс текущее время; норматив «дорога 20 минут» здесь не используется. Причина каждой неназначенной заявки определяется процедурой атрибуции (навык → транспорт → окно/смена → «все подходящие бригады заняты»), а не первой проваленной проверкой.
@@ -591,6 +814,11 @@ export type getPlanResponse200 = {
   status: 200
 }
 
+export type getPlanResponse400 = {
+  data: ValidationError
+  status: 400
+}
+
 export type getPlanResponse404 = {
   data: void
   status: 404
@@ -609,7 +837,7 @@ export type getPlanResponse503 = {
 export type getPlanResponseSuccess = (getPlanResponse200) & {
   headers: Headers;
 };
-export type getPlanResponseError = (getPlanResponse404 | getPlanResponse500 | getPlanResponse503) & {
+export type getPlanResponseError = (getPlanResponse400 | getPlanResponse404 | getPlanResponse500 | getPlanResponse503) & {
   headers: Headers;
 };
 
@@ -643,6 +871,173 @@ export const getPlan = async (planId: number, options?: RequestInit): Promise<ge
 
   const data: getPlanResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getPlanResponse
+}
+
+
+
+export type comparePlanResponse200 = {
+  data: PlanComparisonEntry[]
+  status: 200
+}
+
+export type comparePlanResponse400 = {
+  data: ValidationError
+  status: 400
+}
+
+export type comparePlanResponse404 = {
+  data: void
+  status: 404
+}
+
+export type comparePlanResponse500 = {
+  data: void
+  status: 500
+}
+
+export type comparePlanResponse503 = {
+  data: void
+  status: 503
+}
+
+export type comparePlanResponseSuccess = (comparePlanResponse200) & {
+  headers: Headers;
+};
+export type comparePlanResponseError = (comparePlanResponse400 | comparePlanResponse404 | comparePlanResponse500 | comparePlanResponse503) & {
+  headers: Headers;
+};
+
+export type comparePlanResponse = (comparePlanResponseSuccess | comparePlanResponseError)
+
+export const getComparePlanUrl = (planId: number,
+    params: ComparePlanParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/v1/plan/${planId}/compare?${stringifiedParams}` : `/api/v1/plan/${planId}/compare`
+}
+
+/**
+ * Сравнивает план из пути запроса (обычно `algorithm=or_tools`) с baseline-планом (`baseline_plan_id`, обычно `algorithm=baseline_fcfs`) по обязательным метрикам (`engineers_used`, `total_distance_km`) — по одной записи на каждую. Оба плана должны быть в состоянии `status=done`: метрики строящегося или не сложившегося плана не определены. Оба плана должны быть одного набора бригад (`engineer_set_id`) — иначе сравнение бессмысленно: у планов разных наборов разное число бригад. `idle_time` в сравнение не входит — она только для отображения (см. `PlanMetrics.idle_time_by_engineer_min`).
+ * @summary Сравнить обязательные метрики плана с baseline-планом
+ */
+export const comparePlan = async (planId: number,
+    params: ComparePlanParams, options?: RequestInit): Promise<comparePlanResponse> => {
+
+  const res = await fetch(getComparePlanUrl(planId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: comparePlanResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as comparePlanResponse
+}
+
+
+
+export type replanPlanResponse200 = {
+  data: PlanReplanResult
+  status: 200
+}
+
+export type replanPlanResponse400 = {
+  data: ValidationError
+  status: 400
+}
+
+export type replanPlanResponse404 = {
+  data: void
+  status: 404
+}
+
+export type replanPlanResponse409 = {
+  data: void
+  status: 409
+}
+
+export type replanPlanResponse500 = {
+  data: void
+  status: 500
+}
+
+export type replanPlanResponse503 = {
+  data: void
+  status: 503
+}
+
+export type replanPlanResponseSuccess = (replanPlanResponse200) & {
+  headers: Headers;
+};
+export type replanPlanResponseError = (replanPlanResponse400 | replanPlanResponse404 | replanPlanResponse409 | replanPlanResponse500 | replanPlanResponse503) & {
+  headers: Headers;
+};
+
+export type replanPlanResponse = (replanPlanResponseSuccess | replanPlanResponseError)
+
+export const getReplanPlanUrl = (planId: number,) => {
+
+
+
+
+  return `/api/v1/plan/${planId}/replan`
+}
+
+/**
+ * Синхронно пересчитывает часть плана-родителя (`plan_id`) по одному событию перепланирования (Contract Net: объявление задания бригадам-кандидатам, локальные ставки, победитель с минимальной ставкой) и сохраняет результат новым планом с `parent_plan_id = plan_id`. Новый план наследует `engineer_set_id` плана-родителя — перепланирование пересчитывает бригады того же набора, набор сменить нельзя. План-родитель должен быть в состоянии `status=done` — иначе `400`. Пересчёт идёт от состояния бригад на момент `triggered_at` события: заявки `completed`/`cancelled` исключены, `in_progress` зафиксирована (бригада освобождается не раньше планового окончания этой заявки, начатая работа не прерывается), `en_route` и ещё не начатые заявки можно переставить. Затрагиваются только маршруты бригад, на которые повлияло событие — план остальных бригад переносится без изменений. Ответ несёт блок `diff` — что именно изменилось относительно `plan_id`.
+ *
+ * `new_urgent_ticket` — новая аварийная заявка. Кандидаты — бригады с навыком `emergency`; побеждает ставка с минимальным временем прибытия среди успевающих к `triggered_at + reaction_min` (60–120, по умолчанию 120), иначе — минимальное время прибытия среди всех кандидатов (превышение реакции отражается в `explanation` визита). Сначала — вставка в маршрут победителя без нарушения окон уже стоящих там заявок; если это невозможно — вытесняется одна не начатая заявка победителя более низкого приоритета, которая повторно торгуется среди остальных бригад без нарушения её собственного окна (каскад глубиной 1 — второе вытеснение не выполняется, вытесненная заявка, которую не удалось пристроить, уходит в `unassigned`). Если ни одна бригада не обладает навыком `emergency` — заявка уходит в `unassigned`. Заявке сервер сам присваивает `required_skill=emergency`, `priority=1`, `duration_min=80` (время на объекте), `received_at = triggered_at` и окно `[triggered_at, конец даты плана]` — окно здесь не сужает выбор бригады, целевое время реакции задаёт только `reaction_min`.
+ *
+ * `new_ticket` — новая обычная заявка в течение дня (необязательная возможность): только вставка в свободный интервал маршрута бригады-кандидата, без объявления задания и без вытеснения. `required_skill`, `priority` и `duration_min` определяются парой (`type_bk`, `type_hd`) по той же таблице соответствия типов, что и при загрузке файла — неизвестная пара типов отклоняется `400` ещё до поиска бригады. Кандидаты — бригады с этим навыком (и транспортом, если задан); среди их фактических маршрутов ищется свободный интервал, где прибытие на новую заявку попадает в её окно и не отодвигает ни один уже стоящий визит бригады; побеждает интервал с минимальным временем прибытия. Не найдено ни одного интервала — заявка уходит в `unassigned`, план остальных бригад не меняется.
+ *
+ * `ticket_cancelled` — заявка уже отменена (`PATCH /tickets/{ticket_id}/status`, `status=cancelled`) и убирается из маршрута бригады, на которую была назначена; последующие визиты этой бригады сдвигаются по времени; остальные бригады не пересчитываются.
+ * @summary Перепланировать бригады по одному событию дня
+ */
+export const replanPlan = async (planId: number,
+    replanEventRequest: ReplanEventRequest, options?: RequestInit): Promise<replanPlanResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getReplanPlanUrl(planId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(replanEventRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: replanPlanResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as replanPlanResponse
 }
 
 

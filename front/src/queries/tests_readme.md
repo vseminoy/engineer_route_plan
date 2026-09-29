@@ -26,11 +26,14 @@
 
 Файл: `usePlanCompare.test.ts` (`vitest`).
 
-> Тестируется чистая функция `comparePlanMetrics`, а не сам хук — она и есть решение
-> «есть с чем сравнивать или ещё нет», `usePlanCompare` только достаёт `metrics` из кэша
-> обоих планов и передаёт их сюда.
+> Тестируется чистая функция `planCompareReady`, а не сам хук: она и есть решение
+> «звать `GET /plan/{id}/compare` или ещё нет» — backend отклоняет сравнение `400`,
+> если хотя бы один из двух планов не в статусе `done`. Сам запрос и разбор ответа —
+> `comparePlan` (`api/endpoints.ts`) и `mapPlanCompare` (`api/mappers.ts`, тесты в
+> `api/mappers.test.ts`).
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `is undefined while either plan has no metrics yet (still running or failed)` | `main`/`baseline` метрики — то `undefined`, то заданы | `undefined` |
-| `computes the delta (main - baseline) for both mandatory metrics once both are done` | Обе метрики заданы (`9`/`187.3` и `13`/`244.9`) | `{main, baseline, delta}` для `engineersUsed` и `totalDistanceKm` |
+| `is false while either plan is still running or failed` | `main`/`baseline` статусы — не оба `done` | `false` |
+| `is false with no baseline plan selected yet` | `baselinePlanId` — `null` | `false` |
+| `is true once both the main and baseline plans are done` | Оба статуса — `done` | `true` |

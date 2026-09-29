@@ -71,7 +71,7 @@ export const uploadRegionDataResponseRowsSkippedMin = 0;
 
 export const UploadRegionDataResponse = zod.strictObject({
   "region": zod.string().min(1).max(uploadRegionDataResponseRegionMax).regex(uploadRegionDataResponseRegionRegExp).describe('Код региона — латиница в нижнем регистре, цифры и «_»; начинается с буквы'),
-  "engineers": zod.int().min(uploadRegionDataResponseEngineersMin).describe('Сколько бригад теперь у региона'),
+  "engineers": zod.int().min(uploadRegionDataResponseEngineersMin).describe('Сколько бригад теперь во всех наборах региона вместе'),
   "tickets": zod.int().min(1).describe('Сколько заявок загружено'),
   "rows_total": zod.int().min(uploadRegionDataResponseRowsTotalMin).describe('Строк данных в файле, без заголовка CSV'),
   "rows_skipped": zod.int().min(uploadRegionDataResponseRowsSkippedMin).describe('Пропущено строк, которые не заявки — пустых и служебной строки адреса офиса'),
@@ -113,7 +113,7 @@ export const loadDemoDataResponseRowsSkippedMin = 0;
 
 export const LoadDemoDataResponse = zod.strictObject({
   "region": zod.string().min(1).max(loadDemoDataResponseRegionMax).regex(loadDemoDataResponseRegionRegExp).describe('Код региона — латиница в нижнем регистре, цифры и «_»; начинается с буквы'),
-  "engineers": zod.int().min(loadDemoDataResponseEngineersMin).describe('Сколько бригад теперь у региона'),
+  "engineers": zod.int().min(loadDemoDataResponseEngineersMin).describe('Сколько бригад теперь во всех наборах региона вместе'),
   "tickets": zod.int().min(1).describe('Сколько заявок загружено'),
   "rows_total": zod.int().min(loadDemoDataResponseRowsTotalMin).describe('Строк данных в файле, без заголовка CSV'),
   "rows_skipped": zod.int().min(loadDemoDataResponseRowsSkippedMin).describe('Пропущено строк, которые не заявки — пустых и служебной строки адреса офиса'),
@@ -126,17 +126,125 @@ export const LoadDemoDataResponse = zod.strictObject({
 
 
 /**
- * Бригады только выбранного региона, по возрастанию id. id бригады не меняется при повторной загрузке данных региона. Регион без загруженных данных — пустой список.
- * @summary Бригады региона
+ * Все наборы бригад выбранного региона: набор `default` (создаётся первой загрузкой данных региона, его нельзя удалить) и, если созданы, дополнительные наборы. Регион без загруженных данных — пустой список.
+ * @summary Наборы бригад региона
+ */
+export const listEngineerSetsQueryRegionMax = 50;
+
+
+export const listEngineerSetsQueryRegionRegExp = new RegExp('^[a-z][a-z0-9_]*$');
+
+
+export const ListEngineerSetsQueryParams = zod.strictObject({
+  "region": zod.string().min(1).max(listEngineerSetsQueryRegionMax).regex(listEngineerSetsQueryRegionRegExp).describe('Код региона из списка регионов. Код, которого нет в конфигурации сервера, — ошибка 400 у параметра region.')
+})
+
+export const listEngineerSetsResponseEngineersMax = 30;
+
+export const listEngineerSetsResponseMorningShareMin = 0;
+export const listEngineerSetsResponseMorningShareMax = 1;
+
+export const listEngineerSetsResponseEveningShareMin = 0;
+export const listEngineerSetsResponseEveningShareMax = 1;
+
+
+
+export const ListEngineerSetsResponseItem = zod.strictObject({
+  "id": zod.int().describe('Идентификатор набора бригад на сервере'),
+  "name": zod.string().describe('Название набора, уникальное в регионе; у набора kind=demo всегда "default"'),
+  "kind": zod.enum(['demo', 'generated']).describe('demo — набор default, создаётся первой загрузкой данных региона и обновляется вместе с ней (как сегодняшние бригады региона); удалить нельзя. generated — дополнительный набор, создан POST /engineer-sets.'),
+  "engineers": zod.int().min(1).max(listEngineerSetsResponseEngineersMax).describe('Сколько бригад в наборе'),
+  "morning_share": zod.number().min(listEngineerSetsResponseMorningShareMin).max(listEngineerSetsResponseMorningShareMax).describe('Доля бригад на утренней смене, которой создан набор'),
+  "evening_share": zod.number().min(listEngineerSetsResponseEveningShareMin).max(listEngineerSetsResponseEveningShareMax).describe('Доля бригад на вечерней смене, которой создан набор'),
+  "seed": zod.string().describe('Зерно генератора, которым создан набор'),
+  "description": zod.string().describe('Параметры генератора набора текстом для пользователя (число бригад, доли смен, seed) — чтобы отличить наборы одного региона друг от друга на фронтенде')
+})
+export const ListEngineerSetsResponse = zod.array(ListEngineerSetsResponseItem)
+
+
+/**
+ * Создаёт набор тем же генератором, что и набор `default`, со своими параметрами (`engineers`, `morning_share`, `evening_share`, `seed`): бригад на весь день (их не меньше 4) вместе — все навыки и все виды транспорта, у каждой бригады 1–3 навыка, смены — в пределах суток. Регион должен иметь загруженные данные — иначе 400. План и baseline по набору строятся отдельным запросом `POST /plan/build` с этим `engineer_set_id`.
+ * @summary Создать дополнительный набор бригад региона
+ */
+export const createEngineerSetBodyRegionMax = 50;
+
+
+export const createEngineerSetBodyRegionRegExp = new RegExp('^[a-z][a-z0-9_]*$');
+export const createEngineerSetBodyNameMax = 100;
+
+export const createEngineerSetBodyEngineersMax = 30;
+
+export const createEngineerSetBodyMorningShareMin = 0;
+export const createEngineerSetBodyMorningShareMax = 1;
+
+export const createEngineerSetBodyEveningShareMin = 0;
+export const createEngineerSetBodyEveningShareMax = 1;
+
+export const createEngineerSetBodySeedMax = 50;
+
+
+
+export const CreateEngineerSetBody = zod.strictObject({
+  "region": zod.string().min(1).max(createEngineerSetBodyRegionMax).regex(createEngineerSetBodyRegionRegExp).describe('Код региона — латиница в нижнем регистре, цифры и «_»; начинается с буквы'),
+  "name": zod.string().min(1).max(createEngineerSetBodyNameMax).describe('Название набора, уникальное в регионе; "default" занято набором региона, если регион загружен'),
+  "engineers": zod.int().min(1).max(createEngineerSetBodyEngineersMax).describe('Сколько бригад создать'),
+  "morning_share": zod.number().min(createEngineerSetBodyMorningShareMin).max(createEngineerSetBodyMorningShareMax).describe('Доля бригад на утренней смене (округляется вниз); вместе с evening_share не должна оставлять меньше 4 бригад на весь день'),
+  "evening_share": zod.number().min(createEngineerSetBodyEveningShareMin).max(createEngineerSetBodyEveningShareMax).describe('Доля бригад на вечерней смене (округляется вниз)'),
+  "seed": zod.string().min(1).max(createEngineerSetBodySeedMax).describe('Зерно генератора; тот же seed и те же остальные параметры дают тот же набор')
+})
+
+export const createEngineerSetResponseEngineersMax = 30;
+
+export const createEngineerSetResponseMorningShareMin = 0;
+export const createEngineerSetResponseMorningShareMax = 1;
+
+export const createEngineerSetResponseEveningShareMin = 0;
+export const createEngineerSetResponseEveningShareMax = 1;
+
+
+
+export const CreateEngineerSetResponse = zod.strictObject({
+  "id": zod.int().describe('Идентификатор набора бригад на сервере'),
+  "name": zod.string().describe('Название набора, уникальное в регионе; у набора kind=demo всегда "default"'),
+  "kind": zod.enum(['demo', 'generated']).describe('demo — набор default, создаётся первой загрузкой данных региона и обновляется вместе с ней (как сегодняшние бригады региона); удалить нельзя. generated — дополнительный набор, создан POST /engineer-sets.'),
+  "engineers": zod.int().min(1).max(createEngineerSetResponseEngineersMax).describe('Сколько бригад в наборе'),
+  "morning_share": zod.number().min(createEngineerSetResponseMorningShareMin).max(createEngineerSetResponseMorningShareMax).describe('Доля бригад на утренней смене, которой создан набор'),
+  "evening_share": zod.number().min(createEngineerSetResponseEveningShareMin).max(createEngineerSetResponseEveningShareMax).describe('Доля бригад на вечерней смене, которой создан набор'),
+  "seed": zod.string().describe('Зерно генератора, которым создан набор'),
+  "description": zod.string().describe('Параметры генератора набора текстом для пользователя (число бригад, доли смен, seed) — чтобы отличить наборы одного региона друг от друга на фронтенде')
+})
+
+
+/**
+ * Удаляет набор, его бригады, его планы (в т.ч. baseline) и их визиты и события перепланирования, в одной транзакции. Набор `default` удалить нельзя — 409: у региона всегда должен быть хотя бы один набор.
+ * @summary Удалить дополнительный набор бригад вместе с его планами
+ */
+export const deleteEngineerSetPathEngineerSetIdMax = 9223372036854776000;
+
+
+
+export const DeleteEngineerSetParams = zod.strictObject({
+  "engineer_set_id": zod.int().min(1).max(deleteEngineerSetPathEngineerSetIdMax).describe('Идентификатор набора бригад на сервере')
+})
+
+export const DeleteEngineerSetResponse = zod.void()
+
+
+/**
+ * Бригады только выбранного региона, по возрастанию id. Без engineer_set_id — бригады набора `default`; с engineer_set_id — бригады этого набора, если он принадлежит региону. id бригады не меняется при повторной загрузке данных региона. Регион без загруженных данных — пустой список.
+ * @summary Бригады региона или одного набора бригад
  */
 export const listEngineersQueryRegionMax = 50;
 
 
 export const listEngineersQueryRegionRegExp = new RegExp('^[a-z][a-z0-9_]*$');
+export const listEngineersQueryEngineerSetIdMax = 9223372036854776000;
+
 
 
 export const ListEngineersQueryParams = zod.strictObject({
-  "region": zod.string().min(1).max(listEngineersQueryRegionMax).regex(listEngineersQueryRegionRegExp).describe('Код региона из списка регионов. Код, которого нет в конфигурации сервера, — ошибка 400 у параметра region.')
+  "region": zod.string().min(1).max(listEngineersQueryRegionMax).regex(listEngineersQueryRegionRegExp).describe('Код региона из списка регионов. Код, которого нет в конфигурации сервера, — ошибка 400 у параметра region.'),
+  "engineer_set_id": zod.int().min(1).max(listEngineersQueryEngineerSetIdMax).optional().describe('Набор бригад региона. Без параметра — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у параметра engineer_set_id.')
 })
 
 export const listEngineersResponseSkillsMax = 3;
@@ -304,6 +412,8 @@ export const ChangeTicketStatusResponse = zod.strictObject({
  *
  * Регион должен иметь загруженные данные (`POST /data/upload` или `POST /data/demo`) — иначе 400. Каждая открытая заявка региона должна приходиться на дату plan_date (окно заявки — из файла одной загрузки, все заявки на один день) — несовпадение хотя бы одной заявки отклоняет весь запрос 400, план не ставится в очередь.
  *
+ * `engineer_set_id` выбирает, по какому набору бригад региона строить план (без него — набор default); план хранит свой набор, и перепланирование этого плана идёт по бригадам того же набора.
+ *
  * Число точек будущей маршрутной матрицы (бригады + заявки) проверяется до постановки в очередь — больше предела OSRM отклоняет запрос 400. Время в пути и расстояние считаются по дорожному графу (OSRM) уже в фоне, отдельно для каждого типа транспорта бригад региона. Основной алгоритм выполняется в одном процессе на весь сервер — конкурентное построение встаёт в очередь исполнителя, а не запускается параллельно вторым процессом.
  *
  * Плановое прибытие — расчётное время в пути от предыдущей точки маршрута (или от точки старта бригады) плюс текущее время; норматив «дорога 20 минут» здесь не используется. Причина каждой неназначенной заявки определяется процедурой атрибуции (навык → транспорт → окно/смена → «все подходящие бригады заняты»), а не первой проваленной проверкой.
@@ -318,57 +428,82 @@ export const buildPlanBodyPlanDateMax = 10;
 
 
 export const buildPlanBodyPlanDateRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+export const buildPlanBodyEngineerSetIdDefault = null;
+export const buildPlanBodyEngineerSetIdMax = 9223372036854776000;
+
 
 
 export const BuildPlanBody = zod.strictObject({
   "region": zod.string().min(1).max(buildPlanBodyRegionMax).regex(buildPlanBodyRegionRegExp).describe('Код региона — латиница в нижнем регистре, цифры и «_»; начинается с буквы'),
   "plan_date": zod.string().min(buildPlanBodyPlanDateMin).max(buildPlanBodyPlanDateMax).regex(buildPlanBodyPlanDateRegExp).describe('Дата в местном времени региона, ISO-8601 без времени и часового пояса: 2026-08-17. Месяц 01–12, день 01–31; несуществующую дату (2026-02-30) отклоняет сервер ответом 400.'),
-  "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Чем строится план: or_tools — основной алгоритм (RoutingModel, трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый план для сравнения (назначение по порядку поступления заявок)')
+  "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Чем строится план: or_tools — основной алгоритм (RoutingModel, трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый план для сравнения (назначение по порядку поступления заявок)'),
+  "engineer_set_id": zod.int().min(1).max(buildPlanBodyEngineerSetIdMax).nullish().default(buildPlanBodyEngineerSetIdDefault).describe('Набор бригад региона, для которого строится план; null или отсутствует — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у поля engineer_set_id')
 })
 
 
-export const buildPlanResponseEngineersItemRouteItemPlannedArrivalMin = 19;
-export const buildPlanResponseEngineersItemRouteItemPlannedArrivalMax = 19;
+export const buildPlanResponseEngineersOneItemRouteItemPlannedArrivalMin = 19;
+export const buildPlanResponseEngineersOneItemRouteItemPlannedArrivalMax = 19;
 
 
-export const buildPlanResponseEngineersItemRouteItemPlannedArrivalRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
-export const buildPlanResponseEngineersItemRouteItemTravelTimeMinMin = 0;
+export const buildPlanResponseEngineersOneItemRouteItemPlannedArrivalRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+export const buildPlanResponseEngineersOneItemRouteItemTravelTimeMinMin = 0;
 
-export const buildPlanResponseEngineersItemRouteItemTravelDistanceKmMin = 0;
+export const buildPlanResponseEngineersOneItemRouteItemTravelDistanceKmMin = 0;
 
-export const buildPlanResponseEngineersItemTotalDistanceKmMin = 0;
+export const buildPlanResponseEngineersOneItemTotalDistanceKmMin = 0;
 
-export const buildPlanResponseEngineersItemTotalTravelTimeMinMin = 0;
+export const buildPlanResponseEngineersOneItemTotalTravelTimeMinMin = 0;
 
-export const buildPlanResponseEngineersItemIdleTimeMinMin = 0;
+export const buildPlanResponseEngineersOneItemIdleTimeMinMin = 0;
+
+export const buildPlanResponseMetricsOneEngineersUsedMin = 0;
+
+export const buildPlanResponseMetricsOneTotalDistanceKmMin = 0;
+
+export const buildPlanResponseMetricsOneDistanceByEngineerMinOne = 0;
+
+export const buildPlanResponseMetricsOneAssignedCountMin = 0;
+
+export const buildPlanResponseMetricsOneUnassignedCountMin = 0;
+
+export const buildPlanResponseMetricsOneIdleTimeByEngineerMinMinOne = 0;
 
 
 
 export const BuildPlanResponse = zod.strictObject({
   "plan_id": zod.int().describe('Идентификатор плана на сервере'),
   "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Чем строится план: or_tools — основной алгоритм (RoutingModel, трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый план для сравнения (назначение по порядку поступления заявок)'),
-  "status": zod.enum(['running', 'done', 'failed']).describe('running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет; done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не закончился (OSRM или БД недоступны на построении), см. failed_reason'),
-  "engineers": zod.array(zod.strictObject({
+  "status": zod.enum(['running', 'done', 'failed']).describe('running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет; done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не закончился (OSRM/БД недоступны, расчёт завис дольше отведённого времени или прерван остановкой сервера), см. failed_reason'),
+  "engineer_set_id": zod.int().describe('Набор бригад, для которого построен план — тот же, что был передан (или default) в POST /plan/build, каким бы ни был status'),
+  "engineers": zod.union([zod.array(zod.strictObject({
   "engineer_id": zod.int().describe('Бригада маршрута'),
   "name": zod.string().describe('Название бригады'),
   "route": zod.array(zod.strictObject({
   "ticket_id": zod.int().describe('Заявка визита'),
   "sequence_no": zod.int().min(1).describe('Порядковый номер визита в маршруте бригады, с 1'),
-  "planned_arrival": zod.string().min(buildPlanResponseEngineersItemRouteItemPlannedArrivalMin).max(buildPlanResponseEngineersItemRouteItemPlannedArrivalMax).regex(buildPlanResponseEngineersItemRouteItemPlannedArrivalRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
-  "travel_time_min": zod.int().min(buildPlanResponseEngineersItemRouteItemTravelTimeMinMin).describe('Время в пути до визита от предыдущей точки маршрута (или от точки старта бригады для первого визита), минуты, с округлением вверх'),
-  "travel_distance_km": zod.number().min(buildPlanResponseEngineersItemRouteItemTravelDistanceKmMin).describe('Расстояние до визита от предыдущей точки маршрута, километры, с округлением до 0.1 км'),
+  "planned_arrival": zod.string().min(buildPlanResponseEngineersOneItemRouteItemPlannedArrivalMin).max(buildPlanResponseEngineersOneItemRouteItemPlannedArrivalMax).regex(buildPlanResponseEngineersOneItemRouteItemPlannedArrivalRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
+  "travel_time_min": zod.int().min(buildPlanResponseEngineersOneItemRouteItemTravelTimeMinMin).describe('Время в пути до визита от предыдущей точки маршрута (или от точки старта бригады для первого визита), минуты, с округлением вверх'),
+  "travel_distance_km": zod.number().min(buildPlanResponseEngineersOneItemRouteItemTravelDistanceKmMin).describe('Расстояние до визита от предыдущей точки маршрута, километры, с округлением до 0.1 км'),
   "explanation": zod.string().describe('Текст для пользователя, почему заявка назначена этой бригаде')
 })).describe('Визиты бригады по возрастанию sequence_no; пустой массив — бригада не задействована'),
-  "total_distance_km": zod.number().min(buildPlanResponseEngineersItemTotalDistanceKmMin).describe('Суммарное расстояние маршрута, километры'),
-  "total_travel_time_min": zod.int().min(buildPlanResponseEngineersItemTotalTravelTimeMinMin).describe('Суммарное время в пути маршрута, минуты'),
-  "idle_time_min": zod.int().min(buildPlanResponseEngineersItemIdleTimeMinMin).describe('Простой бригады: длина смены минус суммарное время визитов и переездов; только для отображения — не входит в целевую функцию построения плана')
-})).optional().describe('Маршруты всех бригад региона на дату плана, по возрастанию engineer_id; присутствует только при status = done'),
-  "unassigned": zod.array(zod.strictObject({
+  "total_distance_km": zod.number().min(buildPlanResponseEngineersOneItemTotalDistanceKmMin).describe('Суммарное расстояние маршрута, километры'),
+  "total_travel_time_min": zod.int().min(buildPlanResponseEngineersOneItemTotalTravelTimeMinMin).describe('Суммарное время в пути маршрута, минуты'),
+  "idle_time_min": zod.int().min(buildPlanResponseEngineersOneItemIdleTimeMinMin).describe('Простой бригады: длина смены минус суммарное время визитов и переездов; только для отображения — не входит в целевую функцию построения плана')
+})),zod.null()]).optional().describe('Маршруты всех бригад региона на дату плана, по возрастанию engineer_id; null, если status не done'),
+  "unassigned": zod.union([zod.array(zod.strictObject({
   "ticket_id": zod.int().describe('Неназначенная заявка'),
   "reason_code": zod.enum(['no_skill', 'no_vehicle', 'no_time_slot', 'shift_overflow', 'all_eligible_engineers_booked_elsewhere']).describe('Причина, по которой заявка не назначена ни одной бригаде: no_skill — нет бригады с нужным навыком; no_vehicle — нет бригады с нужным транспортом; no_time_slot — ни одна подходящая по навыку и транспорту бригада не успевает в окно заявки без нарушения своих ограничений; shift_overflow — назначение вывело бы бригаду за пределы смены; all_eligible_engineers_booked_elsewhere — подходящая бригада есть, но все такие бригады заняты другими заявками'),
   "explanation": zod.string().describe('Текст для пользователя, почему заявка не назначена')
-})).optional().describe('Неназначенные заявки, по возрастанию ticket_id; присутствует только при status = done'),
-  "failed_reason": zod.enum(['osrm_unavailable', 'db_unavailable', 'build_error']).optional().describe('Присутствует только при status = failed')
+})),zod.null()]).optional().describe('Неназначенные заявки, по возрастанию ticket_id; null, если status не done'),
+  "metrics": zod.union([zod.strictObject({
+  "engineers_used": zod.int().min(buildPlanResponseMetricsOneEngineersUsedMin).describe('Число бригад региона хотя бы с одним визитом в плане'),
+  "total_distance_km": zod.number().min(buildPlanResponseMetricsOneTotalDistanceKmMin).describe('Суммарное расстояние всех маршрутов плана, километры'),
+  "distance_by_engineer": zod.record(zod.string(), zod.number().min(buildPlanResponseMetricsOneDistanceByEngineerMinOne)).describe('Расстояние маршрута каждой бригады региона (ключ — engineer_id строкой), километры; 0 у бригады без визитов'),
+  "assigned_count": zod.int().min(buildPlanResponseMetricsOneAssignedCountMin).describe('Число назначенных заявок плана'),
+  "unassigned_count": zod.int().min(buildPlanResponseMetricsOneUnassignedCountMin).describe('Число неназначенных заявок плана'),
+  "idle_time_by_engineer_min": zod.record(zod.string(), zod.int().min(buildPlanResponseMetricsOneIdleTimeByEngineerMinMinOne)).describe('Простой каждой бригады региона (ключ — engineer_id строкой), минуты; то же значение, что и `EngineerRoute.idle_time_min`, только для отображения — не входит ни в целевую функцию построения плана, ни в сравнение (`GET /plan/{plan_id}/compare`)')
+}),zod.null()]).optional().describe('Обязательные метрики плана; null, если status не done'),
+  "failed_reason": zod.union([zod.enum(['osrm_unavailable', 'db_unavailable', 'build_error', 'timeout', 'shutdown']).describe('Причина отказа уже поставленного в очередь построения: osrm_unavailable — сервис маршрутов недоступен, db_unavailable — недоступна база данных при сохранении плана, build_error — непредусмотренная ошибка построения, timeout — расчёт не уложился в отведённое время и был принудительно прерван, shutdown — план остался в running на момент остановки сервера и был закрыт при следующем запуске'),zod.null()]).optional().describe('Причина отказа; null, если status не failed')
 })
 
 
@@ -385,48 +520,304 @@ export const GetPlanParams = zod.strictObject({
 })
 
 
-export const getPlanResponseEngineersItemRouteItemPlannedArrivalMin = 19;
-export const getPlanResponseEngineersItemRouteItemPlannedArrivalMax = 19;
+export const getPlanResponseEngineersOneItemRouteItemPlannedArrivalMin = 19;
+export const getPlanResponseEngineersOneItemRouteItemPlannedArrivalMax = 19;
 
 
-export const getPlanResponseEngineersItemRouteItemPlannedArrivalRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
-export const getPlanResponseEngineersItemRouteItemTravelTimeMinMin = 0;
+export const getPlanResponseEngineersOneItemRouteItemPlannedArrivalRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+export const getPlanResponseEngineersOneItemRouteItemTravelTimeMinMin = 0;
 
-export const getPlanResponseEngineersItemRouteItemTravelDistanceKmMin = 0;
+export const getPlanResponseEngineersOneItemRouteItemTravelDistanceKmMin = 0;
 
-export const getPlanResponseEngineersItemTotalDistanceKmMin = 0;
+export const getPlanResponseEngineersOneItemTotalDistanceKmMin = 0;
 
-export const getPlanResponseEngineersItemTotalTravelTimeMinMin = 0;
+export const getPlanResponseEngineersOneItemTotalTravelTimeMinMin = 0;
 
-export const getPlanResponseEngineersItemIdleTimeMinMin = 0;
+export const getPlanResponseEngineersOneItemIdleTimeMinMin = 0;
+
+export const getPlanResponseMetricsOneEngineersUsedMin = 0;
+
+export const getPlanResponseMetricsOneTotalDistanceKmMin = 0;
+
+export const getPlanResponseMetricsOneDistanceByEngineerMinOne = 0;
+
+export const getPlanResponseMetricsOneAssignedCountMin = 0;
+
+export const getPlanResponseMetricsOneUnassignedCountMin = 0;
+
+export const getPlanResponseMetricsOneIdleTimeByEngineerMinMinOne = 0;
 
 
 
 export const GetPlanResponse = zod.strictObject({
   "plan_id": zod.int().describe('Идентификатор плана на сервере'),
   "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Чем строится план: or_tools — основной алгоритм (RoutingModel, трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый план для сравнения (назначение по порядку поступления заявок)'),
-  "status": zod.enum(['running', 'done', 'failed']).describe('running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет; done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не закончился (OSRM или БД недоступны на построении), см. failed_reason'),
+  "status": zod.enum(['running', 'done', 'failed']).describe('running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет; done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не закончился (OSRM/БД недоступны, расчёт завис дольше отведённого времени или прерван остановкой сервера), см. failed_reason'),
+  "engineer_set_id": zod.int().describe('Набор бригад, для которого построен план — тот же, что был передан (или default) в POST /plan/build, каким бы ни был status'),
+  "engineers": zod.union([zod.array(zod.strictObject({
+  "engineer_id": zod.int().describe('Бригада маршрута'),
+  "name": zod.string().describe('Название бригады'),
+  "route": zod.array(zod.strictObject({
+  "ticket_id": zod.int().describe('Заявка визита'),
+  "sequence_no": zod.int().min(1).describe('Порядковый номер визита в маршруте бригады, с 1'),
+  "planned_arrival": zod.string().min(getPlanResponseEngineersOneItemRouteItemPlannedArrivalMin).max(getPlanResponseEngineersOneItemRouteItemPlannedArrivalMax).regex(getPlanResponseEngineersOneItemRouteItemPlannedArrivalRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
+  "travel_time_min": zod.int().min(getPlanResponseEngineersOneItemRouteItemTravelTimeMinMin).describe('Время в пути до визита от предыдущей точки маршрута (или от точки старта бригады для первого визита), минуты, с округлением вверх'),
+  "travel_distance_km": zod.number().min(getPlanResponseEngineersOneItemRouteItemTravelDistanceKmMin).describe('Расстояние до визита от предыдущей точки маршрута, километры, с округлением до 0.1 км'),
+  "explanation": zod.string().describe('Текст для пользователя, почему заявка назначена этой бригаде')
+})).describe('Визиты бригады по возрастанию sequence_no; пустой массив — бригада не задействована'),
+  "total_distance_km": zod.number().min(getPlanResponseEngineersOneItemTotalDistanceKmMin).describe('Суммарное расстояние маршрута, километры'),
+  "total_travel_time_min": zod.int().min(getPlanResponseEngineersOneItemTotalTravelTimeMinMin).describe('Суммарное время в пути маршрута, минуты'),
+  "idle_time_min": zod.int().min(getPlanResponseEngineersOneItemIdleTimeMinMin).describe('Простой бригады: длина смены минус суммарное время визитов и переездов; только для отображения — не входит в целевую функцию построения плана')
+})),zod.null()]).optional().describe('Маршруты всех бригад региона на дату плана, по возрастанию engineer_id; null, если status не done'),
+  "unassigned": zod.union([zod.array(zod.strictObject({
+  "ticket_id": zod.int().describe('Неназначенная заявка'),
+  "reason_code": zod.enum(['no_skill', 'no_vehicle', 'no_time_slot', 'shift_overflow', 'all_eligible_engineers_booked_elsewhere']).describe('Причина, по которой заявка не назначена ни одной бригаде: no_skill — нет бригады с нужным навыком; no_vehicle — нет бригады с нужным транспортом; no_time_slot — ни одна подходящая по навыку и транспорту бригада не успевает в окно заявки без нарушения своих ограничений; shift_overflow — назначение вывело бы бригаду за пределы смены; all_eligible_engineers_booked_elsewhere — подходящая бригада есть, но все такие бригады заняты другими заявками'),
+  "explanation": zod.string().describe('Текст для пользователя, почему заявка не назначена')
+})),zod.null()]).optional().describe('Неназначенные заявки, по возрастанию ticket_id; null, если status не done'),
+  "metrics": zod.union([zod.strictObject({
+  "engineers_used": zod.int().min(getPlanResponseMetricsOneEngineersUsedMin).describe('Число бригад региона хотя бы с одним визитом в плане'),
+  "total_distance_km": zod.number().min(getPlanResponseMetricsOneTotalDistanceKmMin).describe('Суммарное расстояние всех маршрутов плана, километры'),
+  "distance_by_engineer": zod.record(zod.string(), zod.number().min(getPlanResponseMetricsOneDistanceByEngineerMinOne)).describe('Расстояние маршрута каждой бригады региона (ключ — engineer_id строкой), километры; 0 у бригады без визитов'),
+  "assigned_count": zod.int().min(getPlanResponseMetricsOneAssignedCountMin).describe('Число назначенных заявок плана'),
+  "unassigned_count": zod.int().min(getPlanResponseMetricsOneUnassignedCountMin).describe('Число неназначенных заявок плана'),
+  "idle_time_by_engineer_min": zod.record(zod.string(), zod.int().min(getPlanResponseMetricsOneIdleTimeByEngineerMinMinOne)).describe('Простой каждой бригады региона (ключ — engineer_id строкой), минуты; то же значение, что и `EngineerRoute.idle_time_min`, только для отображения — не входит ни в целевую функцию построения плана, ни в сравнение (`GET /plan/{plan_id}/compare`)')
+}),zod.null()]).optional().describe('Обязательные метрики плана; null, если status не done'),
+  "failed_reason": zod.union([zod.enum(['osrm_unavailable', 'db_unavailable', 'build_error', 'timeout', 'shutdown']).describe('Причина отказа уже поставленного в очередь построения: osrm_unavailable — сервис маршрутов недоступен, db_unavailable — недоступна база данных при сохранении плана, build_error — непредусмотренная ошибка построения, timeout — расчёт не уложился в отведённое время и был принудительно прерван, shutdown — план остался в running на момент остановки сервера и был закрыт при следующем запуске'),zod.null()]).optional().describe('Причина отказа; null, если status не failed')
+})
+
+
+/**
+ * Сравнивает план из пути запроса (обычно `algorithm=or_tools`) с baseline-планом (`baseline_plan_id`, обычно `algorithm=baseline_fcfs`) по обязательным метрикам (`engineers_used`, `total_distance_km`) — по одной записи на каждую. Оба плана должны быть в состоянии `status=done`: метрики строящегося или не сложившегося плана не определены. Оба плана должны быть одного набора бригад (`engineer_set_id`) — иначе сравнение бессмысленно: у планов разных наборов разное число бригад. `idle_time` в сравнение не входит — она только для отображения (см. `PlanMetrics.idle_time_by_engineer_min`).
+ * @summary Сравнить обязательные метрики плана с baseline-планом
+ */
+export const comparePlanPathPlanIdMax = 9223372036854776000;
+
+
+
+export const ComparePlanParams = zod.strictObject({
+  "plan_id": zod.int().min(1).max(comparePlanPathPlanIdMax).describe('Идентификатор плана на сервере')
+})
+
+export const comparePlanQueryBaselinePlanIdMax = 9223372036854776000;
+
+
+
+export const ComparePlanQueryParams = zod.strictObject({
+  "baseline_plan_id": zod.int().min(1).max(comparePlanQueryBaselinePlanIdMax).describe('Идентификатор baseline-плана, с которым сравнивается plan_id')
+})
+
+export const ComparePlanResponseItem = zod.strictObject({
+  "metric": zod.enum(['engineers_used', 'total_distance_km']).describe('Обязательная метрика, участвующая в сравнении плана с baseline; idle_time не сравнивается (метрика только для отображения)'),
+  "main": zod.number().describe('Значение метрики у плана из пути запроса'),
+  "baseline": zod.number().describe('Значение той же метрики у baseline-плана'),
+  "delta": zod.number().describe('main минус baseline; отрицательное значение — план лучше baseline')
+})
+export const ComparePlanResponse = zod.array(ComparePlanResponseItem)
+
+
+/**
+ * Синхронно пересчитывает часть плана-родителя (`plan_id`) по одному событию перепланирования (Contract Net: объявление задания бригадам-кандидатам, локальные ставки, победитель с минимальной ставкой) и сохраняет результат новым планом с `parent_plan_id = plan_id`. Новый план наследует `engineer_set_id` плана-родителя — перепланирование пересчитывает бригады того же набора, набор сменить нельзя. План-родитель должен быть в состоянии `status=done` — иначе `400`. Пересчёт идёт от состояния бригад на момент `triggered_at` события: заявки `completed`/`cancelled` исключены, `in_progress` зафиксирована (бригада освобождается не раньше планового окончания этой заявки, начатая работа не прерывается), `en_route` и ещё не начатые заявки можно переставить. Затрагиваются только маршруты бригад, на которые повлияло событие — план остальных бригад переносится без изменений. Ответ несёт блок `diff` — что именно изменилось относительно `plan_id`.
+ *
+ * `new_urgent_ticket` — новая аварийная заявка. Кандидаты — бригады с навыком `emergency`; побеждает ставка с минимальным временем прибытия среди успевающих к `triggered_at + reaction_min` (60–120, по умолчанию 120), иначе — минимальное время прибытия среди всех кандидатов (превышение реакции отражается в `explanation` визита). Сначала — вставка в маршрут победителя без нарушения окон уже стоящих там заявок; если это невозможно — вытесняется одна не начатая заявка победителя более низкого приоритета, которая повторно торгуется среди остальных бригад без нарушения её собственного окна (каскад глубиной 1 — второе вытеснение не выполняется, вытесненная заявка, которую не удалось пристроить, уходит в `unassigned`). Если ни одна бригада не обладает навыком `emergency` — заявка уходит в `unassigned`. Заявке сервер сам присваивает `required_skill=emergency`, `priority=1`, `duration_min=80` (время на объекте), `received_at = triggered_at` и окно `[triggered_at, конец даты плана]` — окно здесь не сужает выбор бригады, целевое время реакции задаёт только `reaction_min`.
+ *
+ * `new_ticket` — новая обычная заявка в течение дня (необязательная возможность): только вставка в свободный интервал маршрута бригады-кандидата, без объявления задания и без вытеснения. `required_skill`, `priority` и `duration_min` определяются парой (`type_bk`, `type_hd`) по той же таблице соответствия типов, что и при загрузке файла — неизвестная пара типов отклоняется `400` ещё до поиска бригады. Кандидаты — бригады с этим навыком (и транспортом, если задан); среди их фактических маршрутов ищется свободный интервал, где прибытие на новую заявку попадает в её окно и не отодвигает ни один уже стоящий визит бригады; побеждает интервал с минимальным временем прибытия. Не найдено ни одного интервала — заявка уходит в `unassigned`, план остальных бригад не меняется.
+ *
+ * `ticket_cancelled` — заявка уже отменена (`PATCH /tickets/{ticket_id}/status`, `status=cancelled`) и убирается из маршрута бригады, на которую была назначена; последующие визиты этой бригады сдвигаются по времени; остальные бригады не пересчитываются.
+ * @summary Перепланировать бригады по одному событию дня
+ */
+export const replanPlanPathPlanIdMax = 9223372036854776000;
+
+
+
+export const ReplanPlanParams = zod.strictObject({
+  "plan_id": zod.int().min(1).max(replanPlanPathPlanIdMax).describe('Идентификатор плана-родителя на сервере')
+})
+
+export const replanPlanBodyOneTriggeredAtMin = 19;
+export const replanPlanBodyOneTriggeredAtMax = 19;
+
+
+export const replanPlanBodyOneTriggeredAtRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+export const replanPlanBodyOneTicketExternalIdMax = 200;
+
+export const replanPlanBodyOneTicketTypeBkMax = 200;
+
+export const replanPlanBodyOneTicketTypeHdMax = 200;
+
+export const replanPlanBodyOneTicketDistrictMax = 200;
+
+export const replanPlanBodyOneTicketAddressMax = 300;
+
+export const replanPlanBodyOneTicketLocationLatMin = -90;
+export const replanPlanBodyOneTicketLocationLatMax = 90;
+
+export const replanPlanBodyOneTicketLocationLonMin = -180;
+export const replanPlanBodyOneTicketLocationLonMax = 180;
+
+export const replanPlanBodyOneReactionMinDefault = 120;
+export const replanPlanBodyOneReactionMinMin = 60;
+export const replanPlanBodyOneReactionMinMax = 120;
+
+export const replanPlanBodyTwoTriggeredAtMin = 19;
+export const replanPlanBodyTwoTriggeredAtMax = 19;
+
+
+export const replanPlanBodyTwoTriggeredAtRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+export const replanPlanBodyTwoTicketExternalIdMax = 200;
+
+export const replanPlanBodyTwoTicketTypeBkMax = 200;
+
+export const replanPlanBodyTwoTicketTypeHdMax = 200;
+
+export const replanPlanBodyTwoTicketDistrictMax = 200;
+
+export const replanPlanBodyTwoTicketAddressMax = 300;
+
+export const replanPlanBodyTwoTicketLocationLatMin = -90;
+export const replanPlanBodyTwoTicketLocationLatMax = 90;
+
+export const replanPlanBodyTwoTicketLocationLonMin = -180;
+export const replanPlanBodyTwoTicketLocationLonMax = 180;
+
+export const replanPlanBodyTwoTicketWindowStartMin = 19;
+export const replanPlanBodyTwoTicketWindowStartMax = 19;
+
+
+export const replanPlanBodyTwoTicketWindowStartRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+export const replanPlanBodyTwoTicketWindowEndMin = 19;
+export const replanPlanBodyTwoTicketWindowEndMax = 19;
+
+
+export const replanPlanBodyTwoTicketWindowEndRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+export const replanPlanBodyThreeTriggeredAtMin = 19;
+export const replanPlanBodyThreeTriggeredAtMax = 19;
+
+
+export const replanPlanBodyThreeTriggeredAtRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+export const replanPlanBodyThreeTicketIdMax = 9223372036854776000;
+
+
+
+export const ReplanPlanBody = zod.union([zod.strictObject({
+  "event_type": zod.enum(['new_urgent_ticket']).describe('Тип события — новая аварийная заявка'),
+  "triggered_at": zod.string().min(replanPlanBodyOneTriggeredAtMin).max(replanPlanBodyOneTriggeredAtMax).regex(replanPlanBodyOneTriggeredAtRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
+  "ticket": zod.strictObject({
+  "external_id": zod.string().max(replanPlanBodyOneTicketExternalIdMax).describe('Номер заявки во внешней системе (HD/BK); не уникален'),
+  "type_bk": zod.string().max(replanPlanBodyOneTicketTypeBkMax).nullable().describe('Тип заявки BK, если известен диспетчеру; null, если нет'),
+  "type_hd": zod.string().max(replanPlanBodyOneTicketTypeHdMax).describe('Тип заявки HD — информационное поле; required_skill=emergency присваивается событием new_urgent_ticket, а не этим полем'),
+  "district": zod.string().max(replanPlanBodyOneTicketDistrictMax).nullable().describe('Район; null, если не указан'),
+  "address": zod.string().max(replanPlanBodyOneTicketAddressMax).describe('Адрес аварии'),
+  "location": zod.strictObject({
+  "lat": zod.number().min(replanPlanBodyOneTicketLocationLatMin).max(replanPlanBodyOneTicketLocationLatMax).describe('Широта, градусы'),
+  "lon": zod.number().min(replanPlanBodyOneTicketLocationLonMin).max(replanPlanBodyOneTicketLocationLonMax).describe('Долгота, градусы')
+}).describe('Точка WGS84 (EPSG:4326), градусы'),
+  "required_vehicle": zod.union([zod.enum(['car', 'foot', 'bike', 'public_transport']).describe('Транспорт бригады — определяет профиль маршрута по дорожному графу'),zod.null()]).describe('Транспорт, который требует заявка; null — подходит любой')
+}),
+  "reaction_min": zod.int().min(replanPlanBodyOneReactionMinMin).max(replanPlanBodyOneReactionMinMax).default(replanPlanBodyOneReactionMinDefault).describe('Целевое время реакции от triggered_at до прибытия бригады; необязательное поле, по умолчанию 120')
+}),zod.strictObject({
+  "event_type": zod.enum(['new_ticket']).describe('Тип события — новая обычная заявка, поступившая в течение дня'),
+  "triggered_at": zod.string().min(replanPlanBodyTwoTriggeredAtMin).max(replanPlanBodyTwoTriggeredAtMax).regex(replanPlanBodyTwoTriggeredAtRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
+  "ticket": zod.strictObject({
+  "external_id": zod.string().max(replanPlanBodyTwoTicketExternalIdMax).describe('Номер заявки во внешней системе (HD/BK); не уникален'),
+  "type_bk": zod.string().max(replanPlanBodyTwoTicketTypeBkMax).nullable().describe('Тип заявки BK; вместе с type_hd определяет required_skill/priority/duration_min'),
+  "type_hd": zod.string().max(replanPlanBodyTwoTicketTypeHdMax).describe('Тип заявки HD; вместе с type_bk определяет required_skill/priority/duration_min'),
+  "district": zod.string().max(replanPlanBodyTwoTicketDistrictMax).nullable().describe('Район; null, если не указан'),
+  "address": zod.string().max(replanPlanBodyTwoTicketAddressMax).describe('Адрес выезда'),
+  "location": zod.strictObject({
+  "lat": zod.number().min(replanPlanBodyTwoTicketLocationLatMin).max(replanPlanBodyTwoTicketLocationLatMax).describe('Широта, градусы'),
+  "lon": zod.number().min(replanPlanBodyTwoTicketLocationLonMin).max(replanPlanBodyTwoTicketLocationLonMax).describe('Долгота, градусы')
+}).describe('Точка WGS84 (EPSG:4326), градусы'),
+  "required_vehicle": zod.union([zod.enum(['car', 'foot', 'bike', 'public_transport']).describe('Транспорт бригады — определяет профиль маршрута по дорожному графу'),zod.null()]).describe('Транспорт, который требует заявка; null — подходит любой'),
+  "window_start": zod.string().min(replanPlanBodyTwoTicketWindowStartMin).max(replanPlanBodyTwoTicketWindowStartMax).regex(replanPlanBodyTwoTicketWindowStartRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
+  "window_end": zod.string().min(replanPlanBodyTwoTicketWindowEndMin).max(replanPlanBodyTwoTicketWindowEndMax).regex(replanPlanBodyTwoTicketWindowEndRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.')
+})
+}),zod.strictObject({
+  "event_type": zod.enum(['ticket_cancelled']).describe('Тип события — заявка отменена'),
+  "triggered_at": zod.string().min(replanPlanBodyThreeTriggeredAtMin).max(replanPlanBodyThreeTriggeredAtMax).regex(replanPlanBodyThreeTriggeredAtRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
+  "ticket_id": zod.int().min(1).max(replanPlanBodyThreeTicketIdMax).describe('Отменённая заявка (status=cancelled)')
+})]).describe('Одно событие перепланирования; тип определяет event_type.')
+
+
+export const replanPlanResponseEngineersItemRouteItemPlannedArrivalMin = 19;
+export const replanPlanResponseEngineersItemRouteItemPlannedArrivalMax = 19;
+
+
+export const replanPlanResponseEngineersItemRouteItemPlannedArrivalRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+export const replanPlanResponseEngineersItemRouteItemTravelTimeMinMin = 0;
+
+export const replanPlanResponseEngineersItemRouteItemTravelDistanceKmMin = 0;
+
+export const replanPlanResponseEngineersItemTotalDistanceKmMin = 0;
+
+export const replanPlanResponseEngineersItemTotalTravelTimeMinMin = 0;
+
+export const replanPlanResponseEngineersItemIdleTimeMinMin = 0;
+
+export const replanPlanResponseMetricsEngineersUsedMin = 0;
+
+export const replanPlanResponseMetricsTotalDistanceKmMin = 0;
+
+export const replanPlanResponseMetricsDistanceByEngineerMinOne = 0;
+
+export const replanPlanResponseMetricsAssignedCountMin = 0;
+
+export const replanPlanResponseMetricsUnassignedCountMin = 0;
+
+export const replanPlanResponseMetricsIdleTimeByEngineerMinMinOne = 0;
+
+
+
+export const replanPlanResponseDiffPlanStabilityMin = 0;
+
+
+
+export const ReplanPlanResponse = zod.strictObject({
+  "plan_id": zod.int().describe('Идентификатор нового плана'),
+  "parent_plan_id": zod.int().describe('План, от которого посчитан этот, — plan_id из пути запроса'),
+  "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Тот же алгоритм, что у plan_id'),
+  "engineer_set_id": zod.int().describe('Тот же набор бригад, что у plan_id — перепланирование не меняет набор'),
+  "status": zod.enum(['done']).describe('Перепланирование синхронное: ответ 200 всегда несёт готовый план'),
   "engineers": zod.array(zod.strictObject({
   "engineer_id": zod.int().describe('Бригада маршрута'),
   "name": zod.string().describe('Название бригады'),
   "route": zod.array(zod.strictObject({
   "ticket_id": zod.int().describe('Заявка визита'),
   "sequence_no": zod.int().min(1).describe('Порядковый номер визита в маршруте бригады, с 1'),
-  "planned_arrival": zod.string().min(getPlanResponseEngineersItemRouteItemPlannedArrivalMin).max(getPlanResponseEngineersItemRouteItemPlannedArrivalMax).regex(getPlanResponseEngineersItemRouteItemPlannedArrivalRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
-  "travel_time_min": zod.int().min(getPlanResponseEngineersItemRouteItemTravelTimeMinMin).describe('Время в пути до визита от предыдущей точки маршрута (или от точки старта бригады для первого визита), минуты, с округлением вверх'),
-  "travel_distance_km": zod.number().min(getPlanResponseEngineersItemRouteItemTravelDistanceKmMin).describe('Расстояние до визита от предыдущей точки маршрута, километры, с округлением до 0.1 км'),
+  "planned_arrival": zod.string().min(replanPlanResponseEngineersItemRouteItemPlannedArrivalMin).max(replanPlanResponseEngineersItemRouteItemPlannedArrivalMax).regex(replanPlanResponseEngineersItemRouteItemPlannedArrivalRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
+  "travel_time_min": zod.int().min(replanPlanResponseEngineersItemRouteItemTravelTimeMinMin).describe('Время в пути до визита от предыдущей точки маршрута (или от точки старта бригады для первого визита), минуты, с округлением вверх'),
+  "travel_distance_km": zod.number().min(replanPlanResponseEngineersItemRouteItemTravelDistanceKmMin).describe('Расстояние до визита от предыдущей точки маршрута, километры, с округлением до 0.1 км'),
   "explanation": zod.string().describe('Текст для пользователя, почему заявка назначена этой бригаде')
 })).describe('Визиты бригады по возрастанию sequence_no; пустой массив — бригада не задействована'),
-  "total_distance_km": zod.number().min(getPlanResponseEngineersItemTotalDistanceKmMin).describe('Суммарное расстояние маршрута, километры'),
-  "total_travel_time_min": zod.int().min(getPlanResponseEngineersItemTotalTravelTimeMinMin).describe('Суммарное время в пути маршрута, минуты'),
-  "idle_time_min": zod.int().min(getPlanResponseEngineersItemIdleTimeMinMin).describe('Простой бригады: длина смены минус суммарное время визитов и переездов; только для отображения — не входит в целевую функцию построения плана')
-})).optional().describe('Маршруты всех бригад региона на дату плана, по возрастанию engineer_id; присутствует только при status = done'),
+  "total_distance_km": zod.number().min(replanPlanResponseEngineersItemTotalDistanceKmMin).describe('Суммарное расстояние маршрута, километры'),
+  "total_travel_time_min": zod.int().min(replanPlanResponseEngineersItemTotalTravelTimeMinMin).describe('Суммарное время в пути маршрута, минуты'),
+  "idle_time_min": zod.int().min(replanPlanResponseEngineersItemIdleTimeMinMin).describe('Простой бригады: длина смены минус суммарное время визитов и переездов; только для отображения — не входит в целевую функцию построения плана')
+})).describe('Маршруты всех бригад региона на дату плана, по возрастанию engineer_id'),
   "unassigned": zod.array(zod.strictObject({
   "ticket_id": zod.int().describe('Неназначенная заявка'),
   "reason_code": zod.enum(['no_skill', 'no_vehicle', 'no_time_slot', 'shift_overflow', 'all_eligible_engineers_booked_elsewhere']).describe('Причина, по которой заявка не назначена ни одной бригаде: no_skill — нет бригады с нужным навыком; no_vehicle — нет бригады с нужным транспортом; no_time_slot — ни одна подходящая по навыку и транспорту бригада не успевает в окно заявки без нарушения своих ограничений; shift_overflow — назначение вывело бы бригаду за пределы смены; all_eligible_engineers_booked_elsewhere — подходящая бригада есть, но все такие бригады заняты другими заявками'),
   "explanation": zod.string().describe('Текст для пользователя, почему заявка не назначена')
-})).optional().describe('Неназначенные заявки, по возрастанию ticket_id; присутствует только при status = done'),
-  "failed_reason": zod.enum(['osrm_unavailable', 'db_unavailable', 'build_error']).optional().describe('Присутствует только при status = failed')
+})).describe('Неназначенные заявки, по возрастанию ticket_id'),
+  "metrics": zod.strictObject({
+  "engineers_used": zod.int().min(replanPlanResponseMetricsEngineersUsedMin).describe('Число бригад региона хотя бы с одним визитом в плане'),
+  "total_distance_km": zod.number().min(replanPlanResponseMetricsTotalDistanceKmMin).describe('Суммарное расстояние всех маршрутов плана, километры'),
+  "distance_by_engineer": zod.record(zod.string(), zod.number().min(replanPlanResponseMetricsDistanceByEngineerMinOne)).describe('Расстояние маршрута каждой бригады региона (ключ — engineer_id строкой), километры; 0 у бригады без визитов'),
+  "assigned_count": zod.int().min(replanPlanResponseMetricsAssignedCountMin).describe('Число назначенных заявок плана'),
+  "unassigned_count": zod.int().min(replanPlanResponseMetricsUnassignedCountMin).describe('Число неназначенных заявок плана'),
+  "idle_time_by_engineer_min": zod.record(zod.string(), zod.int().min(replanPlanResponseMetricsIdleTimeByEngineerMinMinOne)).describe('Простой каждой бригады региона (ключ — engineer_id строкой), минуты; то же значение, что и `EngineerRoute.idle_time_min`, только для отображения — не входит ни в целевую функцию построения плана, ни в сравнение (`GET /plan/{plan_id}/compare`)')
+}),
+  "diff": zod.strictObject({
+  "changed_assignments": zod.array(zod.strictObject({
+  "ticket_id": zod.int().describe('Заявка, чьё назначение изменилось'),
+  "before_engineer_id": zod.int().describe('Бригада заявки в plan_id'),
+  "after_engineer_id": zod.int().describe('Бригада заявки в новом плане'),
+  "before_sequence_no": zod.int().min(1).describe('Порядковый номер визита в plan_id'),
+  "after_sequence_no": zod.int().min(1).describe('Порядковый номер визита в новом плане')
+})).describe('Заявки, у которых сменилась бригада и/или порядковый номер визита'),
+  "newly_assigned": zod.array(zod.int()).describe('Заявки, назначенные впервые этим событием, по возрастанию ticket_id'),
+  "newly_unassigned": zod.array(zod.int()).describe('Заявки, назначенные в plan_id, а этим событием ушедшие в unassigned, по возрастанию ticket_id'),
+  "reassigned_from_unavailable_engineer": zod.array(zod.int()).describe('Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable; это событие в API не реализовано, поле всегда пустое'),
+  "plan_stability": zod.int().min(replanPlanResponseDiffPlanStabilityMin).describe('Число бригад, чей маршрут изменило это событие')
+})
 })
 
 

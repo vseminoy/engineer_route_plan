@@ -49,7 +49,9 @@ export const invalidRowReasonText: Record<InvalidRowReason, string> = {
 export const planFailedReasonText: Record<PlanFailedReason, string> = {
   osrm_unavailable: 'Сервис маршрутов недоступен',
   db_unavailable: 'База данных недоступна',
-  build_error: 'Не удалось построить план'
+  build_error: 'Не удалось построить план',
+  timeout: 'Расчёт не уложился в отведённое время',
+  shutdown: 'Сервер был перезапущен во время расчёта'
 };
 
 // A response status with no body: text by status, used when the endpoint has

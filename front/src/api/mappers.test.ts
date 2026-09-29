@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { mapDataLoadResult, mapEngineerRoster, mapPlan, mapTicketSummary } from './mappers';
-import type { DataLoadResult, Engineer, Plan, Ticket } from './generated/schemas';
+import { mapDataLoadResult, mapEngineerRoster, mapPlan, mapPlanCompare, mapTicketSummary } from './mappers';
+import type { DataLoadResult, Engineer, Plan, PlanComparisonEntry, Ticket } from './generated/schemas';
 
 describe('mapEngineerRoster', () => {
   it('flattens the start point and converts shift bounds to minutes since midnight', () => {
@@ -68,13 +68,19 @@ describe('mapTicketSummary', () => {
 
 describe('mapPlan', () => {
   it('maps a running build to a status with no engineers/unassigned/metrics yet', () => {
-    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'running' };
+    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'running', engineer_set_id: 1 };
 
     expect(mapPlan(api)).toEqual({ planId: 42, algorithm: 'or_tools', status: 'running' });
   });
 
   it('maps a failed build to its reason, with no engineers/unassigned/metrics', () => {
-    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'failed', failed_reason: 'osrm_unavailable' };
+    const api: Plan = {
+      plan_id: 42,
+      algorithm: 'or_tools',
+      status: 'failed',
+      engineer_set_id: 1,
+      failed_reason: 'osrm_unavailable'
+    };
 
     expect(mapPlan(api)).toEqual({
       planId: 42,
@@ -84,11 +90,18 @@ describe('mapPlan', () => {
     });
   });
 
-  it('derives the mandatory comparison metrics from engineers/unassigned when done, and keeps the naive arrival time as-is', () => {
+  it('maps a failed build stopped by the server-shutdown sweep', () => {
+    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'failed', engineer_set_id: 1, failed_reason: 'shutdown' };
+
+    expect(mapPlan(api).failedReason).toBe('shutdown');
+  });
+
+  it('maps engineers/unassigned/metrics straight from the API response when done, keeping the naive arrival time as-is', () => {
     const api: Plan = {
       plan_id: 42,
       algorithm: 'or_tools',
       status: 'done',
+      engineer_set_id: 1,
       engineers: [
         {
           engineer_id: 3,
@@ -109,7 +122,15 @@ describe('mapPlan', () => {
         },
         { engineer_id: 5, name: 'Бригада Петров', route: [], total_distance_km: 0, total_travel_time_min: 0, idle_time_min: 480 }
       ],
-      unassigned: [{ ticket_id: 118, reason_code: 'no_time_slot', explanation: 'Не успевает ни одна бригада.' }]
+      unassigned: [{ ticket_id: 118, reason_code: 'no_time_slot', explanation: 'Не успевает ни одна бригада.' }],
+      metrics: {
+        engineers_used: 1,
+        total_distance_km: 21.4,
+        distance_by_engineer: { '3': 21.4, '5': 0 },
+        assigned_count: 1,
+        unassigned_count: 1,
+        idle_time_by_engineer_min: { '3': 126, '5': 480 }
+      }
     };
 
     const plan = mapPlan(api);
@@ -119,11 +140,29 @@ describe('mapPlan', () => {
     expect(plan.metrics).toEqual({
       engineersUsed: 1,
       totalDistanceKm: 21.4,
-      distanceByEngineer: { 3: 21.4, 5: 0 },
+      distanceByEngineer: { '3': 21.4, '5': 0 },
       assignedCount: 1,
       unassignedCount: 1,
-      idleTimeByEngineerMin: { 3: 126, 5: 480 }
+      idleTimeByEngineerMin: { '3': 126, '5': 480 }
     });
+  });
+});
+
+describe('mapPlanCompare', () => {
+  it('reshapes the compare_plan entries into the fixed engineersUsed/totalDistanceKm pair', () => {
+    const entries: PlanComparisonEntry[] = [
+      { metric: 'engineers_used', main: 9, baseline: 13, delta: -4 },
+      { metric: 'total_distance_km', main: 187.3, baseline: 244.9, delta: -57.6 }
+    ];
+
+    expect(mapPlanCompare(entries)).toEqual({
+      engineersUsed: { main: 9, baseline: 13, delta: -4 },
+      totalDistanceKm: { main: 187.3, baseline: 244.9, delta: -57.6 }
+    });
+  });
+
+  it('throws if the response is missing a mandatory metric', () => {
+    expect(() => mapPlanCompare([{ metric: 'engineers_used', main: 9, baseline: 13, delta: -4 }])).toThrow();
   });
 });
 

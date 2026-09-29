@@ -65,8 +65,6 @@ export interface PlanMetrics {
   assignedCount: number;
   unassignedCount: number;
   idleTimeByEngineerMin: Record<string, number>; // FR-23, always present
-  loadBalanceStdDev?: number;
-  planStability?: number;
 }
 
 export interface PlanDiff {
@@ -89,8 +87,10 @@ export interface PlanDiff {
 export type PlanStatus = 'running' | 'done' | 'failed';
 
 // osrm_unavailable — маршрутный сервис недоступен; db_unavailable — недоступна
-// БД при сохранении плана; build_error — непредвиденная ошибка построения.
-export type PlanFailedReason = 'osrm_unavailable' | 'db_unavailable' | 'build_error';
+// БД при сохранении плана; build_error — непредвиденная ошибка построения;
+// timeout — расчёт прервали, не уложившись в отведённое время; shutdown —
+// план остался running на момент остановки сервера и был закрыт при следующем запуске.
+export type PlanFailedReason = 'osrm_unavailable' | 'db_unavailable' | 'build_error' | 'timeout' | 'shutdown';
 
 export interface Plan {
   planId: number;

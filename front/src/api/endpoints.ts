@@ -2,6 +2,7 @@ import { http, unwrap } from './client';
 import {
   buildPlan as postPlanBuild,
   changeTicketStatus,
+  comparePlan as getPlanCompareRequest,
   getPlan as getPlanRequest,
   listEngineers,
   listRegions,
@@ -9,11 +10,20 @@ import {
   loadDemoData,
   uploadRegionData
 } from './generated/engineerRoutePlanAPI';
-import { mapDataLoadResult, mapEngineerRoster, mapLegacyReplanPlan, mapPlan, mapRegion, mapTicketSummary } from './mappers';
+import {
+  mapDataLoadResult,
+  mapEngineerRoster,
+  mapLegacyReplanPlan,
+  mapPlan,
+  mapPlanCompare,
+  mapRegion,
+  mapTicketSummary
+} from './mappers';
 import type {
   DataLoadResult as ApiDataLoadResult,
   Engineer,
   Plan as ApiPlanGenerated,
+  PlanComparisonEntry,
   Region as ApiRegion,
   Ticket
 } from './generated/schemas';
@@ -23,6 +33,7 @@ import type {
   DataLoadResult,
   EngineerRoster,
   Plan,
+  PlanCompare,
   RegionCode,
   ReplanEvent,
   Region,
@@ -60,6 +71,14 @@ export function buildPlan(region: RegionCode, planDate: string, algorithm: Algor
 
 export function getPlan(planId: number): Promise<Plan> {
   return unwrap<ApiPlanGenerated>(getPlanRequest(planId), 200).then(mapPlan);
+}
+
+// Both plans must already be status: 'done' — the backend rejects the
+// comparison with a 400 otherwise.
+export function comparePlan(planId: number, baselinePlanId: number): Promise<PlanCompare> {
+  return unwrap<PlanComparisonEntry[]>(getPlanCompareRequest(planId, { baseline_plan_id: baselinePlanId }), 200).then(
+    mapPlanCompare
+  );
 }
 
 function replanEventToPayload(event: ReplanEvent): Record<string, unknown> {

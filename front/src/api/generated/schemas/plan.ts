@@ -7,6 +7,7 @@
 import type { EngineerRoute } from './engineerRoute';
 import type { PlanAlgorithm } from './planAlgorithm';
 import type { PlanFailedReason } from './planFailedReason';
+import type { PlanMetrics } from './planMetrics';
 import type { PlanStatus } from './planStatus';
 import type { UnassignedTicket } from './unassignedTicket';
 
@@ -15,10 +16,14 @@ export interface Plan {
   plan_id: number;
   algorithm: PlanAlgorithm;
   status: PlanStatus;
-  /** Маршруты всех бригад региона на дату плана, по возрастанию engineer_id; присутствует только при status = done */
-  engineers?: EngineerRoute[];
-  /** Неназначенные заявки, по возрастанию ticket_id; присутствует только при status = done */
-  unassigned?: UnassignedTicket[];
-  /** Присутствует только при status = failed */
-  failed_reason?: PlanFailedReason;
+  /** Набор бригад, для которого построен план — тот же, что был передан (или default) в POST /plan/build, каким бы ни был status */
+  engineer_set_id: number;
+  /** Маршруты всех бригад региона на дату плана, по возрастанию engineer_id; null, если status не done */
+  engineers?: EngineerRoute[] | null;
+  /** Неназначенные заявки, по возрастанию ticket_id; null, если status не done */
+  unassigned?: UnassignedTicket[] | null;
+  /** Обязательные метрики плана; null, если status не done */
+  metrics?: PlanMetrics | null;
+  /** Причина отказа; null, если status не failed */
+  failed_reason?: PlanFailedReason | null;
 }

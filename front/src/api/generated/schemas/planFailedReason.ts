@@ -6,7 +6,7 @@
  */
 
 /**
- * Причина отказа уже поставленного в очередь построения: osrm_unavailable — сервис маршрутов недоступен, db_unavailable — недоступна база данных при сохранении плана, build_error — непредусмотренная ошибка построения
+ * Причина отказа уже поставленного в очередь построения: osrm_unavailable — сервис маршрутов недоступен, db_unavailable — недоступна база данных при сохранении плана, build_error — непредусмотренная ошибка построения, timeout — расчёт не уложился в отведённое время и был принудительно прерван, shutdown — план остался в running на момент остановки сервера и был закрыт при следующем запуске
  */
 export type PlanFailedReason = typeof PlanFailedReason[keyof typeof PlanFailedReason];
 
@@ -15,4 +15,6 @@ export const PlanFailedReason = {
   osrm_unavailable: 'osrm_unavailable',
   db_unavailable: 'db_unavailable',
   build_error: 'build_error',
+  timeout: 'timeout',
+  shutdown: 'shutdown',
 } as const;

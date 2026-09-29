@@ -4,6 +4,7 @@
 
 - [`FileUploadForm` — валидация файла заявок](#fileuploadform--валидация-файла-заявок)
 - [`RegionSelect` — отображение ошибки поля и `onBlur`](#regionselect--отображение-ошибки-поля-и-onblur)
+- [`DataLoadScreen` — `503`/`500` на самом `POST /plan/build`](#dataloadscreen--503500-на-самом-post-planbuild)
 
 ---
 
@@ -32,3 +33,15 @@
 |---|---|---|
 | `shows the field error passed by the parent` | Передан `error="Некорректный регион"` | Текст ошибки виден под селектом |
 | `fires onBlur so the parent can (re)validate the region field` | Потеря фокуса селектом | `onBlur` вызван один раз |
+
+## `DataLoadScreen` — `503`/`500` на самом `POST /plan/build`
+
+Файл: `DataLoadScreen.test.tsx` (`vitest` + `@testing-library/react`, `QueryClientProvider`).
+
+> `loadDemoDataset`/`buildPlan` (`api/endpoints`) замоканы — проверяется реакция экрана на
+> отказ построения плана, который сам загрузчик данных запускает сразу после чистой
+> загрузки, а не сеть.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `shows a full-screen retry notice on a 503 from the build that follows a clean demo load` | Демо-набор загрузился без ошибок, `buildPlan` реджектится `ApiError(503)` | `FullScreenErrorNotice` с текстом по словарю и кнопкой «Повторить» |

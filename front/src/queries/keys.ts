@@ -3,6 +3,7 @@
 export const queryKeys = {
   regions: () => ['regions'] as const,
   plan: (planId: number) => ['plan', planId] as const,
+  planCompare: (planId: number, baselinePlanId: number) => ['plan', planId, 'compare', baselinePlanId] as const,
   engineers: (regionCode: string) => ['engineers', regionCode] as const,
   tickets: (regionCode: string) => ['tickets', regionCode] as const
 };

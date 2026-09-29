@@ -12,4 +12,11 @@ export interface PlanBuildRequest {
   region: RegionCode;
   plan_date: LocalDate;
   algorithm: PlanAlgorithm;
+  /**
+     * Набор бригад региона, для которого строится план; null или отсутствует — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у поля engineer_set_id
+     * @minimum 1
+     * @maximum 9223372036854776000
+     * @nullable
+     */
+  engineer_set_id?: number | null;
 }

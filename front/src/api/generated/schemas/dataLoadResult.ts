@@ -10,7 +10,7 @@ import type { RegionCode } from './regionCode';
 export interface DataLoadResult {
   region: RegionCode;
   /**
-     * Сколько бригад теперь у региона
+     * Сколько бригад теперь во всех наборах региона вместе
      * @minimum 0
      */
   engineers: number;

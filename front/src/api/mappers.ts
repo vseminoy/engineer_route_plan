@@ -4,6 +4,8 @@ import type {
   Engineer,
   EngineerRoute as ApiEngineerRoute,
   Plan as GeneratedPlan,
+  PlanComparisonEntry,
+  PlanMetrics as ApiPlanMetrics,
   Region as ApiRegion,
   Ticket,
   Visit as ApiRouteStop
@@ -15,8 +17,8 @@ import type {
   EngineerRoster,
   EngineerRoute,
   Plan,
+  PlanCompare,
   PlanDiff,
-  PlanFailedReason,
   PlanMetrics,
   PlanStatus,
   Region,
@@ -66,12 +68,20 @@ function mapUnassignedTicket(u: { ticket_id: number; reason_code: string; explan
   };
 }
 
-// The done response carries engineers/unassigned but no metrics object yet
-// (the backend doesn't send one). The two mandatory comparison metrics, and
-// the always-present per-engineer breakdowns, are all fully derivable from
-// engineers/unassigned themselves, so they're computed here instead of
-// waiting on that field. load_balance_std_dev/plan_stability stay unset
-// until the backend actually sends them.
+function mapPlanMetrics(m: ApiPlanMetrics): PlanMetrics {
+  return {
+    engineersUsed: m.engineers_used,
+    totalDistanceKm: m.total_distance_km,
+    distanceByEngineer: m.distance_by_engineer,
+    assignedCount: m.assigned_count,
+    unassignedCount: m.unassigned_count,
+    idleTimeByEngineerMin: m.idle_time_by_engineer_min
+  };
+}
+
+// Fallback for the legacy replan response (mapLegacyReplanPlan below), which
+// has no metrics field of its own on the wire — derived from
+// engineers/unassigned until F6 gives replan a real spec and client.
 function computePlanMetrics(engineers: EngineerRoute[], unassigned: UnassignedTicket[]): PlanMetrics {
   const distanceByEngineer: Record<string, number> = {};
   const idleTimeByEngineerMin: Record<string, number> = {};
@@ -114,26 +124,45 @@ function mapDiff(d: ApiPlanDiff): PlanDiff {
 }
 
 // POST /plan/build (202) and GET /plan/{id} share this response shape —
-// running has neither engineers/unassigned nor a reason, done has the
-// former, failed has the latter.
+// running has neither engineers/unassigned/metrics nor a reason, done has
+// the former (engineers/unassigned/metrics all null until then), failed has
+// the latter.
 export function mapPlan(api: GeneratedPlan): Plan {
   const base = { planId: api.plan_id, algorithm: api.algorithm as Algorithm, status: api.status as PlanStatus };
 
   if (api.status === 'done') {
     const engineers = (api.engineers ?? []).map(mapEngineerRoute);
     const unassigned = (api.unassigned ?? []).map(mapUnassignedTicket);
-    return { ...base, engineers, unassigned, metrics: computePlanMetrics(engineers, unassigned) };
+    const metrics = api.metrics ? mapPlanMetrics(api.metrics) : computePlanMetrics(engineers, unassigned);
+    return { ...base, engineers, unassigned, metrics };
   }
   if (api.status === 'failed') {
-    return { ...base, failedReason: api.failed_reason as PlanFailedReason };
+    return { ...base, failedReason: api.failed_reason ?? undefined };
   }
   return base;
 }
 
-// POST /plan/{id}/replan (F6) isn't in specs/openapi.yaml yet and answers
-// synchronously with the pre-async plan shape (metrics/diff included on the
-// wire, no running state of its own) — mapped separately until that endpoint
-// gets a real spec and a generated client.
+// GET /plan/{id}/compare returns one entry per mandatory metric
+// (engineers_used, total_distance_km); reshaped into the fixed pair the
+// Metrics tab renders instead of an array the caller has to search.
+export function mapPlanCompare(entries: PlanComparisonEntry[]): PlanCompare {
+  const byMetric = new Map(entries.map((e) => [e.metric, e]));
+  const engineersUsed = byMetric.get('engineers_used');
+  const totalDistanceKm = byMetric.get('total_distance_km');
+  if (!engineersUsed || !totalDistanceKm) {
+    throw new Error('compare_plan response is missing a mandatory metric');
+  }
+  return {
+    engineersUsed: { main: engineersUsed.main, baseline: engineersUsed.baseline, delta: engineersUsed.delta },
+    totalDistanceKm: { main: totalDistanceKm.main, baseline: totalDistanceKm.baseline, delta: totalDistanceKm.delta }
+  };
+}
+
+// POST /plan/{id}/replan has a real spec and a generated client now, but F6
+// (which wires ReplanTab to it) hasn't started — this still maps the
+// hand-written pre-async shape (metrics/diff on the wire, no running state)
+// that `replan` in endpoints.ts calls via `http.post` directly. F6 replaces
+// both with the generated `replanPlan` client and this mapper.
 export function mapLegacyReplanPlan(api: ApiPlan): Plan {
   const engineers = api.engineers.map(mapEngineerRoute);
   const unassigned = api.unassigned.map(mapUnassignedTicket);

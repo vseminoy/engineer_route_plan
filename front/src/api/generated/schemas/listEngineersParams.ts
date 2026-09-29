@@ -4,6 +4,7 @@
  * Engineer Route Plan API
  * OpenAPI spec version: 0.1.0
  */
+import type { EngineerSetIdQueryParameter } from './engineerSetIdQueryParameter';
 import type { RegionQueryParameter } from './regionQueryParameter';
 
 export type ListEngineersParams = {
@@ -14,4 +15,10 @@ export type ListEngineersParams = {
  * @pattern ^[a-z][a-z0-9_]*$
  */
 region: RegionQueryParameter;
+/**
+ * Набор бригад региона. Без параметра — набор default. Набор, которого нет или который принадлежит другому региону, — ошибка 400 у параметра engineer_set_id.
+ * @minimum 1
+ * @maximum 9223372036854776000
+ */
+engineer_set_id?: EngineerSetIdQueryParameter;
 };

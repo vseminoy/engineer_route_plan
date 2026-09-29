@@ -3,6 +3,7 @@ import { IdleTimeBlock } from './IdleTimeBlock';
 import { OptionalMetricsBlock } from './OptionalMetricsBlock';
 import { usePlanCompare } from '@/queries/usePlanCompare';
 import { formatKm, formatSignedDelta } from '@/lib/format';
+import { describeError } from '@/lib/labels';
 import type { DonePlan } from '@/types/domain';
 
 interface Props {
@@ -10,7 +11,8 @@ interface Props {
 }
 
 export function MetricsTab({ plan }: Props) {
-  const compare = usePlanCompare(plan.planId);
+  const compareQuery = usePlanCompare(plan.planId);
+  const compare = compareQuery.data;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -31,12 +33,16 @@ export function MetricsTab({ plan }: Props) {
             good={compare.totalDistanceKm.delta <= 0}
           />
         </>
+      ) : compareQuery.isError ? (
+        <div style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>
+          {describeError(compareQuery.error, 'GET /plan/{id}/compare')}
+        </div>
       ) : (
         <div style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Считаем сравнение с baseline…</div>
       )}
 
       <IdleTimeBlock engineers={plan.engineers} />
-      <OptionalMetricsBlock metrics={plan.metrics} engineers={plan.engineers} planStabilityFallback={plan.diff?.planStability} />
+      <OptionalMetricsBlock planStabilityFallback={plan.diff?.planStability} />
     </div>
   );
 }
