@@ -631,7 +631,7 @@ sequenceDiagram
             else
                 Builder->>Explain: explain(DayPlan, tickets, engineers, матрицы, plan_date)
                 Explain-->>Builder: ExplainedPlan
-                Builder->>Repo: BEGIN; INSERT plans; INSERT assignments ×(заявка); COMMIT
+                Builder->>Repo: BEGIN#59; INSERT plans#59; INSERT assignments ×(заявка)#59; COMMIT
                 alt БД отклонила запрос или недоступна
                     Repo-->>Builder: DependencyUnavailable | DatabaseFailure
                     Builder-->>API: DependencyUnavailable | DatabaseFailure
