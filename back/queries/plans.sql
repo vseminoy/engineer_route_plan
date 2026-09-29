@@ -15,10 +15,25 @@ WHERE plan_id IN (SELECT id FROM plans WHERE region_id = :region_id);
 -- region, and the reference is checked once the whole statement has run.
 DELETE FROM plans WHERE region_id = :region_id;
 
--- name: insert_running_plan(region_id, plan_date, algorithm, created_at)$
+-- name: delete_engineer_set_replan_events(engineer_set_id)!
+-- Replan events of every plan of the set, whether the plan is the one an event was
+-- applied to or the one it produced. Runs before delete_engineer_set_assignments.
+DELETE FROM replan_events
+WHERE plan_id IN (SELECT id FROM plans WHERE engineer_set_id = :engineer_set_id)
+   OR result_plan_id IN (SELECT id FROM plans WHERE engineer_set_id = :engineer_set_id);
+
+-- name: delete_engineer_set_assignments(engineer_set_id)!
+DELETE FROM assignments
+WHERE plan_id IN (SELECT id FROM plans WHERE engineer_set_id = :engineer_set_id);
+
+-- name: delete_engineer_set_plans(engineer_set_id)!
+-- All plans of the set in one statement, same reasoning as delete_region_plans.
+DELETE FROM plans WHERE engineer_set_id = :engineer_set_id;
+
+-- name: insert_running_plan(region_id, engineer_set_id, plan_date, algorithm, created_at)$
 -- Queues a build: a plan row with no routes yet. Returns its id.
-INSERT INTO plans (region_id, plan_date, algorithm, status, created_at)
-VALUES (:region_id, :plan_date, :algorithm, 'running', :created_at)
+INSERT INTO plans (region_id, engineer_set_id, plan_date, algorithm, status, created_at)
+VALUES (:region_id, :engineer_set_id, :plan_date, :algorithm, 'running', :created_at)
 RETURNING id;
 
 -- name: mark_plan_done(plan_id)!
@@ -48,16 +63,17 @@ VALUES (:plan_id, :ticket_id, :engineer_id, :sequence_no, :planned_arrival,
 
 -- name: get_plan(plan_id)^
 -- The plan row by id; None if there is no such plan.
-SELECT id, region_id, plan_date, algorithm, status, failed_reason
+SELECT id, region_id, engineer_set_id, plan_date, algorithm, status, failed_reason
 FROM plans
 WHERE id = :plan_id;
 
--- name: insert_replanned_plan(region_id, plan_date, algorithm, parent_plan_id, created_at)$
+-- name: insert_replanned_plan(region_id, engineer_set_id, plan_date, algorithm, parent_plan_id, created_at)$
 -- A plan produced by one replan event: done from the moment it exists, with its
 -- assignment rows inserted in the same transaction — replan is synchronous, unlike
--- POST /plan/build, so there is no running state to pass through.
-INSERT INTO plans (region_id, plan_date, algorithm, status, parent_plan_id, created_at)
-VALUES (:region_id, :plan_date, :algorithm, 'done', :parent_plan_id, :created_at)
+-- POST /plan/build, so there is no running state to pass through. engineer_set_id is
+-- always the parent plan's own — replan never changes a plan's set.
+INSERT INTO plans (region_id, engineer_set_id, plan_date, algorithm, status, parent_plan_id, created_at)
+VALUES (:region_id, :engineer_set_id, :plan_date, :algorithm, 'done', :parent_plan_id, :created_at)
 RETURNING id;
 
 -- name: list_plan_assignments(plan_id)
