@@ -22,6 +22,7 @@
 - [`src/service/ticket_status.py` — переходы статусов заявки](#srcserviceticket_statuspy--переходы-статусов-заявки)
 - [`src/service/solver.py` — модель солвера, ступенчатая (лексикографическая) оптимизация](#srcservicesolverpy--модель-солвера-ступенчатая-лексикографическая-оптимизация)
 - [`src/service/baseline.py` — baseline FCFS](#srcservicebaselinepy--baseline-fcfs)
+- [`src/service/explain.py` — атрибуция причины отказа и объяснения](#srcserviceexplainpy--атрибуция-причины-отказа-и-объяснения)
 - [`src/clients/nominatim.py` — клиент Nominatim](#srcclientsnominatimpy--клиент-nominatim)
 - [`src/clients/osrm.py` — клиент OSRM](#srcclientsosrmpy--клиент-osrm)
 - [`scripts/build_geocache.py` — сборка гео-кэша](#scriptsbuild_geocachepy--сборка-гео-кэша)
@@ -639,6 +640,63 @@
 |---|---|---|
 | `test_baseline_finished_logged` | обычный вход | запись `baseline_finished` уровня `info` с `duration_ms`, `vehicles`, `nodes`, `dropped` |
 | `test_logs_no_ticket_data` | план с назначенными и неназначенными заявками | в записи лога нет id заявок, точек и адресов — только счётчики |
+
+## `src/service/explain.py` — атрибуция причины отказа и объяснения
+
+Файл: `tests/service/test_explain.py`.
+
+> Мок не нужен: чистая функция над уже построенным `DayPlan` (солвера или baseline), без БД,
+> OSRM и OR-Tools. Вход — маленький синтетический: 1–3 бригады, 1–8 заявок, матрицы времени и
+> расстояния по типам транспорта (секунды и метры), день плана — `2026-09-01`; те же заявки,
+> бригады и матрицы, что были переданы алгоритму, который построил план. Логи — разбором
+> JSON-строк stderr (`capsys`, `tests/log_records.py`).
+
+### Проходит без изменений
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_infeasible_passthrough` | план со статусом `INFEASIBLE` | `ExplainedPlan` с тем же статусом, без маршрутов и без неназначенных; никаких записей лога |
+
+### Назначенные заявки: текст
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_assigned_explanation_fields` | 1 бригада, 1 визит `connection`, переезд 18 мин | текст содержит название бригады, русский навык («Подключение»), окно заявки, русский вид транспорта и `18 мин`; в тексте нет служебных терминов солвера (штраф, dimension, allowed vehicles) |
+| `test_assigned_explanation_uses_own_window_not_computed_start` | окно заявки 10:00–14:00, расчётное начало работ (после ожидания) — 10:30 | текст называет окно заявки 10:00–14:00, а не 10:30 |
+
+### Атрибуция причины: пять групп ограничений по порядку
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_no_skill` | заявка `emergency`, ни у одной бригады региона нет `emergency` | `reason = no_skill` |
+| `test_no_vehicle` | заявка требует `bike`; бригады с навыком — только `car` и `foot` | `reason = no_vehicle` |
+| `test_no_time_slot` | единственная подходящая по навыку/транспорту бригада: окно 10:00–10:15, переезд от её старта — 30 мин | `reason = no_time_slot` |
+| `test_shift_overflow` | подходящая бригада успевает в окно, но её смена кончается раньше, чем закончилась бы работа | `reason = shift_overflow` |
+| `test_no_time_slot_before_shift_overflow` | 2 подходящие бригады: у одной окно недостижимо, у другой окно достижимо, но не хватает смены | `reason = shift_overflow` — достаточно одной бригады с достижимым окном, чтобы код не был `no_time_slot` |
+| `test_all_eligible_engineers_booked_elsewhere` | подходящая по навыку/транспорту/окну/смене бригада есть, но в плане её маршрут занят другой заявкой в это время | `reason = all_eligible_engineers_booked_elsewhere` |
+| `test_attribution_ignores_actual_route` | бригада технически подходит по навыку/транспорту/окну/смене без учёта своего маршрута в плане | шаги 1–3 атрибуции пропускают её текущий маршрут: используются только её точка старта и её смена, не то, чем она занята в плане |
+| `test_no_route_excludes_candidate` | в матрице подходящей по навыку бригады до заявки нет маршрута (`None`) | бригада не считается кандидатом на шаге окна/смены — как если бы окно было недостижимо |
+
+### Неназначенные заявки: текст
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_unassigned_explanation_fields` (параметризован по каждому коду причины) | заявка неназначена по каждому из пяти кодов | текст содержит навык и (если задан) требуемый транспорт заявки; окно — там, где оно и есть причина (`no_time_slot`, `shift_overflow`, `all_eligible_engineers_booked_elsewhere`), но не в `no_skill`/`no_vehicle` — там ни одна бригада не дошла до проверки окна; для `all_eligible_engineers_booked_elsewhere` — ещё число технически подходящих бригад; текстов без терминов солвера |
+
+### Согласованность входа
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_matrix_size_mismatch_rejected` | число точек матрицы не равно бригады + заявки | `ValueError` — тот же контракт входа, что у солвера и baseline, которые эту матрицу построили |
+| `test_missing_matrix_for_vehicle_rejected` | у бригады `bike`, матрицы `bike` нет | `ValueError` |
+
+### Логи
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_unassigned_reason_attributed_logged` | 2 неназначенные заявки, разные коды | 2 записи `unassigned_reason_attributed` уровня `debug`, у каждой — `ticket_id`, `reason_code`; ни одной по назначенным |
+| `test_unassigned_reasons_summary_logged` | 3 неназначенные: 2 `no_skill`, 1 `shift_overflow` | 1 запись `unassigned_reasons_summary` уровня `info` со счётчиками `{"no_skill": 2, "shift_overflow": 1}` |
+| `test_logs_no_ticket_data_beyond_id` | план с назначенными и неназначенными заявками | ни в одной записи лога нет адресов, точек и текста объяснения — только `ticket_id`, коды причин и счётчики |
 
 ## `src/clients/nominatim.py` — клиент Nominatim
 
