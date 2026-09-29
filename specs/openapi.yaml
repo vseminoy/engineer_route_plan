@@ -269,6 +269,109 @@ paths:
         "503":
           $ref: "./common.yaml#/components/responses/ServiceUnavailable"
           description: Недоступна база данных. Статус заявки не изменился.
+
+  /api/v1/plan/build:
+    post:
+      operationId: build_plan
+      summary: Построить план выездов региона на дату
+      description: >-
+        Строит план: назначает открытые (не completed и не cancelled) заявки
+        региона на дату plan_date бригадам региона — основным алгоритмом
+        (RoutingModel, трёхфазная лексикографическая оптимизация) или
+        независимым baseline (FCFS, для сравнения), — и сохраняет план в БД.
+        Каждый вызов — новый план (новый plan_id); построение не заменяет и не
+        удаляет более ранние планы того же региона и даты.
+
+
+        Регион должен иметь загруженные данные (`POST /data/upload` или
+        `POST /data/demo`) — иначе 400. Каждая открытая заявка региона должна
+        приходиться на дату plan_date (окно заявки — из файла одной загрузки,
+        все заявки на один день) — несовпадение хотя бы одной заявки отклоняет
+        весь запрос 400, план не строится.
+
+
+        Время в пути и расстояние — по дорожному графу (OSRM), отдельно для
+        каждого типа транспорта бригад региона; матрица считается заново на
+        каждый вызов. Запрос идёт под общим дедлайном (обращения к OSRM и сам
+        солвер вместе) — при превышении ответ 503, план не сохраняется. Основной
+        алгоритм выполняется в одном процессе на весь сервер: конкурентный
+        вызов дожидается своей очереди в пределах того же дедлайна.
+
+
+        Плановое прибытие — расчётное время в пути от предыдущей точки
+        маршрута (или от точки старта бригады) плюс текущее время; норматив
+        «дорога 20 минут» здесь не используется. Причина каждой неназначенной
+        заявки определяется процедурой атрибуции (навык → транспорт →
+        окно/смена → «все подходящие бригады заняты»), а не первой
+        проваленной проверкой.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanBuildRequest"
+      responses:
+        "201":
+          description: План построен и сохранён
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Plan"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+          description: >-
+            Регион не из конфигурации, у региона нет загруженных данных, окно
+            хотя бы одной открытой заявки региона не на дату plan_date, либо
+            число точек маршрутной матрицы больше предела OSRM.
+        "413":
+          $ref: "./common.yaml#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: >-
+            Недоступна база данных или сервис маршрутов OSRM, либо построение
+            не уложилось в общий дедлайн запроса. План не сохранён.
+
+  /api/v1/plan/{plan_id}:
+    get:
+      operationId: get_plan
+      summary: Получить ранее построенный план
+      description: >-
+        Возвращает сохранённый план в том же формате, что и ответ
+        build_plan, без повторного обращения к OSRM или солверу: маршруты,
+        объяснения и причины неназначенных заявок читаются из сохранённых
+        данных построения.
+      parameters:
+        - name: plan_id
+          in: path
+          required: true
+          description: Идентификатор плана на сервере
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 9223372036854775807
+      responses:
+        "200":
+          description: Сохранённый план
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Plan"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+          description: Плана с таким plan_id нет.
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных.
 components:
   parameters:
     RegionQuery:
@@ -536,3 +639,155 @@ components:
           items:
             $ref: "#/components/schemas/InvalidRow"
           description: Строки-заявки, которые не загружены, по возрастанию номера строки
+
+    PlanAlgorithm:
+      type: string
+      enum: [or_tools, baseline_fcfs]
+      description: >-
+        Чем строится план: or_tools — основной алгоритм (RoutingModel,
+        трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый
+        план для сравнения (назначение по порядку поступления заявок)
+
+    PlanBuildRequest:
+      type: object
+      additionalProperties: false
+      required: [region, plan_date, algorithm]
+      properties:
+        region:
+          $ref: "#/components/schemas/RegionCode"
+        plan_date:
+          $ref: "./common.yaml#/components/schemas/LocalDate"
+          description: >-
+            Дата плана; окно каждой открытой заявки региона должно приходиться
+            на эту дату
+        algorithm:
+          $ref: "#/components/schemas/PlanAlgorithm"
+
+    UnassignedReason:
+      type: string
+      enum:
+        - no_skill
+        - no_vehicle
+        - no_time_slot
+        - shift_overflow
+        - all_eligible_engineers_booked_elsewhere
+      description: >-
+        Причина, по которой заявка не назначена ни одной бригаде: no_skill —
+        нет бригады с нужным навыком; no_vehicle — нет бригады с нужным
+        транспортом; no_time_slot — ни одна подходящая по навыку и транспорту
+        бригада не успевает в окно заявки без нарушения своих ограничений;
+        shift_overflow — назначение вывело бы бригаду за пределы смены;
+        all_eligible_engineers_booked_elsewhere — подходящая бригада есть, но
+        все такие бригады заняты другими заявками
+
+    Visit:
+      type: object
+      additionalProperties: false
+      required:
+        - ticket_id
+        - sequence_no
+        - planned_arrival
+        - travel_time_min
+        - travel_distance_km
+        - explanation
+      properties:
+        ticket_id:
+          type: integer
+          description: Заявка визита
+        sequence_no:
+          type: integer
+          minimum: 1
+          description: Порядковый номер визита в маршруте бригады, с 1
+        planned_arrival:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+          description: >-
+            Плановое прибытие; может быть раньше начала окна заявки — бригада
+            ждёт открытия окна
+        travel_time_min:
+          type: integer
+          minimum: 0
+          description: >-
+            Время в пути до визита от предыдущей точки маршрута (или от точки
+            старта бригады для первого визита), минуты, с округлением вверх
+        travel_distance_km:
+          type: number
+          minimum: 0
+          description: >-
+            Расстояние до визита от предыдущей точки маршрута, километры, с
+            округлением до 0.1 км
+        explanation:
+          type: string
+          description: Текст для пользователя, почему заявка назначена этой бригаде
+
+    EngineerRoute:
+      type: object
+      additionalProperties: false
+      required:
+        - engineer_id
+        - name
+        - route
+        - total_distance_km
+        - total_travel_time_min
+        - idle_time_min
+      properties:
+        engineer_id:
+          type: integer
+          description: Бригада маршрута
+        name:
+          type: string
+          description: Название бригады
+        route:
+          type: array
+          items:
+            $ref: "#/components/schemas/Visit"
+          description: Визиты бригады по возрастанию sequence_no; пустой массив — бригада не задействована
+        total_distance_km:
+          type: number
+          minimum: 0
+          description: Суммарное расстояние маршрута, километры
+        total_travel_time_min:
+          type: integer
+          minimum: 0
+          description: Суммарное время в пути маршрута, минуты
+        idle_time_min:
+          type: integer
+          minimum: 0
+          description: >-
+            Простой бригады: длина смены минус суммарное время визитов и
+            переездов; только для отображения — не входит в целевую функцию
+            построения плана
+
+    UnassignedTicket:
+      type: object
+      additionalProperties: false
+      required: [ticket_id, reason_code, explanation]
+      properties:
+        ticket_id:
+          type: integer
+          description: Неназначенная заявка
+        reason_code:
+          $ref: "#/components/schemas/UnassignedReason"
+        explanation:
+          type: string
+          description: Текст для пользователя, почему заявка не назначена
+
+    Plan:
+      type: object
+      additionalProperties: false
+      required: [plan_id, algorithm, engineers, unassigned]
+      properties:
+        plan_id:
+          type: integer
+          description: Идентификатор плана на сервере
+        algorithm:
+          $ref: "#/components/schemas/PlanAlgorithm"
+        engineers:
+          type: array
+          items:
+            $ref: "#/components/schemas/EngineerRoute"
+          description: Маршруты всех бригад региона на дату плана, по возрастанию engineer_id
+        unassigned:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnassignedTicket"
+          description: Неназначенные заявки, по возрастанию ticket_id

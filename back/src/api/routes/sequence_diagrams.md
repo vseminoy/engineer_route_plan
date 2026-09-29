@@ -428,3 +428,164 @@ sequenceDiagram
         end
     end
 ```
+
+## `POST /api/v1/plan/build`
+
+Собирает новый план региона на дату: читает открытые (не `completed`, не `cancelled`)
+заявки и бригады региона, получает матрицы времени в пути от OSRM (по одной на каждый
+представленный в регионе тип транспорта, запросы идут параллельно), запускает выбранный
+алгоритм (`or_tools` — трёхфазная лексикографическая оптимизация в отдельном процессе,
+`baseline_fcfs` — прямо в обработчике: не блокирует GIL дольше нескольких мс на
+максимальном входе), атрибутирует причины отказа и сохраняет план одной транзакцией.
+Каждый вызов создаёт новый план — раньше построенные планы региона не трогает.
+
+Бизнес-проверки до обращения к OSRM: код региона есть в конфигурации и у региона есть
+загруженные данные (иначе строить план не по чему); окно каждой открытой заявки региона
+приходится на `plan_date` (иначе смены бригад на `plan_date` не совпадают с окнами
+заявок, и план не имеет смысла); число точек будущей матрицы (бригады + заявки) не
+больше предела OSRM-сервера.
+
+Запрос целиком — под одним дедлайном (`asyncio.timeout(PLAN_BUILD_TIMEOUT_S)`,
+охватывает и обращения к OSRM, и солвер): превышение отвечает `503`, план не
+сохраняется. Основной алгоритм выполняется в пуле из одного процесса на весь сервер —
+конкурентный вызов `or_tools` ждёт своей очереди в пределах того же дедлайна, поэтому
+при перегрузке он тоже завершается `503`, а не бесконечным ожиданием.
+
+Построение логируется `plan_build_started`/`plan_build_finished` (или `_failed`) с общим
+`run_id`, привязанным контекстными переменными на всё построение — по нему в логах
+находятся записи `osrm_request_finished`/`_failed` и `solver_finished`/`solver_phase_finished`
+этого же вызова.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут plan)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (сборка плана)
+    participant Repo as queries (регионы/заявки/бригады)
+    participant OSRM as client (OSRM)
+    participant Pool as отдельный процесс (солвер)
+    participant Explain as service (атрибуция и тексты)
+    participant PlanRepo as queries (планы)
+    participant DB as PostgreSQL
+
+    Client->>API: POST /api/v1/plan/build {region, plan_date, algorithm}
+    alt тело больше MAX_REQUEST_BODY_BYTES
+        API->>H: исключение предела тела
+        H-->>Client: 413 без тела
+    else тело не JSON, region/plan_date/algorithm нет или не по формату, лишнее поле
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [...]}
+    else region не из конфигурации
+        API->>H: InvalidInput(region_unknown)
+        H-->>Client: 400 {fields: [region]}
+    else
+        API->>Svc: build(region, plan_date, algorithm)
+        Svc->>Svc: bind run_id (лог plan_build_started)
+        Svc->>Repo: region_id региона
+        alt у региона нет загруженных данных
+            Repo-->>Svc: region_id is None
+            Svc-->>API: InvalidInput(region_not_loaded) → лог plan_build_failed
+            API->>H: InvalidInput
+            H-->>Client: 400 {message}
+        else
+            Repo-->>Svc: region_id
+            Svc->>Repo: открытые заявки и бригады региона
+            Repo-->>Svc: tickets, engineers
+            alt окно хотя бы одной заявки не на plan_date
+                Svc-->>API: InvalidInput(plan_date_mismatch) → лог plan_build_failed
+                API->>H: InvalidInput
+                H-->>Client: 400 {message}
+            else число точек (бригады + заявки) больше предела OSRM
+                Svc-->>API: InvalidInput(too_many_points) → лог plan_build_failed
+                API->>H: InvalidInput
+                H-->>Client: 400 {message}
+            else
+                par на каждый тип транспорта бригад региона
+                    Svc->>OSRM: table(vehicle, старты бригад + точки заявок)
+                end
+                alt дедлайн построения истёк (OSRM или очередь солвера) или OSRM недоступен
+                    OSRM-->>Svc: DependencyUnavailable | TimeoutError
+                    Svc->>Svc: лог plan_build_failed (reason=osrm_unavailable | build_timeout)
+                    Svc-->>API: DependencyUnavailable
+                    API->>H: DependencyUnavailable
+                    H-->>Client: 503 без тела
+                else матрицы получены
+                    OSRM-->>Svc: матрицы по типам транспорта
+                    alt algorithm = or_tools
+                        Svc->>Pool: solve_day(tickets, engineers, матрицы, plan_date, time_limit) (единственный процесс на сервер)
+                        Pool->>Pool: лог solver_phase_finished ×3, solver_finished
+                        Pool-->>Svc: DayPlan
+                    else algorithm = baseline_fcfs
+                        Svc->>Svc: baseline.solve_day(...) (в обработчике, лог baseline_built)
+                    end
+                    Svc->>Explain: explain(DayPlan, tickets, engineers, матрицы, plan_date)
+                    Explain->>Explain: лог unassigned_reason_attributed ×N, unassigned_reasons_summary
+                    Explain-->>Svc: ExplainedPlan
+                    Svc->>PlanRepo: BEGIN
+                    PlanRepo->>DB: INSERT plans (region_id, plan_date, algorithm, created_at) RETURNING id
+                    PlanRepo->>DB: INSERT assignments ×(заявка) — назначенная (engineer_id, sequence_no, planned_arrival, travel_time_min, travel_distance_m, explanation) или неназначенная (unassigned_reason, explanation)
+                    alt БД отклонила запрос или недоступна
+                        DB-->>PlanRepo: ошибка → ROLLBACK
+                        PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
+                        Svc->>Svc: лог plan_build_failed (reason=db)
+                        Svc-->>API: DependencyUnavailable | DatabaseFailure
+                        API->>H: DependencyUnavailable | DatabaseFailure
+                        H-->>Client: 503 | 500 без тела (план не сохранён)
+                    else
+                        DB-->>PlanRepo: OK → COMMIT
+                        PlanRepo-->>Svc: plan_id
+                        Svc->>Svc: лог plan_build_finished (plan_id, assigned, unassigned, duration_ms)
+                        Svc-->>API: Plan
+                        API-->>Client: 201 Plan
+                    end
+                end
+            end
+        end
+    end
+```
+
+## `GET /api/v1/plan/{plan_id}`
+
+Читает ранее построенный и сохранённый план — без обращения к OSRM или солверу.
+Маршруты, объяснения и причины неназначенных заявок — уже сохранённые данные
+построения; простой (`idle_time_min`) каждой бригады пересчитывается из смены и
+сохранённых визитов при чтении, не хранится отдельно.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут plan)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (чтение плана)
+    participant PlanRepo as queries (планы)
+    participant DB as PostgreSQL
+
+    Client->>API: GET /api/v1/plan/42
+    alt plan_id не целое или вне 1..2^63−1
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [plan_id]}
+    else
+        API->>Svc: get(plan_id)
+        Svc->>PlanRepo: план, его назначения и бригады региона
+        alt нет свободного соединения в пуле или БД недоступна
+            PlanRepo->>PlanRepo: лог db_query_failed
+            PlanRepo-->>Svc: DependencyUnavailable
+            Svc->>Svc: лог plan_get_failed (error)
+            Svc-->>API: DependencyUnavailable
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела
+        else плана с таким id нет
+            PlanRepo-->>Svc: None
+            Svc->>Svc: лог plan_get_failed (warning, reason=plan_not_found)
+            Svc-->>API: NotFound
+            API->>H: NotFound
+            H-->>Client: 404 без тела
+        else
+            PlanRepo-->>Svc: план, назначения, бригады региона
+            Svc->>Svc: собрать маршруты (idle_time_min из смены и визитов), без лога
+            Svc-->>API: Plan
+            API-->>Client: 200 Plan
+        end
+    end
+```

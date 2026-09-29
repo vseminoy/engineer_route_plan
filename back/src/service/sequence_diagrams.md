@@ -539,6 +539,111 @@ sequenceDiagram
 по объёму сравнимо с числом заявок дня, полезно только при отладке; итоговые счётчики по
 каждому коду — один раз, на уровне `info`.
 
+## Сборка плана: `POST /plan/build`
+
+`plan_builder.py` — оркестратор эндпоинта: связывает загрузчик региона, OSRM-клиент,
+солвер (`solve_day` из раздела выше, или baseline), `explain` и репозиторий планов;
+собственных бизнес-правил о назначении заявок не содержит. Полная диаграмма запроса,
+включая ветки контроллера и единого обработчика ошибок, — в
+`src/api/routes/sequence_diagrams.md#post-apiv1planbuild`; здесь — только то, что
+специфично для сервисного слоя.
+
+**Проверки до обращения к OSRM**, по порядку (первая же непройденная — `InvalidInput`,
+без похода к OSRM или солверу):
+1. У региона есть загруженные данные (`region_id` не `None`).
+2. У каждой открытой заявки региона (`status NOT IN ('completed', 'cancelled')`)
+   `window_start.date() == plan_date`: смены бригад считаются от `plan_date`, и заявка
+   другой даты сделала бы модель солвера бессмысленной без единого явного сигнала об
+   этом на выходе.
+3. `len(engineers) + len(tickets) <= settings.osrm_max_table_size`: за пределом OSRM сам
+   отклоняет запрос `/table`, а до этого предела дело не доходит — файл заявок и
+   конфигурация региона уже ограничивают его 500 и 30 (раздел 6, 7), проверка здесь —
+   защита от несогласованной конфигурации, а не рабочий сценарий.
+
+**Матрицы OSRM** — по одной на каждый представленный в регионе тип транспорта
+(`{e.vehicle_type for e in engineers}`), точки — старты бригад, затем точки заявок в
+порядке `tickets` (тот же порядок, что берут `solve_day` и `explain`); типы транспорта не
+использует ни одна бригада — не запрашиваются. Запросы идут одновременно
+(`asyncio.gather`), а не по очереди: один недоступный граф не блокирует остальные — первая
+же ошибка отменяет ещё не завершённые запросы и результат — `DependencyUnavailable`.
+
+**Солвер вне event loop.** `or_tools.solve_day` не отдаёт GIL на всё время поиска
+(`back/README.md`, раздел «Технический долг»), поэтому вызывается через
+`loop.run_in_executor` в `ProcessPoolExecutor(max_workers=1)`, общем на всё приложение
+(создаётся в `lifespan`, живёт с приложением): второй одновременный вызов `or_tools`
+встаёт в очередь исполнителя, а не запускается параллельно вторым процессом — ограничение
+«не больше одного одновременного построения» из того же раздела технического долга.
+В процесс уходят только простые данные (`Ticket`/`Engineer` — `pydantic.BaseModel`,
+`TravelMatrix` — `@dataclass`, оба сериализуемы `pickle`); объекты `RoutingModel`
+процесс не пересекают. `baseline_fcfs` не заводится в пул — линейный проход по входу
+дня измерен в единицы мс (changeset 12) и не блокирует event loop заметно дольше самого
+вызова.
+
+**Общий дедлайн.** Весь путь от первого обращения к OSRM до получения `DayPlan`
+(включая ожидание в очереди исполнителя солвера) — под одним `asyncio.timeout`
+(`settings.plan_build_timeout_s`); срабатывание превращается в `DependencyUnavailable`
+до попытки сохранить план — недостроенный план в БД не попадает.
+
+**Персист** — одной транзакцией: `INSERT` строки `plans`, затем `INSERT` по одной
+строке `assignments` на каждую открытую заявку (назначенная — `engineer_id`,
+`sequence_no`, `planned_arrival` = `Visit.arrival`, `travel_time_min`, округлённый до
+целых метров `travel_distance_m`; неназначенная — `unassigned_reason`), `explanation` —
+у обеих. Ошибка любой строки откатывает всё: план либо сохранён целиком, либо не
+сохранён вовсе.
+
+```mermaid
+sequenceDiagram
+    participant API as api (маршрут plan)
+    participant Builder as service (plan_builder)
+    participant OSRM as client (OSRM)
+    participant Pool as ProcessPoolExecutor(1)
+    participant Solver as solver.solve_day
+    participant Explain as service (explain)
+    participant Repo as queries (планы)
+
+    API->>Builder: build(region, plan_date, algorithm)
+    Builder->>Builder: region_id, открытые заявки и бригады региона
+    alt region_id is None
+        Builder-->>API: InvalidInput(region_not_loaded)
+    else окно хотя бы одной заявки не на plan_date
+        Builder-->>API: InvalidInput(plan_date_mismatch)
+    else точек больше osrm_max_table_size
+        Builder-->>API: InvalidInput(too_many_points)
+    else
+        par на каждый тип транспорта бригад
+            Builder->>OSRM: table(vehicle, старты + точки заявок)
+        end
+        alt любой запрос упал или общий дедлайн истёк
+            OSRM-->>Builder: DependencyUnavailable | TimeoutError
+            Builder-->>API: DependencyUnavailable
+        else
+            OSRM-->>Builder: матрицы по типам транспорта
+            alt algorithm = or_tools
+                Builder->>Pool: run_in_executor(solve_day, ...) (очередь на 1 воркер)
+                Pool->>Solver: solve_day(tickets, engineers, матрицы, plan_date, time_limit)
+                Solver-->>Pool: DayPlan
+                Pool-->>Builder: DayPlan
+            else algorithm = baseline_fcfs
+                Builder->>Builder: baseline.solve_day(...) (в текущем процессе)
+            end
+            alt дедлайн истёк, ожидая солвер
+                Builder-->>API: DependencyUnavailable (build_timeout)
+            else
+                Builder->>Explain: explain(DayPlan, tickets, engineers, матрицы, plan_date)
+                Explain-->>Builder: ExplainedPlan
+                Builder->>Repo: BEGIN; INSERT plans; INSERT assignments ×(заявка); COMMIT
+                alt БД отклонила запрос или недоступна
+                    Repo-->>Builder: DependencyUnavailable | DatabaseFailure
+                    Builder-->>API: DependencyUnavailable | DatabaseFailure
+                else
+                    Repo-->>Builder: plan_id
+                    Builder-->>API: Plan (plan_id, маршруты, неназначенные)
+                end
+            end
+        end
+    end
+```
+
 ## Сборка гео-кэша (разово, вне приложения)
 
 `make geocache` собирает `data/geocache.csv` по уникальным адресам исходных наборов

@@ -46,6 +46,17 @@ components:
         13:20. Часы 00–23, минуты 00–59.
       examples: ["13:20"]
 
+    LocalDate:
+      type: string
+      minLength: 10
+      maxLength: 10
+      pattern: "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+      description: >-
+        Дата в местном времени региона, ISO-8601 без времени и часового пояса:
+        2026-08-17. Месяц 01–12, день 01–31; несуществующую дату (2026-02-30)
+        отклоняет сервер ответом 400.
+      examples: ["2026-08-17"]
+
     FieldError:
       type: object
       additionalProperties: false
