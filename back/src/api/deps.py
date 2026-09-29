@@ -12,6 +12,7 @@ from src.clients.osrm import OsrmClient
 from src.config import Settings
 from src.repository.plans import (
     get_plan,
+    insert_replanned_plan,
     insert_running_plan,
     list_plan_assignments,
     mark_plan_done,
@@ -24,13 +25,14 @@ from src.repository.region_lists import (
     list_open_tickets,
     list_tickets,
 )
-from src.repository.tickets import lock_ticket, update_ticket_status
+from src.repository.tickets import insert_ticket, lock_ticket, update_ticket_status
 from src.service.geocoding import GeoCache, Geocoder
 from src.service.loader import DATA_DIR, Loader
 from src.service.plan_builder import PlanBuilder
 from src.service.plan_reader import PlanReader
 from src.service.region_lists import RegionLists
 from src.service.regions import Regions
+from src.service.replan import Replanner
 from src.service.ticket_status import TicketStatuses
 from src.service.ticket_types import TicketTypes
 
@@ -82,7 +84,7 @@ def create_plan_services(
     regions: Regions,
     osrm: OsrmClient,
     pool: ProcessPoolExecutor,
-) -> tuple[PlanBuilder, PlanReader]:
+) -> tuple[PlanBuilder, PlanReader, Replanner]:
     builder = PlanBuilder(
         regions=regions,
         connect=db_pool.connection,
@@ -103,7 +105,17 @@ def create_plan_services(
         list_engineers=list_engineers,
         list_plan_assignments=list_plan_assignments,
     )
-    return builder, reader
+    replanner = Replanner(
+        connect=db_pool.connection,
+        get_plan=get_plan,
+        list_engineers=list_engineers,
+        list_tickets=list_tickets,
+        list_plan_assignments=list_plan_assignments,
+        insert_ticket=insert_ticket,
+        insert_replanned_plan=insert_replanned_plan,
+        osrm=osrm,
+    )
+    return builder, reader, replanner
 
 
 def get_loader(request: Request) -> Loader:
@@ -135,3 +147,8 @@ def get_plan_builder(request: Request) -> PlanBuilder:
 def get_plan_reader(request: Request) -> PlanReader:
     reader: PlanReader = request.app.state.plan_reader
     return reader
+
+
+def get_replanner(request: Request) -> Replanner:
+    replanner: Replanner = request.app.state.replanner
+    return replanner

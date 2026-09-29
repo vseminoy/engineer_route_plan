@@ -13,6 +13,18 @@ VALUES (:region_id, :external_id, :type_bk, :type_hd, :required_skill,
         ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
         :window_start, :window_end, :duration_min, :status, :received_at);
 
+-- name: insert_ticket(region_id, external_id, type_bk, type_hd, required_skill, required_vehicle, priority, district, address, lon, lat, window_start, window_end, duration_min, status, received_at)$
+-- One ticket, returning its id — an incident `POST /plan/{plan_id}/replan` creates
+-- (`new_urgent_ticket`); everything else about the row is as in insert_tickets.
+INSERT INTO tickets (region_id, external_id, type_bk, type_hd, required_skill,
+                     required_vehicle, priority, district, address, geom,
+                     window_start, window_end, duration_min, status, received_at)
+VALUES (:region_id, :external_id, :type_bk, :type_hd, :required_skill,
+        :required_vehicle, :priority, :district, :address,
+        ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
+        :window_start, :window_end, :duration_min, :status, :received_at)
+RETURNING id;
+
 -- name: list_tickets_by_region(region_id)
 -- Tickets of one region in any status, in id order. Datetimes are naive local time of
 -- the region, returned as stored.

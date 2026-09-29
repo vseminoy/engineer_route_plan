@@ -1,10 +1,11 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Path, Query
 
-from src.api.deps import get_plan_builder, get_plan_reader
+from src.api.deps import get_plan_builder, get_plan_reader, get_replanner
 from src.api.schemas.generated import models as api
+from src.domain import Point, VehicleType
 from src.errors import AppError, DatabaseFailure, DependencyUnavailable, InvalidInput
 from src.logging import get_logger
 from src.service.plan_builder import PlanBuilder
@@ -17,6 +18,15 @@ from src.service.plan_reader import (
     UnassignedRead,
     VisitRead,
 )
+from src.service.replan import (
+    AssignmentChange,
+    IncidentInput,
+    NewUrgentTicketEvent,
+    PlanDiff,
+    ReplanEvent,
+    Replanner,
+    TicketCancelledEvent,
+)
 
 logger = get_logger(__name__)
 
@@ -24,6 +34,7 @@ router = APIRouter(prefix="/api/v1", tags=["plan"])
 
 Builder = Annotated[PlanBuilder, Depends(get_plan_builder)]
 Reader = Annotated[PlanReader, Depends(get_plan_reader)]
+ReplannerDep = Annotated[Replanner, Depends(get_replanner)]
 # `plan_id`/`baseline_plan_id` as in the contract: a BIGINT key.
 PlanId = Annotated[int, Path(ge=1, le=9223372036854775807)]
 BaselinePlanId = Annotated[int, Query(ge=1, le=9223372036854775807)]
@@ -167,3 +178,87 @@ async def compare_plan(
         _log_compare_failed(e, plan_id, baseline_plan_id)
         raise
     return [_comparison_entry(e) for e in entries]
+
+
+def _triggered_at(value: api.LocalDateTime) -> datetime:
+    """As `_plan_date`: the contract's pattern already rejects a malformed grouping, only
+    a non-existent calendar date/time (2026-02-30) still needs rejecting here."""
+    try:
+        return datetime.fromisoformat(value.root)
+    except ValueError:
+        raise InvalidInput(
+            "triggered_at_invalid", fields=[("triggered_at", "Несуществующие дата или время")]
+        ) from None
+
+
+def _incident_input(t: api.IncidentTicketInput) -> IncidentInput:
+    return IncidentInput(
+        external_id=t.external_id,
+        type_bk=t.type_bk,
+        type_hd=t.type_hd,
+        district=t.district,
+        address=t.address,
+        location=Point(lat=t.location.lat, lon=t.location.lon),
+        required_vehicle=VehicleType(t.required_vehicle.value) if t.required_vehicle else None,
+    )
+
+
+def _replan_event(body: api.ReplanEventRequest) -> ReplanEvent:
+    event = body.root
+    if isinstance(event, api.NewUrgentTicketEvent):
+        return NewUrgentTicketEvent(
+            triggered_at=_triggered_at(event.triggered_at),
+            ticket=_incident_input(event.ticket),
+            reaction_min=event.reaction_min if event.reaction_min is not None else 120,
+        )
+    return TicketCancelledEvent(
+        triggered_at=_triggered_at(event.triggered_at), ticket_id=event.ticket_id
+    )
+
+
+def _assignment_change(c: AssignmentChange) -> api.AssignmentChange:
+    return api.AssignmentChange(
+        ticket_id=c.ticket_id,
+        before_engineer_id=c.before_engineer_id,
+        after_engineer_id=c.after_engineer_id,
+        before_sequence_no=c.before_sequence_no,
+        after_sequence_no=c.after_sequence_no,
+    )
+
+
+def _plan_diff(d: PlanDiff) -> api.PlanDiff:
+    return api.PlanDiff(
+        changed_assignments=[_assignment_change(c) for c in d.changed_assignments],
+        newly_assigned=d.newly_assigned,
+        newly_unassigned=d.newly_unassigned,
+        reassigned_from_unavailable_engineer=[],
+        plan_stability=d.plan_stability,
+    )
+
+
+@router.post(
+    "/plan/{plan_id}/replan", response_model=api.PlanReplanResult, operation_id="replan_plan"
+)
+async def replan_plan(
+    plan_id: PlanId, body: api.ReplanEventRequest, replanner: ReplannerDep, reader: Reader
+) -> api.PlanReplanResult:
+    try:
+        event = _replan_event(body)
+        outcome = await replanner.replan(plan_id, event)
+        plan = await reader.get(outcome.plan_id)
+    except AppError as e:
+        _log_failed("plan_replan_failed", e, plan_id=plan_id)
+        raise
+    assert plan.engineers is not None
+    assert plan.unassigned is not None
+    assert plan.metrics is not None
+    return api.PlanReplanResult(
+        plan_id=outcome.plan_id,
+        parent_plan_id=outcome.parent_plan_id,
+        algorithm=api.PlanAlgorithm(outcome.algorithm),
+        status=api.Status1.done,
+        engineers=[_engineer_route(r) for r in plan.engineers],
+        unassigned=[_unassigned(u) for u in plan.unassigned],
+        metrics=_metrics(plan.metrics),
+        diff=_plan_diff(outcome.diff),
+    )

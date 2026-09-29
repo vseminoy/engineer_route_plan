@@ -39,9 +39,17 @@ VALUES (:plan_id, :ticket_id, :engineer_id, :sequence_no, :planned_arrival,
 
 -- name: get_plan(plan_id)^
 -- The plan row by id; None if there is no such plan.
-SELECT id, region_id, algorithm, status, failed_reason
+SELECT id, region_id, plan_date, algorithm, status, failed_reason
 FROM plans
 WHERE id = :plan_id;
+
+-- name: insert_replanned_plan(region_id, plan_date, algorithm, parent_plan_id, created_at)$
+-- A plan produced by one replan event: done from the moment it exists, with its
+-- assignment rows inserted in the same transaction — replan is synchronous, unlike
+-- POST /plan/build, so there is no running state to pass through.
+INSERT INTO plans (region_id, plan_date, algorithm, status, parent_plan_id, created_at)
+VALUES (:region_id, :plan_date, :algorithm, 'done', :parent_plan_id, :created_at)
+RETURNING id;
 
 -- name: list_plan_assignments(plan_id)
 -- Rows of a `done` plan, in ticket id order, with the ticket's duration: idle time of a

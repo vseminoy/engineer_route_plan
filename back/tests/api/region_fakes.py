@@ -10,6 +10,7 @@ from src.api.deps import (
     get_plan_builder,
     get_plan_reader,
     get_region_lists,
+    get_replanner,
     get_ticket_statuses,
 )
 from src.app import create_app
@@ -19,6 +20,7 @@ from src.service.loader import LoadResult
 from src.service.plan_builder import QueuedPlan
 from src.service.plan_reader import ComparisonEntryRead, MetricsRead, PlanRead
 from src.service.regions import Region
+from src.service.replan import PlanDiff, ReplanEvent, ReplanOutcome
 from src.service.ticket_file import InvalidRow
 
 ENGINEER = Engineer(
@@ -191,6 +193,28 @@ class FakePlanReader:
         return self.compare_result
 
 
+class FakeReplanner:
+    def __init__(
+        self, outcome: "ReplanOutcome | None" = None, error: Exception | None = None
+    ) -> None:
+        self.outcome = outcome or ReplanOutcome(
+            plan_id=2,
+            parent_plan_id=1,
+            algorithm="or_tools",
+            diff=PlanDiff(
+                changed_assignments=[], newly_assigned=[], newly_unassigned=[], plan_stability=0
+            ),
+        )
+        self.error = error
+        self.calls: list[tuple[int, ReplanEvent]] = []
+
+    async def replan(self, plan_id: int, event: ReplanEvent) -> ReplanOutcome:
+        self.calls.append((plan_id, event))
+        if self.error:
+            raise self.error
+        return self.outcome
+
+
 def client(
     lists: FakeLists | None = None,
     loader: FakeLoader | None = None,
@@ -198,6 +222,7 @@ def client(
     statuses: FakeStatuses | None = None,
     plan_builder: FakePlanBuilder | None = None,
     plan_reader: FakePlanReader | None = None,
+    replanner: FakeReplanner | None = None,
 ) -> TestClient:
     """The application with fake data services; built inside the test, so its JSON logs go
     to the stderr `capsys` reads."""
@@ -216,4 +241,5 @@ def client(
     app.dependency_overrides[get_ticket_statuses] = lambda: statuses or FakeStatuses()
     app.dependency_overrides[get_plan_builder] = lambda: plan_builder or FakePlanBuilder()
     app.dependency_overrides[get_plan_reader] = lambda: plan_reader or FakePlanReader()
+    app.dependency_overrides[get_replanner] = lambda: replanner or FakeReplanner()
     return TestClient(app)

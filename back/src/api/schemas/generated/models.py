@@ -472,6 +472,158 @@ class Plan(BaseModel):
     ] = None
 
 
+class IncidentTicketInput(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    external_id: Annotated[
+        str,
+        Field(description="Номер заявки во внешней системе (HD/BK); не уникален", max_length=200),
+    ]
+    type_bk: Annotated[
+        str | None,
+        Field(
+            description="Тип заявки BK, если известен диспетчеру; null, если нет", max_length=200
+        ),
+    ]
+    type_hd: Annotated[
+        str,
+        Field(
+            description="Тип заявки HD — информационное поле; required_skill=emergency присваивается событием new_urgent_ticket, а не этим полем",
+            max_length=200,
+        ),
+    ]
+    district: Annotated[
+        str | None, Field(description="Район; null, если не указан", max_length=200)
+    ]
+    address: Annotated[str, Field(description="Адрес аварии", max_length=300)]
+    location: Point
+    required_vehicle: Annotated[
+        VehicleType | None,
+        Field(description="Транспорт, который требует заявка; null — подходит любой"),
+    ]
+
+
+class EventType(StrEnum):
+    new_urgent_ticket = "new_urgent_ticket"
+
+
+class NewUrgentTicketEvent(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    event_type: Annotated[EventType, Field(description="Тип события — новая аварийная заявка")]
+    triggered_at: Annotated[
+        LocalDateTime,
+        Field(
+            description="Момент, когда авария зафиксирована; план перестраивается от состояния бригад на этот момент"
+        ),
+    ]
+    ticket: IncidentTicketInput
+    reaction_min: Annotated[
+        int | None,
+        Field(
+            description="Целевое время реакции от triggered_at до прибытия бригады; необязательное поле, по умолчанию 120",
+            ge=60,
+            le=120,
+        ),
+    ] = 120
+
+
+class EventType1(StrEnum):
+    ticket_cancelled = "ticket_cancelled"
+
+
+class TicketCancelledEvent(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    event_type: Annotated[EventType1, Field(description="Тип события — заявка отменена")]
+    triggered_at: Annotated[
+        LocalDateTime, Field(description="Момент отмены; определяет состояние бригад на пересчёте")
+    ]
+    ticket_id: Annotated[
+        int, Field(description="Отменённая заявка (status=cancelled)", ge=1, le=9223372036854775807)
+    ]
+
+
+class ReplanEventRequest(RootModel[NewUrgentTicketEvent | TicketCancelledEvent]):
+    root: Annotated[
+        NewUrgentTicketEvent | TicketCancelledEvent,
+        Field(description="Одно событие перепланирования; тип определяет event_type."),
+    ]
+
+
+class AssignmentChange(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ticket_id: Annotated[int, Field(description="Заявка, чьё назначение изменилось")]
+    before_engineer_id: Annotated[int, Field(description="Бригада заявки в plan_id")]
+    after_engineer_id: Annotated[int, Field(description="Бригада заявки в новом плане")]
+    before_sequence_no: Annotated[int, Field(description="Порядковый номер визита в plan_id", ge=1)]
+    after_sequence_no: Annotated[
+        int, Field(description="Порядковый номер визита в новом плане", ge=1)
+    ]
+
+
+class PlanDiff(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    changed_assignments: Annotated[
+        list[AssignmentChange],
+        Field(description="Заявки, у которых сменилась бригада и/или порядковый номер визита"),
+    ]
+    newly_assigned: Annotated[
+        list[int],
+        Field(description="Заявки, назначенные впервые этим событием, по возрастанию ticket_id"),
+    ]
+    newly_unassigned: Annotated[
+        list[int],
+        Field(
+            description="Заявки, назначенные в plan_id, а этим событием ушедшие в unassigned, по возрастанию ticket_id"
+        ),
+    ]
+    reassigned_from_unavailable_engineer: Annotated[
+        list[int],
+        Field(
+            description="Заявки, переставленные с бригады, ставшей недоступной событием engineer_unavailable; это событие в API не реализовано, поле всегда пустое"
+        ),
+    ]
+    plan_stability: Annotated[
+        int, Field(description="Число бригад, чей маршрут изменило это событие", ge=0)
+    ]
+
+
+class Status1(StrEnum):
+    done = "done"
+
+
+class PlanReplanResult(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    plan_id: Annotated[int, Field(description="Идентификатор нового плана")]
+    parent_plan_id: Annotated[
+        int, Field(description="План, от которого посчитан этот, — plan_id из пути запроса")
+    ]
+    algorithm: Annotated[PlanAlgorithm, Field(description="Тот же алгоритм, что у plan_id")]
+    status: Annotated[
+        Status1,
+        Field(description="Перепланирование синхронное: ответ 200 всегда несёт готовый план"),
+    ]
+    engineers: Annotated[
+        list[EngineerRoute],
+        Field(description="Маршруты всех бригад региона на дату плана, по возрастанию engineer_id"),
+    ]
+    unassigned: Annotated[
+        list[UnassignedTicket], Field(description="Неназначенные заявки, по возрастанию ticket_id")
+    ]
+    metrics: PlanMetrics
+    diff: PlanDiff
+
+
 class Engineer(BaseModel):
     model_config = ConfigDict(
         extra="forbid",

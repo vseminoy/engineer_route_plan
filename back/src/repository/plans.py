@@ -15,6 +15,7 @@ from src.repository.region_data import queries
 class PlanRow:
     id: int
     region_id: int
+    plan_date: date
     algorithm: str
     status: str
     failed_reason: str | None
@@ -73,32 +74,39 @@ async def insert_running_plan(
     return plan_id
 
 
+async def _insert_assignments(
+    conn: AsyncConnection[Any], plan_id: int, assignments: list[AssignmentWrite]
+) -> None:
+    if not assignments:
+        return
+    await run_query(
+        "insert_assignments",
+        lambda: queries.insert_assignments(
+            conn,
+            [
+                {
+                    "plan_id": plan_id,
+                    "ticket_id": a.ticket_id,
+                    "engineer_id": a.engineer_id,
+                    "sequence_no": a.sequence_no,
+                    "planned_arrival": a.planned_arrival,
+                    "travel_time_min": a.travel_time_min,
+                    "travel_distance_m": a.travel_distance_m,
+                    "unassigned_reason": a.unassigned_reason,
+                    "explanation": a.explanation,
+                }
+                for a in assignments
+            ],
+        ),
+    )
+
+
 async def mark_plan_done(
     conn: AsyncConnection[Any], plan_id: int, assignments: list[AssignmentWrite]
 ) -> None:
     async with conn.transaction():
         await run_query("mark_plan_done", lambda: queries.mark_plan_done(conn, plan_id=plan_id))
-        if assignments:
-            await run_query(
-                "insert_assignments",
-                lambda: queries.insert_assignments(
-                    conn,
-                    [
-                        {
-                            "plan_id": plan_id,
-                            "ticket_id": a.ticket_id,
-                            "engineer_id": a.engineer_id,
-                            "sequence_no": a.sequence_no,
-                            "planned_arrival": a.planned_arrival,
-                            "travel_time_min": a.travel_time_min,
-                            "travel_distance_m": a.travel_distance_m,
-                            "unassigned_reason": a.unassigned_reason,
-                            "explanation": a.explanation,
-                        }
-                        for a in assignments
-                    ],
-                ),
-            )
+        await _insert_assignments(conn, plan_id, assignments)
 
 
 async def mark_plan_failed(conn: AsyncConnection[Any], plan_id: int, failed_reason: str) -> None:
@@ -112,10 +120,42 @@ async def get_plan(conn: AsyncConnection[Any], plan_id: int) -> PlanRow | None:
     row = await run_query("get_plan", lambda: queries.get_plan(conn, plan_id=plan_id))
     if row is None:
         return None
-    id_, region_id, algorithm, status, failed_reason = row
+    id_, region_id, plan_date, algorithm, status, failed_reason = row
     return PlanRow(
-        id=id_, region_id=region_id, algorithm=algorithm, status=status, failed_reason=failed_reason
+        id=id_,
+        region_id=region_id,
+        plan_date=plan_date,
+        algorithm=algorithm,
+        status=status,
+        failed_reason=failed_reason,
     )
+
+
+async def insert_replanned_plan(
+    conn: AsyncConnection[Any],
+    region_id: int,
+    plan_date: date,
+    algorithm: str,
+    parent_plan_id: int,
+    created_at: datetime,
+    assignments: list[AssignmentWrite],
+) -> int:
+    """A synchronous, already-`done` plan: `replan` never leaves `running`. Returns the
+    new plan's id."""
+    async with conn.transaction():
+        plan_id: int = await run_query(
+            "insert_replanned_plan",
+            lambda: queries.insert_replanned_plan(
+                conn,
+                region_id=region_id,
+                plan_date=plan_date,
+                algorithm=algorithm,
+                parent_plan_id=parent_plan_id,
+                created_at=created_at,
+            ),
+        )
+        await _insert_assignments(conn, plan_id, assignments)
+    return plan_id
 
 
 async def list_plan_assignments(conn: AsyncConnection[Any], plan_id: int) -> list[AssignmentRow]:

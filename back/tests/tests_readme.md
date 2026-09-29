@@ -585,6 +585,7 @@
 | `test_checker_fails_on_vehicle` | заявка с требуемым транспортом у бригады с другим | `AssertionError` |
 | `test_checker_fails_on_window` | начало работ после окончания окна; прибытие раньше, чем позволяет переезд | `AssertionError` |
 | `test_checker_fails_on_shift` | выезд раньше начала смены; окончание работ позже конца смены | `AssertionError` |
+
 ## `src/service/baseline.py` — baseline FCFS
 
 Файл: `tests/service/test_baseline.py`.
@@ -789,6 +790,53 @@
 | `test_compare_baseline_not_ready` (параметризован: `status="running"`, `status="failed"`) | план из пути `done`, план-baseline не `done` | `InvalidInput(reason="plan_not_ready")` |
 | `test_compare_dependency_unavailable_propagates` | `get_plan` любого из двух планов поднимает `DependencyUnavailable` | ошибка поднята как есть |
 
+## `src/service/replan.py` — перепланирование по событию (Contract Net)
+
+Файл: `tests/service/test_replan.py`.
+
+> Замена стабами: `connect`/`get_plan`/`list_engineers`/`list_tickets`/`list_plan_assignments`/
+> `insert_ticket`/`insert_replanned_plan` — без реальной БД (`FakeRepo`, `tests/service/test_replan.py`).
+> OSRM — `FakeOsrm`: любой перегон занимает ровно 5 минут (300 с) и 1 км, кроме точки до
+> самой себя, так что времена прибытия в тестах считаются вручную. `clock` — фиксированное
+> время.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_assigns_to_sole_candidate_with_empty_tail` | одна бригада с навыком `emergency`, у неё нет визитов | авария вставлена ей первым визитом; `diff.newly_assigned == [<id новой заявки>]`, `plan_stability == 1`; вставленная заявка — `required_skill=emergency`, `priority=1`, `duration_min=80` |
+| `test_no_skilled_engineer_leaves_incident_unassigned` | ни у одной бригады региона нет навыка `emergency` | заявка вставлена в БД, но её строка в новом плане — `engineer_id=None`, `unassigned_reason="no_skill"`; `diff.plan_stability == 0` |
+| `test_vehicle_mismatch_leaves_incident_unassigned_no_vehicle` | у бригады есть навык `emergency`, но не тот транспорт, что требует авария | `unassigned_reason="no_vehicle"` |
+| `test_assigns_past_reaction_target_when_no_faster_candidate` | единственный кандидат может успеть только заметно позже `reaction_min` (вставка аварии после уже стоящей заявки с узким окном) | авария всё равно назначена этой бригаде; `explanation` содержит «превышает целевую реакцию» |
+| `test_in_progress_visit_is_carried_forward_unchanged_on_touched_engineer` | у бригады-победителя есть визит `in_progress` (заморожен) и один открытый визит в хвосте | строка замороженного визита переносится без изменений (`sequence_no=1`, то же `planned_arrival`/`explanation`), не входит в `diff.changed_assignments`; авария и открытый визит получают следующие по порядку `sequence_no` |
+| `test_eviction_reoffers_blocking_ticket_to_another_brigade` | у бригады-победителя единственный визит в хвосте с узким окном и короткой сменой — ни одна из двух позиций вставки не проходит без вытеснения | визит вытеснен и переставлен на другую бригаду с тем же навыком; `explanation` обеих строк называет причину («вытеснением»/«переставлена»); `diff.changed_assignments` содержит вытесненную заявку, `plan_stability == 2` |
+| `test_eviction_without_matching_reoffer_candidate_unassigns_evicted_ticket` | как выше, но других бригад с нужным навыком нет | авария вставлена вытеснением, вытесненная заявка — `unassigned_reason="no_skill"`, входит в `diff.newly_unassigned` |
+| `test_ticket_cancelled_drops_visit_and_shifts_the_tail` | у бригады отменённый визит и один открытый визит после него | строки отменённого визита в новом плане нет вовсе; открытый визит получает `sequence_no=1` и пересчитанное время; `diff.changed_assignments` содержит его (сменился `sequence_no`) |
+| `test_ticket_cancelled_ticket_not_found` | `ticket_id` события не входит в заявки региона | `NotFound(reason="ticket_not_found")` |
+| `test_ticket_cancelled_ticket_not_yet_cancelled` | заявка существует, но её статус не `cancelled` | `Conflict(reason="ticket_not_cancelled")` |
+| `test_plan_not_done_is_rejected` | план-родитель `status="running"` | `InvalidInput(reason="plan_not_ready")` |
+| `test_plan_not_found` | `get_plan` вернул `None` | `NotFound(reason="plan_not_found")` |
+| `test_triggered_at_outside_plan_date_is_rejected` | `triggered_at` — другая календарная дата, чем `plan_date` | `InvalidInput(reason="triggered_at_out_of_range")` |
+| `test_untouched_engineer_row_is_copied_forward_unchanged` | бригада без навыка `emergency` с уже назначенной заявкой | её строка в новом плане совпадает со строкой плана-родителя дословно; заявка не входит в `diff.changed_assignments` |
+
+## `api` — POST /api/v1/plan/{plan_id}/replan
+
+Файл: `tests/api/test_replan.py`.
+
+> Замена стабами: `Replanner` — фейк через `app.dependency_overrides` (`FakeReplanner` в
+> `tests/api/region_fakes.py`), запоминает вызовы и возвращает заданный `ReplanOutcome` или
+> поднимает заданное исключение; `PlanReader` — тот же `FakePlanReader`, что и у остальных
+> `plan`-маршрутов (маршрут дочитывает engineers/unassigned/metrics нового плана им же).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_replan_new_urgent_ticket_returns_the_new_plan` | валидное тело `new_urgent_ticket`, `Replanner.replan` вернул `ReplanOutcome` с непустым `diff` | `200`, тело `PlanReplanResult` — `plan_id`/`parent_plan_id`/`status=done` из исхода, `engineers`/`unassigned`/`metrics` из `PlanReader.get`, `diff` — как вернул сервис, `reassigned_from_unavailable_engineer` всегда `[]`; событие дошло до `Replanner.replan` разобранным (`NewUrgentTicketEvent` с полями заявки и `reaction_min`) |
+| `test_replan_ticket_cancelled_reaches_the_service` | валидное тело `ticket_cancelled` | `Replanner.replan` вызван с `TicketCancelledEvent(ticket_id=...)` |
+| `test_replan_default_reaction_min_is_120` | тело без `reaction_min` | событию передан `reaction_min == 120` |
+| `test_replan_rejects_malformed_body` (параметризован: пустое тело, неизвестный `event_type`, лишнее поле, `ticket_id=0`) | запрос с таким телом | `400` |
+| `test_replan_invalid_triggered_at_date` | `triggered_at="2026-02-30T12:00:00"` (несуществующая дата, форму спека принимает) | `400`, `{"fields": [{"name": "triggered_at", "message": "Несуществующие дата или время"}]}` |
+| `test_replan_plan_not_found` | `Replanner.replan` поднимает `NotFound` | `404` |
+| `test_replan_plan_not_ready` | `Replanner.replan` поднимает `InvalidInput(reason="plan_not_ready")` | `400` |
+| `test_replan_ticket_not_cancelled_is_conflict` | `Replanner.replan` поднимает `Conflict(reason="ticket_not_cancelled")` | `409` |
+| `test_replan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `Replanner.replan` поднимает эту ошибку | `503` \| `500` без тела |
 ## `src/clients/nominatim.py` — клиент Nominatim
 
 Файл: `tests/clients/test_nominatim.py`.

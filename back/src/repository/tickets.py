@@ -6,7 +6,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from src.domain import Point, Skill, Ticket, TicketStatus, VehicleType
+from src.domain import Point, Skill, Ticket, TicketDraft, TicketStatus, VehicleType
 from src.repository.db import run_query
 from src.repository.region_data import queries
 
@@ -49,6 +49,33 @@ def ticket_from_row(row: Sequence[Any]) -> Ticket:
         status=TicketStatus(status),
         received_at=received_at,
     )
+
+
+async def insert_ticket(conn: AsyncConnection[Any], region_id: int, draft: TicketDraft) -> int:
+    """One new ticket (an incident `POST /plan/{plan_id}/replan` creates). Returns its id."""
+    ticket_id: int = await run_query(
+        "insert_ticket",
+        lambda: queries.insert_ticket(
+            conn,
+            region_id=region_id,
+            external_id=draft.external_id,
+            type_bk=draft.type_bk,
+            type_hd=draft.type_hd,
+            required_skill=draft.required_skill.value,
+            required_vehicle=draft.required_vehicle.value if draft.required_vehicle else None,
+            priority=draft.priority,
+            district=draft.district,
+            address=draft.address,
+            lon=draft.location.lon,
+            lat=draft.location.lat,
+            window_start=draft.window_start,
+            window_end=draft.window_end,
+            duration_min=draft.duration_min,
+            status=draft.status.value,
+            received_at=draft.received_at,
+        ),
+    )
+    return ticket_id
 
 
 async def lock_ticket(conn: AsyncConnection[Any], ticket_id: int) -> Ticket | None:

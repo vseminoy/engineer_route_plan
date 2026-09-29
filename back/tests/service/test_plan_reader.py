@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Any
 
 import pytest
@@ -10,6 +10,7 @@ from src.repository.plans import AssignmentRow, PlanRow
 from src.service.plan_reader import EngineerRouteRead, PlanRead, PlanReader, UnassignedRead
 
 POINT = Point(lat=55.75, lon=37.6)
+DAY = date(2026, 9, 1)
 
 
 def _engineer(id: int, shift_start: time = time(10, 0), shift_end: time = time(20, 0)) -> Engineer:
@@ -135,7 +136,9 @@ async def test_plan_not_found() -> None:
 
 
 async def test_running_plan_has_no_routes() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="running", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="running", failed_reason=None
+    )
     result = await _reader(FakeRepo(plan)).get(1)
     assert result.status == "running"
     assert result.engineers is None
@@ -145,7 +148,12 @@ async def test_running_plan_has_no_routes() -> None:
 
 async def test_failed_plan_carries_reason() -> None:
     plan = PlanRow(
-        id=1, region_id=9, algorithm="or_tools", status="failed", failed_reason="osrm_unavailable"
+        id=1,
+        region_id=9,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="failed",
+        failed_reason="osrm_unavailable",
     )
     result = await _reader(FakeRepo(plan)).get(1)
     assert result.status == "failed"
@@ -156,7 +164,9 @@ async def test_failed_plan_carries_reason() -> None:
 
 
 async def test_done_plan_lists_every_region_engineer() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+    )
     repo = FakeRepo(
         plan,
         engineers=[_engineer(2), _engineer(1)],
@@ -175,7 +185,9 @@ async def test_done_plan_lists_every_region_engineer() -> None:
 
 
 async def test_visit_fields_and_distance_rounding() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+    )
     row = _assigned(10, 1, 1, travel_min=12, distance_m=1234)
     repo = FakeRepo(plan, engineers=[_engineer(1)], assignments=[row])
 
@@ -190,7 +202,9 @@ async def test_visit_fields_and_distance_rounding() -> None:
 
 
 async def test_idle_time_is_shift_minus_travel_and_duration() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+    )
     engineer = _engineer(1, shift_start=time(10, 0), shift_end=time(12, 0))  # 120 min shift
     repo = FakeRepo(
         plan,
@@ -206,7 +220,9 @@ async def test_idle_time_is_shift_minus_travel_and_duration() -> None:
 
 
 async def test_visits_sorted_by_sequence_no() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+    )
     repo = FakeRepo(
         plan,
         engineers=[_engineer(1)],
@@ -217,7 +233,9 @@ async def test_visits_sorted_by_sequence_no() -> None:
 
 
 async def test_engineer_without_assignments_has_full_shift_idle() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+    )
     engineer = _engineer(1, shift_start=time(9, 0), shift_end=time(18, 0))
     repo = FakeRepo(plan, engineers=[engineer], assignments=[])
     (route,) = _engineers(await _reader(repo).get(1))
@@ -236,7 +254,9 @@ async def test_get_plan_dependency_unavailable_propagates() -> None:
 
 
 async def test_metrics_engineers_used_counts_used_only() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+    )
     repo = FakeRepo(plan, engineers=[_engineer(1), _engineer(2)], assignments=[_assigned(10, 1, 1)])
 
     result = await _reader(repo).get(1)
@@ -246,7 +266,9 @@ async def test_metrics_engineers_used_counts_used_only() -> None:
 
 
 async def test_metrics_total_distance_km_sums_all_routes() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+    )
     repo = FakeRepo(
         plan,
         engineers=[_engineer(1), _engineer(2)],
@@ -263,7 +285,9 @@ async def test_metrics_total_distance_km_sums_all_routes() -> None:
 
 
 async def test_metrics_distance_and_idle_by_engineer_cover_every_engineer() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+    )
     unused = _engineer(2, shift_start=time(9, 0), shift_end=time(18, 0))
     repo = FakeRepo(plan, engineers=[_engineer(1), unused], assignments=[_assigned(10, 1, 1)])
 
@@ -277,7 +301,9 @@ async def test_metrics_distance_and_idle_by_engineer_cover_every_engineer() -> N
 
 
 async def test_metrics_assigned_and_unassigned_counts() -> None:
-    plan = PlanRow(id=1, region_id=9, algorithm="or_tools", status="done", failed_reason=None)
+    plan = PlanRow(
+        id=1, region_id=9, plan_date=DAY, algorithm="or_tools", status="done", failed_reason=None
+    )
     repo = FakeRepo(
         plan,
         engineers=[_engineer(1)],
@@ -303,11 +329,17 @@ def _multi_repo(
     the two plans out of `get_plan`'s dict, as if it never existed."""
     plans = {
         1: PlanRow(
-            id=1, region_id=100, algorithm="or_tools", status=main_status, failed_reason=None
+            id=1,
+            region_id=100,
+            plan_date=DAY,
+            algorithm="or_tools",
+            status=main_status,
+            failed_reason=None,
         ),
         2: PlanRow(
             id=2,
             region_id=200,
+            plan_date=DAY,
             algorithm="baseline_fcfs",
             status=baseline_status,
             failed_reason=None,

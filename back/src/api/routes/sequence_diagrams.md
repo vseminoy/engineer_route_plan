@@ -690,3 +690,110 @@ sequenceDiagram
         end
     end
 ```
+
+## `POST /api/v1/plan/{plan_id}/replan`
+
+Синхронная операция — ответ `200` уже несёт готовый план, очереди и фоновой задачи, в
+отличие от `POST /api/v1/plan/build`, здесь нет. Тело — одно событие
+(`ReplanEventRequest`, `oneOf` по `event_type`): `new_urgent_ticket` или
+`ticket_cancelled`; ещё два вида события бизнес-процесса (обычная новая заявка —
+changeset 17, недоступность бригады — вне текущей декомпозиции) контрактом не описаны
+и здесь не принимаются — неизвестное значение `event_type` проваливает `oneOf` и
+уходит по общей ветке `400 {fields}`. Сам механизм Contract Net (объявление задания
+бригадам-кандидатам, ставки, победитель, каскад вытеснения глубиной 1 для аварии) — в
+разделе сервисного слоя «Перепланирование: Contract Net»; здесь — только HTTP-ветки
+маршрута и персист. Новый план хранит полный набор
+`assignments` региона (как и построение с нуля), а не только строки затронутых
+Contract Net бригад: `GET /api/v1/plan/{plan_id}` читает `assignments` целиком по
+`plan_id` и не знает о `parent_plan_id` — частичный персист оставил бы незатронутые
+заявки без строки вовсе, и они пропали бы из ответа. Строки незатронутых заявок —
+копии из `parent_plan_id`, `diff` в ответе считается отдельно, до персиста, и не влияет
+на то, что сохраняется.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут plan)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (перепланирование)
+    participant PlanRepo as queries (планы)
+    participant TicketRepo as queries (заявки)
+    participant OSRM as client (OSRM)
+    participant DB as PostgreSQL
+
+    Client->>API: POST /api/v1/plan/42/replan {event_type, triggered_at, ...}
+    alt plan_id не целое или вне 1..2^63−1, либо тело не проходит oneOf/ограничения полей
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields}
+    else
+        API->>Svc: replan(plan_id, event)
+        Svc->>PlanRepo: план plan_id (статус, algorithm, engineers, assignments)
+        alt нет свободного соединения в пуле или БД недоступна
+            PlanRepo-->>Svc: DependencyUnavailable
+            Svc-->>API: DependencyUnavailable
+            API->>API: лог plan_replan_failed (error, plan_id, event_type)
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела
+        else плана plan_id нет
+            PlanRepo-->>Svc: None
+            Svc-->>API: NotFound
+            API->>API: лог plan_replan_failed (warning, reason=plan_not_found)
+            API->>H: NotFound
+            H-->>Client: 404 без тела
+        else status plan_id не done
+            PlanRepo-->>Svc: план (status=running|failed)
+            Svc-->>API: InvalidInput(plan_not_ready)
+            API->>API: лог plan_replan_failed (warning, reason=plan_not_ready)
+            API->>H: InvalidInput
+            H-->>Client: 400 {message}
+        else event_type = ticket_cancelled и заявка ticket_id не найдена
+            Svc->>TicketRepo: заявка ticket_id
+            TicketRepo-->>Svc: None
+            Svc-->>API: NotFound
+            API->>API: лог plan_replan_failed (warning, reason=ticket_not_found)
+            API->>H: NotFound
+            H-->>Client: 404 без тела
+        else event_type = ticket_cancelled и заявка ещё не cancelled
+            TicketRepo-->>Svc: заявка (status ≠ cancelled)
+            Svc-->>API: Conflict
+            API->>API: лог plan_replan_failed (warning, reason=ticket_not_cancelled)
+            API->>H: Conflict
+            H-->>Client: 409 без тела
+        else triggered_at раньше начала или позже конца даты плана
+            Svc-->>API: InvalidInput(triggered_at_out_of_range)
+            API->>API: лог plan_replan_failed (warning, reason=triggered_at_out_of_range)
+            API->>H: InvalidInput
+            H-->>Client: 400 {message}
+        else
+            Svc->>Svc: state_at(plan, triggered_at) — заморозка in_progress, исключение completed/cancelled
+            alt event_type = new_urgent_ticket
+                Svc->>OSRM: время в пути от точек-кандидатов до заявки (профиль каждой бригады с навыком emergency)
+                alt OSRM недоступен
+                    OSRM-->>Svc: DependencyUnavailable
+                    Svc-->>API: DependencyUnavailable
+                    API->>API: лог plan_replan_failed (error, reason=osrm_unavailable)
+                    API->>H: DependencyUnavailable
+                    H-->>Client: 503 без тела
+                else
+                    OSRM-->>Svc: время в пути по кандидатам
+                    Svc->>Svc: contract_net(ticket, кандидаты) → победитель или eviction-каскад глубиной 1 (см. service-диаграмму)
+                end
+            else event_type = ticket_cancelled
+                Svc->>Svc: снять заявку с маршрута бригады, сдвинуть последующие визиты
+            end
+            Svc->>PlanRepo: BEGIN; [new_urgent_ticket] INSERT tickets (авария, серверные required_skill/priority/duration_min/received_at/окно); INSERT plans (parent_plan_id=42, status='done'); INSERT assignments — по одной строке на каждую открытую заявку региона: у незатронутых бригад копия строки parent_plan_id, у затронутых — новое назначение (или unassigned); COMMIT
+            alt БД отклонила запрос или недоступна
+                PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
+                Svc-->>API: DependencyUnavailable | DatabaseFailure
+                API->>API: лог plan_replan_failed (error)
+                API->>H: DependencyUnavailable | DatabaseFailure
+                H-->>Client: 503 | 500
+            else
+                PlanRepo-->>Svc: новый plan_id
+                Svc-->>API: PlanReplanResult (engineers, unassigned, metrics, diff)
+                API->>API: лог plan_replan_finished (info, plan_id, parent_plan_id, event_type)
+                API-->>Client: 200 PlanReplanResult
+            end
+        end
+    end
+```

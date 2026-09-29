@@ -437,6 +437,94 @@ paths:
           $ref: "./common.yaml#/components/responses/ServiceUnavailable"
           description: Недоступна база данных.
 
+  /api/v1/plan/{plan_id}/replan:
+    post:
+      operationId: replan_plan
+      summary: Перепланировать бригады по одному событию дня
+      description: >-
+        Синхронно пересчитывает часть плана-родителя (`plan_id`) по одному
+        событию перепланирования (Contract Net: объявление задания
+        бригадам-кандидатам, локальные ставки, победитель с минимальной
+        ставкой) и сохраняет результат новым планом с `parent_plan_id =
+        plan_id`. План-родитель должен быть в состоянии `status=done` —
+        иначе `400`. Пересчёт идёт от состояния бригад на момент
+        `triggered_at` события: заявки `completed`/`cancelled` исключены,
+        `in_progress` зафиксирована (бригада освобождается не раньше
+        планового окончания этой заявки, начатая работа не прерывается),
+        `en_route` и ещё не начатые заявки можно переставить. Затрагиваются
+        только маршруты бригад, на которые повлияло событие — план остальных
+        бригад переносится без изменений. Ответ несёт блок `diff` — что
+        именно изменилось относительно `plan_id`.
+
+
+        `new_urgent_ticket` — новая аварийная заявка. Кандидаты — бригады с
+        навыком `emergency`; побеждает ставка с минимальным временем
+        прибытия среди успевающих к `triggered_at + reaction_min` (60–120,
+        по умолчанию 120), иначе — минимальное время прибытия среди всех
+        кандидатов (превышение реакции отражается в `explanation` визита).
+        Сначала — вставка в маршрут победителя без нарушения окон уже
+        стоящих там заявок; если это невозможно — вытесняется одна не
+        начатая заявка победителя более низкого приоритета, которая
+        повторно торгуется среди остальных бригад без нарушения её
+        собственного окна (каскад глубиной 1 — второе вытеснение не
+        выполняется, вытесненная заявка, которую не удалось пристроить,
+        уходит в `unassigned`). Если ни одна бригада не обладает навыком
+        `emergency` — заявка уходит в `unassigned`. Заявке сервер сам
+        присваивает `required_skill=emergency`, `priority=1`,
+        `duration_min=80` (время на объекте), `received_at = triggered_at` и
+        окно `[triggered_at, конец даты плана]` — окно здесь не сужает выбор
+        бригады, целевое время реакции задаёт только `reaction_min`.
+
+
+        `ticket_cancelled` — заявка уже отменена (`PATCH
+        /tickets/{ticket_id}/status`, `status=cancelled`) и убирается из
+        маршрута бригады, на которую была назначена; последующие визиты этой
+        бригады сдвигаются по времени; остальные бригады не пересчитываются.
+      parameters:
+        - name: plan_id
+          in: path
+          required: true
+          description: Идентификатор плана-родителя на сервере
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 9223372036854775807
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplanEventRequest"
+      responses:
+        "200":
+          description: Новый план с diff относительно plan_id
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanReplanResult"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+          description: >-
+            Событие не проходит ограничения контракта (`fields`), либо
+            plan_id ещё не done, либо triggered_at раньше начала или позже
+            конца даты плана (`message`).
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+          description: >-
+            Плана с таким plan_id нет, либо (для ticket_cancelled) заявки с
+            таким ticket_id нет.
+        "409":
+          $ref: "./common.yaml#/components/responses/Conflict"
+          description: (ticket_cancelled) заявка ещё не в статусе cancelled.
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступны OSRM или база данных.
+
 components:
   parameters:
     RegionQuery:
@@ -961,3 +1049,198 @@ components:
             - $ref: "#/components/schemas/PlanFailedReason"
             - type: "null"
           description: Причина отказа; null, если status не failed
+
+    IncidentTicketInput:
+      type: object
+      additionalProperties: false
+      required: [external_id, type_bk, type_hd, district, address, location, required_vehicle]
+      properties:
+        external_id:
+          type: string
+          maxLength: 200
+          description: Номер заявки во внешней системе (HD/BK); не уникален
+        type_bk:
+          type: [string, "null"]
+          maxLength: 200
+          description: Тип заявки BK, если известен диспетчеру; null, если нет
+        type_hd:
+          type: string
+          maxLength: 200
+          description: >-
+            Тип заявки HD — информационное поле; required_skill=emergency
+            присваивается событием new_urgent_ticket, а не этим полем
+        district:
+          type: [string, "null"]
+          maxLength: 200
+          description: Район; null, если не указан
+        address:
+          type: string
+          maxLength: 300
+          description: Адрес аварии
+        location:
+          $ref: "#/components/schemas/Point"
+        required_vehicle:
+          description: Транспорт, который требует заявка; null — подходит любой
+          anyOf:
+            - $ref: "#/components/schemas/VehicleType"
+            - type: "null"
+
+    NewUrgentTicketEvent:
+      type: object
+      additionalProperties: false
+      required: [event_type, triggered_at, ticket]
+      properties:
+        event_type:
+          type: string
+          enum: [new_urgent_ticket]
+          description: Тип события — новая аварийная заявка
+        triggered_at:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+          description: >-
+            Момент, когда авария зафиксирована; план перестраивается от
+            состояния бригад на этот момент
+        ticket:
+          $ref: "#/components/schemas/IncidentTicketInput"
+        reaction_min:
+          type: integer
+          minimum: 60
+          maximum: 120
+          default: 120
+          description: >-
+            Целевое время реакции от triggered_at до прибытия бригады;
+            необязательное поле, по умолчанию 120
+
+    TicketCancelledEvent:
+      type: object
+      additionalProperties: false
+      required: [event_type, triggered_at, ticket_id]
+      properties:
+        event_type:
+          type: string
+          enum: [ticket_cancelled]
+          description: Тип события — заявка отменена
+        triggered_at:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+          description: Момент отмены; определяет состояние бригад на пересчёте
+        ticket_id:
+          type: integer
+          minimum: 1
+          maximum: 9223372036854775807
+          description: Отменённая заявка (status=cancelled)
+
+    ReplanEventRequest:
+      description: Одно событие перепланирования; тип определяет event_type.
+      oneOf:
+        - $ref: "#/components/schemas/NewUrgentTicketEvent"
+        - $ref: "#/components/schemas/TicketCancelledEvent"
+
+    AssignmentChange:
+      type: object
+      additionalProperties: false
+      required:
+        - ticket_id
+        - before_engineer_id
+        - after_engineer_id
+        - before_sequence_no
+        - after_sequence_no
+      properties:
+        ticket_id:
+          type: integer
+          description: Заявка, чьё назначение изменилось
+        before_engineer_id:
+          type: integer
+          description: Бригада заявки в plan_id
+        after_engineer_id:
+          type: integer
+          description: Бригада заявки в новом плане
+        before_sequence_no:
+          type: integer
+          minimum: 1
+          description: Порядковый номер визита в plan_id
+        after_sequence_no:
+          type: integer
+          minimum: 1
+          description: Порядковый номер визита в новом плане
+
+    PlanDiff:
+      type: object
+      additionalProperties: false
+      required:
+        - changed_assignments
+        - newly_assigned
+        - newly_unassigned
+        - reassigned_from_unavailable_engineer
+        - plan_stability
+      properties:
+        changed_assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssignmentChange"
+          description: Заявки, у которых сменилась бригада и/или порядковый номер визита
+        newly_assigned:
+          type: array
+          items:
+            type: integer
+          description: >-
+            Заявки, назначенные впервые этим событием, по возрастанию ticket_id
+        newly_unassigned:
+          type: array
+          items:
+            type: integer
+          description: >-
+            Заявки, назначенные в plan_id, а этим событием ушедшие в
+            unassigned, по возрастанию ticket_id
+        reassigned_from_unavailable_engineer:
+          type: array
+          items:
+            type: integer
+          description: >-
+            Заявки, переставленные с бригады, ставшей недоступной событием
+            engineer_unavailable; это событие в API не реализовано, поле
+            всегда пустое
+        plan_stability:
+          type: integer
+          minimum: 0
+          description: Число бригад, чей маршрут изменило это событие
+
+    PlanReplanResult:
+      type: object
+      additionalProperties: false
+      required:
+        - plan_id
+        - parent_plan_id
+        - algorithm
+        - status
+        - engineers
+        - unassigned
+        - metrics
+        - diff
+      properties:
+        plan_id:
+          type: integer
+          description: Идентификатор нового плана
+        parent_plan_id:
+          type: integer
+          description: План, от которого посчитан этот, — plan_id из пути запроса
+        algorithm:
+          $ref: "#/components/schemas/PlanAlgorithm"
+          description: Тот же алгоритм, что у plan_id
+        status:
+          type: string
+          enum: [done]
+          description: >-
+            Перепланирование синхронное: ответ 200 всегда несёт готовый план
+        engineers:
+          type: array
+          items:
+            $ref: "#/components/schemas/EngineerRoute"
+          description: Маршруты всех бригад региона на дату плана, по возрастанию engineer_id
+        unassigned:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnassignedTicket"
+          description: Неназначенные заявки, по возрастанию ticket_id
+        metrics:
+          $ref: "#/components/schemas/PlanMetrics"
+        diff:
+          $ref: "#/components/schemas/PlanDiff"

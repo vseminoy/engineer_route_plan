@@ -10,6 +10,7 @@ from src.api.deps import (
     get_plan_builder,
     get_plan_reader,
     get_region_lists,
+    get_replanner,
     get_ticket_statuses,
 )
 from src.app import create_app
@@ -26,6 +27,7 @@ from tests.api.region_fakes import (
     FakeLoader,
     FakePlanBuilder,
     FakePlanReader,
+    FakeReplanner,
     FakeStatuses,
 )
 
@@ -104,11 +106,13 @@ _plan_builder = _PlanBuilder(
     queued=QueuedPlan(plan_id=1, algorithm="or_tools", tickets=[TICKET], engineers=[ENGINEER])
 )
 _plan_reader = FakePlanReader(_DONE_PLAN)
+_replanner = FakeReplanner()
 _app.dependency_overrides[get_region_lists] = lambda: _lists
 _app.dependency_overrides[get_loader] = lambda: _loader
 _app.dependency_overrides[get_ticket_statuses] = lambda: _statuses
 _app.dependency_overrides[get_plan_builder] = lambda: _plan_builder
 _app.dependency_overrides[get_plan_reader] = lambda: _plan_reader
+_app.dependency_overrides[get_replanner] = lambda: _replanner
 
 # Negative cases send requests that break the spec's constraints; the contract
 # answers them with `400`, never `422`.
