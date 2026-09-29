@@ -1061,11 +1061,9 @@ components:
         algorithm:
           $ref: "#/components/schemas/PlanAlgorithm"
         engineer_set_id:
-          anyOf:
-            - type: integer
-              minimum: 1
-              maximum: 9223372036854775807
-            - type: "null"
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 9223372036854775807
           default: null
           description: >-
             Набор бригад региона, для которого строится план; null или
