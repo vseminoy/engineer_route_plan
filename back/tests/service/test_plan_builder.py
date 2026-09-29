@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Sequence
 from concurrent.futures import Executor, Future
 from contextlib import asynccontextmanager
@@ -109,6 +110,28 @@ class HangingPool(Executor):
 
     def submit(self, fn: Any, /, *args: Any, **kwargs: Any) -> Future[Any]:
         return Future()  # never resolved
+
+
+class SequencedPool(Executor):
+    """The first submitted call hangs forever, every later one runs synchronously —
+    models one build wedged on the executor while a second, later one is submitted to
+    the same object afterwards. `PlanBuilder._or_tools_lock` is what actually keeps the
+    two from ever being on the executor *at the same time*; this fake just needs to
+    behave differently across calls to prove that ordering held."""
+
+    def __init__(self) -> None:
+        self._first = True
+
+    def submit(self, fn: Any, /, *args: Any, **kwargs: Any) -> Future[Any]:
+        future: Future[Any] = Future()
+        if self._first:
+            self._first = False
+            return future  # never resolved -- the "wedged" build
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as e:  # noqa: BLE001 - mirrors ProcessPoolExecutor.submit
+            future.set_exception(e)
+        return future
 
 
 class FakeSolverPool:
@@ -433,6 +456,34 @@ async def test_build_or_tools_within_margin_not_treated_as_timeout() -> None:
     assert pool.restart_calls == 0
 
 
+async def test_build_or_tools_timeout_does_not_cancel_a_concurrent_build() -> None:
+    """Regression for the race steps 9-10 found: without `PlanBuilder._or_tools_lock`
+    serialising submissions to the shared executor, a second build merely queued behind
+    a wedged one would have its own future cancelled by `restart()`'s
+    `cancel_futures=True` too — surfacing as an unhandled `asyncio.CancelledError`
+    (a `BaseException`, caught nowhere in `build`) instead of ever finishing. Both builds
+    run on the same `PlanBuilder` (one process-wide instance in the real app), which is
+    exactly what makes the lock, a field of `PlanBuilder` and not of the pool, sufficient."""
+    repo = FakeRepo()
+    pool = FakeSolverPool(SequencedPool())
+    builder = _builder(
+        repo,
+        osrm=FakeOsrm({VehicleType.CAR: _matrix(2)}),
+        pool=pool,
+        solver_time_limit=timedelta(milliseconds=1),
+        solver_watchdog_margin_s=0.05,
+    )
+
+    await asyncio.gather(
+        builder.build(1, repo.tickets, repo.engineers, DAY, "or_tools"),
+        builder.build(2, repo.tickets, repo.engineers, DAY, "or_tools"),
+    )
+
+    assert repo.failed_calls == [(1, "timeout")]
+    assert repo.done_calls[0][0] == 2
+    assert pool.restart_calls == 1
+
+
 # --- sweep_running_plans --------------------------------------------------------------
 
 
@@ -473,9 +524,15 @@ async def test_sweep_running_plans_no_plans_no_log(capsys: pytest.CaptureFixture
     assert events(capsys, "plan_startup_sweep_finished") == []
 
 
-async def test_sweep_running_plans_db_unavailable_does_not_raise() -> None:
+async def test_sweep_running_plans_db_unavailable_does_not_raise(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    json_logs()
     repo = FakeSweepRepo(error=DependencyUnavailable(reason="db_unavailable"))
 
     result = await sweep_running_plans(FakeConnect(), repo.mark_running_plans_failed)
 
     assert result == []
+    (record,) = events(capsys, "plan_startup_sweep_failed")
+    assert record["level"] == "warning"
+    assert record["reason"] == "db_unavailable"

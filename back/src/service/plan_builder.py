@@ -13,7 +13,7 @@ it once scheduled.
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import partial
 from typing import Any, Protocol
@@ -86,6 +86,13 @@ class PlanBuilder:
     solver_time_limit: timedelta
     solver_watchdog_margin_s: float
     clock: Callable[[], datetime] = datetime.now
+    _or_tools_lock: asyncio.Lock = field(default_factory=asyncio.Lock, compare=False, repr=False)
+    """Serialises `or_tools` submissions to `self.pool`: without it, a second concurrent
+    build's future could sit queued in the same executor behind a wedged one, and the
+    watchdog's `restart()` would cancel it along with the wedged future it was meant to
+    kill — its `CancelledError` is a `BaseException`, uncaught anywhere in `build`, and
+    that plan would stay `running` forever. With the lock, at most one future ever exists
+    on the executor, so `restart()` only ever touches the one it is meant to."""
 
     async def enqueue(self, region_code: str, plan_date: date, algorithm: str) -> QueuedPlan:
         """Validates and queues a build. Raises `InvalidInput` before touching OSRM or the
@@ -156,29 +163,40 @@ class PlanBuilder:
         algorithm: str,
     ) -> ExplainedPlan:
         if algorithm == "or_tools":
-            loop = asyncio.get_running_loop()
-            future = loop.run_in_executor(
-                self.pool.executor,
-                partial(
-                    solve_day,
-                    tickets,
-                    engineers,
-                    matrices,
-                    day=plan_date,
-                    time_limit=self.solver_time_limit,
-                ),
-            )
-            watchdog_timeout = self.solver_time_limit.total_seconds() + self.solver_watchdog_margin_s
-            try:
-                day_plan = await asyncio.wait_for(future, timeout=watchdog_timeout)
-            except TimeoutError:
-                # `time_limit` is the budget the solver itself is handed and expected to
-                # respect; this is the backstop for when it (or the worker process) does
-                # not — a genuine hang, not a slow-but-honest search. The worker cannot be
-                # reasoned with, only ended: `restart()` kills it and stands up a fresh
-                # executor so the next `or_tools` build is not stuck behind a broken pool.
-                self.pool.restart()
-                raise _SolverTimedOut from None
+            # Serialised: at most one future ever sits on `self.pool.executor`, so
+            # `restart()` below can never cancel a *different* build's future — see the
+            # lock's own docstring on `PlanBuilder`.
+            async with self._or_tools_lock:
+                loop = asyncio.get_running_loop()
+                future = loop.run_in_executor(
+                    self.pool.executor,
+                    partial(
+                        solve_day,
+                        tickets,
+                        engineers,
+                        matrices,
+                        day=plan_date,
+                        time_limit=self.solver_time_limit,
+                    ),
+                )
+                watchdog_timeout = (
+                    self.solver_time_limit.total_seconds() + self.solver_watchdog_margin_s
+                )
+                try:
+                    day_plan = await asyncio.wait_for(future, timeout=watchdog_timeout)
+                except TimeoutError:
+                    # `time_limit` is the budget the solver itself is handed and expected
+                    # to respect; this is the backstop for when it (or the worker process)
+                    # does not — a genuine hang, not a slow-but-honest search. The worker
+                    # cannot be reasoned with, only ended: `restart()` kills it and stands
+                    # up a fresh executor so the next `or_tools` build is not stuck behind
+                    # a broken pool. `future.cancel()` is a no-op on the outcome (the
+                    # process backing it is already dead) but keeps its exception from
+                    # being set-and-never-retrieved once the killed worker's death
+                    # surfaces on it.
+                    self.pool.restart()
+                    future.cancel()
+                    raise _SolverTimedOut from None
         else:
             day_plan = baseline.solve_day(tickets, engineers, matrices, day=plan_date)
         return explain(day_plan, tickets, engineers, matrices, day=plan_date)
@@ -227,7 +245,11 @@ async def sweep_running_plans(
     try:
         async with database_errors("plan_startup_sweep"), connect() as conn:
             closed = await mark_running_plans_failed(conn, failed_reason)
-    except AppError:
+    except AppError as e:
+        # Already logged once by `database_errors` (a driver failure) or unreachable (any
+        # other `AppError` `mark_running_plans_failed` could raise) -- this record names
+        # the sweep specifically, since that one names only the query.
+        logger.warning("plan_startup_sweep_failed", reason=e.reason)
         return []
     if closed:
         logger.info("plan_startup_sweep_finished", count=len(closed))

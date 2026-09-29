@@ -739,10 +739,12 @@
 > `insert_running_plan`/`mark_plan_done`/`mark_plan_failed`/`mark_running_plans_failed` —
 > асинхронные функции без реальной БД; OSRM — фейк с `table()`, возвращающий заданные
 > матрицы или ошибку; пул солвера — `FakeSolverPool` (реализует протокол `SolverPool` из
-> `solver_pool.py`): `.executor` — либо `SyncPool` (выполняет переданную функцию синхронно
-> в текущем процессе), либо `HangingPool` (никогда не завершает future — исключительно для
-> теста таймаута), `.restart()` записывает факт вызова вместо реального kill/пересоздания
-> процесса (это уже проверено в `test_solver_pool.py` на настоящем `ProcessPoolExecutor`).
+> `solver_pool.py`): `.executor` — `SyncPool` (выполняет переданную функцию синхронно в
+> текущем процессе), `HangingPool` (никогда не завершает future — для теста таймаута) или
+> `SequencedPool` (первый `submit()` зависает, остальные отрабатывают синхронно — для
+> регрессии на гонку "таймаут одного билда не должен зацепить параллельный"),
+> `.restart()` записывает факт вызова вместо реального kill/пересоздания процесса (это уже
+> проверено в `test_solver_pool.py` на настоящем `ProcessPoolExecutor`).
 > `solve_day`, `baseline.solve_day` и `explain` вызываются по-настоящему — на входе в
 > 1 бригаду и 1 заявку, без нужды подделывать их результат. `solver_watchdog_margin_s` в
 > тестах — доли секунды, чтобы таймаут-тест не ждал реальные `SOLVER_TIME_LIMIT_S`.
@@ -774,6 +776,7 @@
 | `test_build_or_tools_timeout_marks_failed` | `algorithm="or_tools"`, `HangingPool`, `solver_time_limit + margin` = 0.05 с | план помечен `status=failed, failed_reason='timeout'`; `FakeSolverPool.restart()` вызван ровно один раз; `mark_plan_done` не вызван |
 | `test_build_baseline_never_times_out` | `algorithm="baseline_fcfs"`, тот же короткий `margin` | `baseline_fcfs` не заходит в `run_in_executor` вовсе — `status=done`, `FakeSolverPool.restart()` не вызван |
 | `test_build_or_tools_within_margin_not_treated_as_timeout` | `algorithm="or_tools"`, `SyncPool` укладывается в `time_limit + margin` | `status=done`; `restart()` не вызван |
+| `test_build_or_tools_timeout_does_not_cancel_a_concurrent_build` | два параллельных `build()` на одном `PlanBuilder` (общий `_or_tools_lock`), `SequencedPool`: первый вызов зависает, второй отработал бы штатно; у первого случается таймаут | план 1 — `failed_reason='timeout'`; план 2 — `status=done`, не задет `restart()`'ом первого (регрессия на гонку из ревью — без `_or_tools_lock` второй план получил бы необработанный `asyncio.CancelledError` и завис бы в `running` навсегда) |
 
 ### `sweep_running_plans`
 
@@ -784,7 +787,7 @@
 |---|---|---|
 | `test_sweep_running_plans_returns_closed_ids` | `mark_running_plans_failed` возвращает `[3, 7]` | функция возвращает `[3, 7]`; запись `plan_startup_sweep_finished` уровня `info` с `count=2` |
 | `test_sweep_running_plans_no_plans_no_log` | `mark_running_plans_failed` возвращает `[]` | функция возвращает `[]`; записи `plan_startup_sweep_finished` нет — старт с пустой БД не засоряет лог |
-| `test_sweep_running_plans_db_unavailable_does_not_raise` | `connect`/`mark_running_plans_failed` поднимает `DependencyUnavailable` | функция возвращает `[]`, исключение не прокидывается — недоступность БД на старте не должна ронять `lifespan` |
+| `test_sweep_running_plans_db_unavailable_does_not_raise` | `connect`/`mark_running_plans_failed` поднимает `DependencyUnavailable` | функция возвращает `[]`, исключение не прокидывается — недоступность БД на старте не должна ронять `lifespan`; запись `plan_startup_sweep_failed` уровня `warning` с `reason="db_unavailable"` |
 
 ## `src/service/solver_pool.py` — пул солвера, переживающий kill воркера
 
@@ -797,9 +800,10 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_restart_survives_a_killed_worker` | воркеру дан бесконечный `time.sleep`; `restart()` вызван без ожидания завершения | старый `Future` не завершается (worker убит до результата); новый тривиальный вызов на `.executor` после `restart()` успешно возвращает результат — пул не остался `BrokenProcessPool` |
+| `test_restart_survives_a_killed_worker` | воркер сигналит `multiprocessing.Manager().Event()` сразу по старту, затем уходит в бесконечный `time.sleep`; `restart()` вызван после сигнала (без гадания по фиксированной задержке), без ожидания завершения | старый `Future` не завершается (worker убит до результата); новый тривиальный вызов на `.executor` после `restart()` успешно возвращает результат — пул не остался `BrokenProcessPool` |
 | `test_restart_replaces_the_executor_instance` | вызов `restart()` | `.executor` до и после — разные объекты `ProcessPoolExecutor` |
 | `test_shutdown_stops_accepting_new_work` | `shutdown()`, затем `submit` на `.executor` | `RuntimeError` («cannot schedule new futures after shutdown») |
+| `test_shutdown_does_not_wait_for_a_busy_worker` | воркер занят (сигналит старт, затем спит 3600с); `shutdown(cancel_futures=True)` засечён по времени | возврат меньше чем за 5с — `shutdown()` не наследует `Executor.shutdown`'s `wait=True` по умолчанию, иначе `app.py`'s `finally` ждал бы текущий солв вместо быстрого выхода |
 
 ## `src/service/plan_reader.py` — чтение плана
 

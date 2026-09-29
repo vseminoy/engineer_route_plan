@@ -10,6 +10,10 @@ wedged `or_tools` build costs that one plan's build, not the process's ability t
 from concurrent.futures import Executor, ProcessPoolExecutor
 from typing import Protocol
 
+from src.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class SolverPool(Protocol):
     """What `PlanBuilder` needs of the pool — narrow enough that tests stand in a fake
@@ -24,8 +28,13 @@ class SolverPool(Protocol):
 
 
 class ProcessSolverPool:
-    """The pool the running app uses. `max_workers=1`: `or_tools` never runs two builds
-    at once, a second concurrent request queues behind the first (see `plan_builder.py`).
+    """The pool the running app uses. `max_workers=1`: only one OS process backs it, so
+    `restart()` only ever has one future to worry about *if* `PlanBuilder` never submits
+    a second `or_tools` build before the first one's future has been awaited — which is
+    exactly what its own submission lock guarantees (see `plan_builder.py`'s `_solve`).
+    Without that guarantee, a second, merely queued future would be cancelled by
+    `restart()` along with the wedged one; this class does not defend against that on its
+    own, because it has no way to know which futures are safe to drop.
     """
 
     def __init__(self, max_workers: int = 1) -> None:
@@ -39,11 +48,23 @@ class ProcessSolverPool:
     def restart(self) -> None:
         # `_processes` (the `multiprocessing.Process` objects backing the executor) is
         # not part of `ProcessPoolExecutor`'s public surface, but there is no other way
-        # to end a worker that is already running a submitted call.
-        for process in self._executor._processes.values():  # type: ignore[attr-defined]
+        # to end a worker that is already running a submitted call. A future Python
+        # version could change or drop it; caught rather than left to blow up the one
+        # code path that runs precisely when something has already gone wrong.
+        try:
+            processes = list(self._executor._processes.values())  # type: ignore[attr-defined]
+        except AttributeError:
+            processes = []
+            logger.error("solver_pool_restart_missing_processes")
+        for process in processes:
             process.kill()
         self._executor.shutdown(wait=False, cancel_futures=True)
         self._executor = ProcessPoolExecutor(max_workers=self._max_workers)
 
     def shutdown(self, *, cancel_futures: bool = False) -> None:
-        self._executor.shutdown(cancel_futures=cancel_futures)
+        # `wait=False` always: a caller asking to exit fast (`app.py`'s `finally`, which
+        # must not outlive the orchestrator's own shutdown grace period) would otherwise
+        # block on `Executor.shutdown`'s default `wait=True` until the current solve
+        # finishes — up to `SOLVER_TIME_LIMIT_S`, defeating the point of calling this at
+        # all instead of just letting the process exit.
+        self._executor.shutdown(wait=False, cancel_futures=cancel_futures)
