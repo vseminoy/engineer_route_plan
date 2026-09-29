@@ -203,6 +203,10 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 
 ### 4.2. Планирование
 
+Построение плана — асинхронное: `POST /plan/build` ставит расчёт в очередь и сразу отвечает,
+не дожидаясь OSRM и солвера; клиент узнаёт результат, опрашивая `GET /plan/{plan_id}`, пока
+план не перейдёт из `running` в `done` или `failed`.
+
 `POST /plan/build`
 
 Запрос:
@@ -214,11 +218,24 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 }
 ```
 
-Ответ (`201`):
+Ответ (`202`) — план поставлен в очередь, маршрутов ещё нет:
 ```json
 {
   "plan_id": 42,
   "algorithm": "or_tools",
+  "status": "running"
+}
+```
+
+`GET /plan/{plan_id}` — тот же формат, в любом из трёх состояний `status`:
+
+- **`running`** — расчёт ещё идёт, тело как у ответа `POST /plan/build`;
+- **`done`** — расчёт закончен успешно:
+```json
+{
+  "plan_id": 42,
+  "algorithm": "or_tools",
+  "status": "done",
   "engineers": [
     {
       "engineer_id": 3,
@@ -255,10 +272,15 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
   }
 }
 ```
+- **`failed`** — расчёт не закончился (OSRM или БД недоступны на самом построении):
+  `{"plan_id": 42, "algorithm": "or_tools", "status": "failed", "failed_reason": "osrm_unavailable"}`.
 
 `idle_time_min` / `idle_time_by_engineer_min` (FR-23, M) — простой бригады = длина смены минус (суммарное время визитов + суммарное время в пути); поле **обязательно** к возврату API, но участвует только в отображении — не влияет на целевую функцию солвера (раздел 5) и не входит в сравнение с baseline в `/plan/{plan_id}/compare`.
 
-`GET /plan/{plan_id}` — получить ранее построенный план в том же формате.
+Строка плана появляется в БД в момент постановки в очередь (`status = running`), без
+`assignments` — они вставляются одним пакетом, когда расчёт заканчивается успехом. Если
+процесс backend перезапускается во время расчёта, план так и остаётся в `running`: за это
+отвечает вызывающий (повторный `POST /plan/build`), отдельного механизма восстановления нет.
 
 `GET /plan/{plan_id}/compare?baseline_plan_id=...` — сравнение метрик двух планов:
 ```json

@@ -431,30 +431,36 @@ sequenceDiagram
 
 ## `POST /api/v1/plan/build`
 
-Собирает новый план региона на дату: читает открытые (не `completed`, не `cancelled`)
-заявки и бригады региона, получает матрицы времени в пути от OSRM (по одной на каждый
-представленный в регионе тип транспорта, запросы идут параллельно), запускает выбранный
+Ставит построение плана региона на дату в очередь и отвечает, не дожидаясь его конца:
+проверяет заявки и предел точек синхронно, вставляет строку плана со `status = running` и
+возвращает её клиенту — чтение открытых заявок и бригад региона, обращение к OSRM, выбранный
 алгоритм (`or_tools` — трёхфазная лексикографическая оптимизация в отдельном процессе,
-`baseline_fcfs` — прямо в обработчике: не блокирует GIL дольше нескольких мс на
-максимальном входе), атрибутирует причины отказа и сохраняет план одной транзакцией.
-Каждый вызов создаёт новый план — раньше построенные планы региона не трогает.
+`baseline_fcfs` — в фоновой задаче того же процесса: не блокирует GIL дольше нескольких мс на
+максимальном входе), атрибуция причин отказа и запись результата идут в фоновой задаче уже
+после ответа. Клиент узнаёт результат, опрашивая `GET /api/v1/plan/{plan_id}`, пока `status`
+не станет `done` или `failed`. Каждый вызов создаёт новый план — раньше построенные планы
+региона не трогает.
 
-Бизнес-проверки до обращения к OSRM: код региона есть в конфигурации и у региона есть
+Бизнес-проверки до постановки в очередь: код региона есть в конфигурации и у региона есть
 загруженные данные (иначе строить план не по чему); окно каждой открытой заявки региона
 приходится на `plan_date` (иначе смены бригад на `plan_date` не совпадают с окнами
 заявок, и план не имеет смысла); число точек будущей матрицы (бригады + заявки) не
-больше предела OSRM-сервера.
+больше предела OSRM-сервера. Эти проверки — единственное, что может вернуть `400`: сама
+постановка в очередь предполагает, что план будет считаться, и вернуться `202` может либо
+она, либо отказ БД при вставке строки плана.
 
-Запрос целиком — под одним дедлайном (`asyncio.timeout(PLAN_BUILD_TIMEOUT_S)`,
-охватывает и обращения к OSRM, и солвер): превышение отвечает `503`, план не
-сохраняется. Основной алгоритм выполняется в пуле из одного процесса на весь сервер —
-конкурентный вызов `or_tools` ждёт своей очереди в пределах того же дедлайна, поэтому
-при перегрузке он тоже завершается `503`, а не бесконечным ожиданием.
+Общего дедлайна на всё построение больше нет: раз ответ клиенту уже отправлен, обращение к
+OSRM ограничено собственным таймаутом HTTP-клиента, а солвер — своим `time_limit`. Основной
+алгоритм выполняется в пуле из одного процесса на весь сервер — конкурентное построение
+встаёт в очередь исполнителя, а не запускается параллельно вторым процессом; на очередь эта
+операция не отвечает клиенту вообще, поскольку она уже ответила `202` раньше.
 
-Построение логируется `plan_build_started`/`plan_build_finished` (или `_failed`) с общим
-`run_id`, привязанным контекстными переменными на всё построение — по нему в логах
-находятся записи `osrm_request_finished`/`_failed` и `solver_finished`/`solver_phase_finished`
-этого же вызова.
+Построение логируется `plan_build_started` (синхронно с ответом `202`) и
+`plan_build_finished`/`plan_build_failed` (в фоновой задаче, когда расчёт закончился) с общим
+`run_id`: он передаётся в фоновую задачу явно, поскольку контекстные переменные запроса не
+переживают его ответ. По этому `run_id` в логах находятся записи
+`osrm_request_finished`/`_failed` и `solver_finished`/`solver_phase_finished` того же
+построения.
 
 ```mermaid
 sequenceDiagram
@@ -463,11 +469,12 @@ sequenceDiagram
     participant H as api (единый обработчик ошибок)
     participant Svc as service (сборка плана)
     participant Repo as queries (регионы/заявки/бригады)
+    participant PlanRepo as queries (планы)
+    participant DB as PostgreSQL
+    participant BG as фоновая задача
     participant OSRM as client (OSRM)
     participant Pool as отдельный процесс (солвер)
     participant Explain as service (атрибуция и тексты)
-    participant PlanRepo as queries (планы)
-    participant DB as PostgreSQL
 
     Client->>API: POST /api/v1/plan/build {region, plan_date, algorithm}
     alt тело больше MAX_REQUEST_BODY_BYTES
@@ -485,7 +492,7 @@ sequenceDiagram
         Svc->>Repo: region_id региона
         alt у региона нет загруженных данных
             Repo-->>Svc: region_id is None
-            Svc-->>API: InvalidInput(region_not_loaded) → лог plan_build_failed
+            Svc-->>API: InvalidInput(region_not_loaded)
             API->>H: InvalidInput
             H-->>Client: 400 {message}
         else
@@ -493,51 +500,54 @@ sequenceDiagram
             Svc->>Repo: открытые заявки и бригады региона
             Repo-->>Svc: tickets, engineers
             alt окно хотя бы одной заявки не на plan_date
-                Svc-->>API: InvalidInput(plan_date_mismatch) → лог plan_build_failed
+                Svc-->>API: InvalidInput(plan_date_mismatch)
                 API->>H: InvalidInput
                 H-->>Client: 400 {message}
             else число точек (бригады + заявки) больше предела OSRM
-                Svc-->>API: InvalidInput(too_many_points) → лог plan_build_failed
+                Svc-->>API: InvalidInput(too_many_points)
                 API->>H: InvalidInput
                 H-->>Client: 400 {message}
             else
-                par на каждый тип транспорта бригад региона
-                    Svc->>OSRM: table(vehicle, старты бригад + точки заявок)
-                end
-                alt дедлайн построения истёк (OSRM или очередь солвера) или OSRM недоступен
-                    OSRM-->>Svc: DependencyUnavailable | TimeoutError
-                    Svc->>Svc: лог plan_build_failed (reason=osrm_unavailable | build_timeout)
-                    Svc-->>API: DependencyUnavailable
-                    API->>H: DependencyUnavailable
-                    H-->>Client: 503 без тела
-                else матрицы получены
-                    OSRM-->>Svc: матрицы по типам транспорта
-                    alt algorithm = or_tools
-                        Svc->>Pool: solve_day(tickets, engineers, матрицы, plan_date, time_limit) (единственный процесс на сервер)
-                        Pool->>Pool: лог solver_phase_finished ×3, solver_finished
-                        Pool-->>Svc: DayPlan
-                    else algorithm = baseline_fcfs
-                        Svc->>Svc: baseline.solve_day(...) (в обработчике, лог baseline_built)
+                Svc->>PlanRepo: INSERT plans (region_id, plan_date, algorithm, status=running, created_at) RETURNING id
+                alt БД отклонила запрос или недоступна
+                    PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
+                    Svc->>Svc: лог plan_build_failed (reason=db)
+                    Svc-->>API: DependencyUnavailable | DatabaseFailure
+                    API->>H: DependencyUnavailable | DatabaseFailure
+                    H-->>Client: 503 | 500 без тела (план не создан)
+                else
+                    PlanRepo-->>Svc: plan_id
+                    Svc-->>API: Plan (plan_id, status=running), фоновая задача поставлена
+                    API-->>Client: 202 Plan (status=running)
+                    API->>BG: build_in_background(run_id, plan_id, tickets, engineers, plan_date, algorithm)
+                    par на каждый тип транспорта бригад региона
+                        BG->>OSRM: table(vehicle, старты бригад + точки заявок)
                     end
-                    Svc->>Explain: explain(DayPlan, tickets, engineers, матрицы, plan_date)
-                    Explain->>Explain: лог unassigned_reason_attributed ×N, unassigned_reasons_summary
-                    Explain-->>Svc: ExplainedPlan
-                    Svc->>PlanRepo: BEGIN
-                    PlanRepo->>DB: INSERT plans (region_id, plan_date, algorithm, created_at) RETURNING id
-                    PlanRepo->>DB: INSERT assignments ×(заявка) — назначенная (engineer_id, sequence_no, planned_arrival, travel_time_min, travel_distance_m, explanation) или неназначенная (unassigned_reason, explanation)
-                    alt БД отклонила запрос или недоступна
-                        DB-->>PlanRepo: ошибка → ROLLBACK
-                        PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
-                        Svc->>Svc: лог plan_build_failed (reason=db)
-                        Svc-->>API: DependencyUnavailable | DatabaseFailure
-                        API->>H: DependencyUnavailable | DatabaseFailure
-                        H-->>Client: 503 | 500 без тела (план не сохранён)
-                    else
-                        DB-->>PlanRepo: OK → COMMIT
-                        PlanRepo-->>Svc: plan_id
-                        Svc->>Svc: лог plan_build_finished (plan_id, assigned, unassigned, duration_ms)
-                        Svc-->>API: Plan
-                        API-->>Client: 201 Plan
+                    alt OSRM недоступен
+                        OSRM-->>BG: DependencyUnavailable
+                        BG->>BG: лог plan_build_failed (reason=osrm_unavailable)
+                        BG->>PlanRepo: UPDATE plans SET status=failed, failed_reason=osrm_unavailable
+                    else матрицы получены
+                        OSRM-->>BG: матрицы по типам транспорта
+                        alt algorithm = or_tools
+                            BG->>Pool: solve_day(tickets, engineers, матрицы, plan_date, time_limit) (единственный процесс на сервер)
+                            Pool->>Pool: лог solver_phase_finished ×3, solver_finished
+                            Pool-->>BG: DayPlan
+                        else algorithm = baseline_fcfs
+                            BG->>BG: baseline.solve_day(...) (лог baseline_built)
+                        end
+                        BG->>Explain: explain(DayPlan, tickets, engineers, матрицы, plan_date)
+                        Explain->>Explain: лог unassigned_reason_attributed ×N, unassigned_reasons_summary
+                        Explain-->>BG: ExplainedPlan
+                        BG->>PlanRepo: BEGIN#59; INSERT assignments ×(заявка)#59; UPDATE plans SET status=done#59; COMMIT
+                        alt БД отклонила запрос или недоступна
+                            PlanRepo-->>BG: ошибка → ROLLBACK
+                            BG->>BG: лог plan_build_failed (reason=db)
+                            BG->>PlanRepo: UPDATE plans SET status=failed, failed_reason=db_unavailable
+                        else
+                            PlanRepo-->>BG: OK
+                            BG->>BG: лог plan_build_finished (plan_id, assigned, unassigned, duration_ms)
+                        end
                     end
                 end
             end
@@ -547,10 +557,23 @@ sequenceDiagram
 
 ## `GET /api/v1/plan/{plan_id}`
 
-Читает ранее построенный и сохранённый план — без обращения к OSRM или солверу.
-Маршруты, объяснения и причины неназначенных заявок — уже сохранённые данные
-построения; простой (`idle_time_min`) каждой бригады пересчитывается из смены и
-сохранённых визитов при чтении, не хранится отдельно.
+Читает сохранённую запись плана — без обращения к OSRM или солверу. Ответ
+всегда `200 Plan` с полем `status`; клиент отличает состояния по этому полю,
+а не по коду ответа:
+
+- `status=running` — построение ещё не завершилось (фоновая задача из
+  `POST /plan/build` продолжает работать); `engineers` и `unassigned`
+  в ответе отсутствуют.
+- `status=done` — построение завершилось успешно; `engineers` и
+  `unassigned` заполнены. Маршруты, объяснения и причины неназначенных
+  заявок — уже сохранённые данные построения; простой (`idle_time_min`)
+  каждой бригады пересчитывается из смены и сохранённых визитов при чтении,
+  не хранится отдельно.
+- `status=failed` — построение завершилось ошибкой; заполнено
+  `failed_reason`, `engineers` и `unassigned` отсутствуют.
+
+Клиент опрашивает этот эндпоинт с паузой между запросами, пока `status` не
+станет `done` или `failed`.
 
 ```mermaid
 sequenceDiagram
@@ -567,7 +590,7 @@ sequenceDiagram
         H-->>Client: 400 {fields: [plan_id]}
     else
         API->>Svc: get(plan_id)
-        Svc->>PlanRepo: план, его назначения и бригады региона
+        Svc->>PlanRepo: план, его статус и (если есть) назначения и бригады региона
         alt нет свободного соединения в пуле или БД недоступна
             PlanRepo->>PlanRepo: лог db_query_failed
             PlanRepo-->>Svc: DependencyUnavailable
@@ -581,10 +604,18 @@ sequenceDiagram
             Svc-->>API: NotFound
             API->>H: NotFound
             H-->>Client: 404 без тела
-        else
-            PlanRepo-->>Svc: план, назначения, бригады региона
+        else status=running
+            PlanRepo-->>Svc: план (status=running), без назначений
+            Svc-->>API: Plan (status=running, без engineers и unassigned)
+            API-->>Client: 200 Plan
+        else status=failed
+            PlanRepo-->>Svc: план (status=failed, failed_reason)
+            Svc-->>API: Plan (status=failed, без engineers и unassigned)
+            API-->>Client: 200 Plan
+        else status=done
+            PlanRepo-->>Svc: план (status=done), назначения, бригады региона
             Svc->>Svc: собрать маршруты (idle_time_min из смены и визитов), без лога
-            Svc-->>API: Plan
+            Svc-->>API: Plan (status=done, engineers, unassigned)
             API-->>Client: 200 Plan
         end
     end
