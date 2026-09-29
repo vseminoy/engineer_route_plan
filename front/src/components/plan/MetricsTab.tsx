@@ -3,10 +3,10 @@ import { IdleTimeBlock } from './IdleTimeBlock';
 import { OptionalMetricsBlock } from './OptionalMetricsBlock';
 import { usePlanCompare } from '@/queries/usePlanCompare';
 import { formatKm, formatSignedDelta } from '@/lib/format';
-import type { Plan } from '@/types/domain';
+import type { DonePlan } from '@/types/domain';
 
 interface Props {
-  plan: Plan;
+  plan: DonePlan;
 }
 
 export function MetricsTab({ plan }: Props) {

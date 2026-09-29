@@ -4,10 +4,10 @@ import { describeError, skillLabel, unassignedReasonHeading } from '@/lib/labels
 import { minutesToTimeLabel, timeOnly } from '@/lib/format';
 import { useSetTicketStatus } from '@/queries/useSetTicketStatus';
 import { TicketStatusControl } from './TicketStatusControl';
-import { URGENT_PRIORITY, type Plan, type RegionCode, type TicketStatus, type TicketSummary } from '@/types/domain';
+import { URGENT_PRIORITY, type DonePlan, type RegionCode, type TicketStatus, type TicketSummary } from '@/types/domain';
 
 interface Props {
-  plan: Plan;
+  plan: DonePlan;
   ticketById: Map<number, TicketSummary>;
   ticketId: number;
   region: RegionCode | null;

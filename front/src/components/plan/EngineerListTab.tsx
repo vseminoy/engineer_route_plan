@@ -2,10 +2,10 @@ import { useMemo } from 'react';
 import { EngineerCard, type DiffTag } from './EngineerCard';
 import { getEngineerColor } from '@/lib/colors';
 import { useUiStore } from '@/store/useUiStore';
-import type { EngineerRoster, Plan, TicketSummary } from '@/types/domain';
+import type { DonePlan, EngineerRoster, TicketSummary } from '@/types/domain';
 
 interface Props {
-  plan: Plan;
+  plan: DonePlan;
   roster: EngineerRoster[];
   ticketById: Map<number, TicketSummary>;
 }

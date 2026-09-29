@@ -1,9 +1,9 @@
 import { useUiStore } from '@/store/useUiStore';
 import { timeOnly } from '@/lib/format';
-import type { Plan, TicketSummary } from '@/types/domain';
+import type { DonePlan, TicketSummary } from '@/types/domain';
 
 interface Props {
-  plan: Plan;
+  plan: DonePlan;
   ticketById: Map<number, TicketSummary>;
 }
 

@@ -3,10 +3,10 @@ import { UnassignedListTab } from './UnassignedListTab';
 import { MetricsTab } from './MetricsTab';
 import { ReplanTab } from './ReplanTab';
 import { useUiStore, type PanelTab } from '@/store/useUiStore';
-import type { EngineerRoster, Plan, TicketSummary } from '@/types/domain';
+import type { DonePlan, EngineerRoster, TicketSummary } from '@/types/domain';
 
 interface Props {
-  plan: Plan;
+  plan: DonePlan;
   roster: EngineerRoster[];
   ticketById: Map<number, TicketSummary>;
   onReplanned: (newPlanId: number) => void;

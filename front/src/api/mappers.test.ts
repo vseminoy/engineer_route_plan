@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { mapDataLoadResult, mapEngineerRoster, mapTicketSummary } from './mappers';
-import type { DataLoadResult, Engineer, Ticket } from './generated/schemas';
+import { mapDataLoadResult, mapEngineerRoster, mapPlan, mapTicketSummary } from './mappers';
+import type { DataLoadResult, Engineer, Plan, Ticket } from './generated/schemas';
 
 describe('mapEngineerRoster', () => {
   it('flattens the start point and converts shift bounds to minutes since midnight', () => {
@@ -62,6 +62,67 @@ describe('mapTicketSummary', () => {
       status: 'not_sent',
       lat: 55.0,
       lon: 37.0
+    });
+  });
+});
+
+describe('mapPlan', () => {
+  it('maps a running build to a status with no engineers/unassigned/metrics yet', () => {
+    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'running' };
+
+    expect(mapPlan(api)).toEqual({ planId: 42, algorithm: 'or_tools', status: 'running' });
+  });
+
+  it('maps a failed build to its reason, with no engineers/unassigned/metrics', () => {
+    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'failed', failed_reason: 'osrm_unavailable' };
+
+    expect(mapPlan(api)).toEqual({
+      planId: 42,
+      algorithm: 'or_tools',
+      status: 'failed',
+      failedReason: 'osrm_unavailable'
+    });
+  });
+
+  it('derives the mandatory comparison metrics from engineers/unassigned when done, and keeps the naive arrival time as-is', () => {
+    const api: Plan = {
+      plan_id: 42,
+      algorithm: 'or_tools',
+      status: 'done',
+      engineers: [
+        {
+          engineer_id: 3,
+          name: 'Бригада Соколов',
+          route: [
+            {
+              ticket_id: 101,
+              sequence_no: 1,
+              planned_arrival: '2026-08-17T10:05:00',
+              travel_time_min: 18,
+              travel_distance_km: 6.2,
+              explanation: 'Назначена бригада «Соколов».'
+            }
+          ],
+          total_distance_km: 21.4,
+          total_travel_time_min: 54,
+          idle_time_min: 126
+        },
+        { engineer_id: 5, name: 'Бригада Петров', route: [], total_distance_km: 0, total_travel_time_min: 0, idle_time_min: 480 }
+      ],
+      unassigned: [{ ticket_id: 118, reason_code: 'no_time_slot', explanation: 'Не успевает ни одна бригада.' }]
+    };
+
+    const plan = mapPlan(api);
+
+    expect(plan.status).toBe('done');
+    expect(plan.engineers?.[0].route[0].plannedArrival).toBe('2026-08-17T10:05:00');
+    expect(plan.metrics).toEqual({
+      engineersUsed: 1,
+      totalDistanceKm: 21.4,
+      distanceByEngineer: { 3: 21.4, 5: 0 },
+      assignedCount: 1,
+      unassignedCount: 1,
+      idleTimeByEngineerMin: { 3: 126, 5: 480 }
     });
   });
 });

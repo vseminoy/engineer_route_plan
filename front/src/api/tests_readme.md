@@ -33,6 +33,9 @@
 | `flattens the start point and converts shift bounds to minutes since midnight` | `mapEngineerRoster` на бригаде со `start: {lat, lon}` и сменой `'08:00'`–`'20:00'` | `startLat`/`startLon` — из `start`, `shiftStartMin`/`shiftEndMin` — минуты с полуночи |
 | `carries the numeric priority rank and derives the window in minutes from the naive datetime` | `mapTicketSummary` на заявке с `priority: 1` и `window_start`/`window_end` — полным наивным datetime | `priority` — то же число, `windowStartMin`/`windowEndMin` — минуты с полуночи выбранного дня |
 | `translates snake_case counts and invalid rows into the domain shape` | `mapDataLoadResult` на ответе с `rows_invalid` | доменный `DataLoadResult` с `engineersCount`/`ticketsCount`/`rowsTotal`/`rowsSkipped`/`invalidRows` |
+| `maps a running build to a status with no engineers/unassigned/metrics yet` | `mapPlan` на `{status: 'running'}` | `Plan` без `engineers`/`unassigned`/`metrics`/`failedReason` |
+| `maps a failed build to its reason, with no engineers/unassigned/metrics` | `mapPlan` на `{status: 'failed', failed_reason: 'osrm_unavailable'}` | `Plan` с `failedReason`, без `engineers`/`unassigned`/`metrics` |
+| `derives the mandatory comparison metrics from engineers/unassigned when done, and keeps the naive arrival time as-is` | `mapPlan` на `{status: 'done', engineers: [...], unassigned: [...]}` (сервер метрик не присылает) | `metrics` посчитаны из `engineers`/`unassigned` (`engineersUsed`, `totalDistanceKm`, `distanceByEngineer`, `assignedCount`, `unassignedCount`, `idleTimeByEngineerMin`); `plannedArrival` — та же строка без сдвига |
 
 ## `src/api/endpoints.ts` — `setTicketStatus`
 

@@ -7,6 +7,7 @@ import { DemoDatasetButton } from './DemoDatasetButton';
 import { DataLoadSummary } from './DataLoadSummary';
 import { LoadingOverlay } from '@/components/common/LoadingOverlay';
 import { ErrorToast } from '@/components/common/ErrorToast';
+import { FullScreenErrorNotice } from '@/components/common/FullScreenErrorNotice';
 import { loadDemoDataset, uploadDataset } from '@/api/endpoints';
 import { useBuildPlan } from '@/queries/useBuildPlan';
 import { useUiStore } from '@/store/useUiStore';
@@ -15,10 +16,8 @@ import { describeError } from '@/lib/labels';
 import { fieldErrorsFromApi, fieldErrorsFromZod, isFieldErrors, type FieldErrorMap } from '@/lib/fieldErrors';
 import { ApiError } from '@/api/client';
 import { UploadRegionDataBody } from '@/api/generated/zod/engineerRoutePlanAPI';
+import { PLAN_DATE } from '@/lib/planDate';
 import type { DataLoadResult, RegionCode } from '@/types/domain';
-
-// Fixed demo day across all three regions' synthetic datasets.
-const PLAN_DATE = '2026-08-17';
 
 const regionField = UploadRegionDataBody.shape.region;
 
@@ -30,6 +29,7 @@ export function DataLoadScreen() {
   const buildPlanMutation = useBuildPlan();
   const [loadingText, setLoadingText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [buildError, setBuildError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrorMap>({});
   const [loadResult, setLoadResult] = useState<DataLoadResult | null>(null);
 
@@ -54,12 +54,19 @@ export function DataLoadScreen() {
   async function runBuild() {
     if (!selectedRegion) return;
     setLoadResult(null);
+    setBuildError(null);
     setLoadingText('Строим план…');
     try {
       const { main } = await buildPlanMutation.mutateAsync({ region: selectedRegion, planDate: PLAN_DATE });
       navigate(`/plan/${main.planId}`);
     } catch (err) {
-      setError(describeError(err, 'POST /plan/build'));
+      // Preliminary checks failed before the build even queued — a full-screen
+      // notice with a retry, not a toast.
+      if (err instanceof ApiError && (err.status === 503 || err.status === 500)) {
+        setBuildError(describeError(err, 'POST /plan/build'));
+      } else {
+        setError(describeError(err, 'POST /plan/build'));
+      }
       setLoadingText(null);
     }
   }
@@ -78,6 +85,7 @@ export function DataLoadScreen() {
   async function handleDemo() {
     if (!selectedRegion) return;
     setError(null);
+    setBuildError(null);
     if (!validateRegion()) return;
     setLoadingText('Загружаем демо-набор…');
     try {
@@ -91,6 +99,7 @@ export function DataLoadScreen() {
   async function handleUpload(ticketsFile: File) {
     if (!selectedRegion) return;
     setError(null);
+    setBuildError(null);
     const regionOk = validateRegion();
     const parsed = UploadRegionDataBody.safeParse({ region: selectedRegion, tickets_file: ticketsFile });
     if (!regionOk || !parsed.success) {
@@ -153,6 +162,14 @@ export function DataLoadScreen() {
       )}
 
       {loadingText && <LoadingOverlay text={loadingText} />}
+      {buildError && (
+        <FullScreenErrorNotice
+          message={buildError}
+          retryLabel="Повторить"
+          retrying={loadingText !== null}
+          onRetry={runBuild}
+        />
+      )}
       {error && <ErrorToast message={error} onDismiss={() => setError(null)} />}
     </div>
   );

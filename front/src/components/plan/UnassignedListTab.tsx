@@ -1,9 +1,9 @@
 import { UnassignedTicketCard } from './UnassignedTicketCard';
 import { useUiStore } from '@/store/useUiStore';
-import type { Plan, TicketSummary } from '@/types/domain';
+import type { DonePlan, TicketSummary } from '@/types/domain';
 
 interface Props {
-  plan: Plan;
+  plan: DonePlan;
   ticketById: Map<number, TicketSummary>;
 }
 

@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { useReplan } from '@/queries/useReplan';
-import type { EngineerRoster, Plan, ReplanEvent, TicketSummary } from '@/types/domain';
+import type { DonePlan, EngineerRoster, ReplanEvent, TicketSummary } from '@/types/domain';
 
 type EventKind = 'new_urgent' | 'cancel' | 'unavailable';
 
 interface Props {
-  plan: Plan;
+  plan: DonePlan;
   roster: EngineerRoster[];
   ticketById: Map<number, TicketSummary>;
   onReplanned: (newPlanId: number) => void;

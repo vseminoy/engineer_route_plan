@@ -1,14 +1,22 @@
 import { http, unwrap } from './client';
 import {
+  buildPlan as postPlanBuild,
   changeTicketStatus,
+  getPlan as getPlanRequest,
   listEngineers,
   listRegions,
   listTickets,
   loadDemoData,
   uploadRegionData
 } from './generated/engineerRoutePlanAPI';
-import { mapDataLoadResult, mapEngineerRoster, mapPlan, mapRegion, mapTicketSummary } from './mappers';
-import type { DataLoadResult as ApiDataLoadResult, Engineer, Region as ApiRegion, Ticket } from './generated/schemas';
+import { mapDataLoadResult, mapEngineerRoster, mapLegacyReplanPlan, mapPlan, mapRegion, mapTicketSummary } from './mappers';
+import type {
+  DataLoadResult as ApiDataLoadResult,
+  Engineer,
+  Plan as ApiPlanGenerated,
+  Region as ApiRegion,
+  Ticket
+} from './generated/schemas';
 import type { ApiPlan } from './types';
 import type {
   Algorithm,
@@ -44,14 +52,14 @@ export function uploadDataset(region: RegionCode, ticketsFile: File): Promise<Da
   );
 }
 
+// Queues the build and returns the 202 stub (status: 'running', plan_id) — the
+// caller polls getPlan(planId) for the result.
 export function buildPlan(region: RegionCode, planDate: string, algorithm: Algorithm): Promise<Plan> {
-  return http
-    .post<ApiPlan>('/plan/build', { region, plan_date: planDate, algorithm })
-    .then(mapPlan);
+  return unwrap<ApiPlanGenerated>(postPlanBuild({ region, plan_date: planDate, algorithm }), 202).then(mapPlan);
 }
 
 export function getPlan(planId: number): Promise<Plan> {
-  return http.get<ApiPlan>(`/plan/${planId}`).then(mapPlan);
+  return unwrap<ApiPlanGenerated>(getPlanRequest(planId), 200).then(mapPlan);
 }
 
 function replanEventToPayload(event: ReplanEvent): Record<string, unknown> {
@@ -83,7 +91,7 @@ function replanEventToPayload(event: ReplanEvent): Record<string, unknown> {
 }
 
 export function replan(planId: number, event: ReplanEvent): Promise<Plan> {
-  return http.post<ApiPlan>(`/plan/${planId}/replan`, replanEventToPayload(event)).then(mapPlan);
+  return http.post<ApiPlan>(`/plan/${planId}/replan`, replanEventToPayload(event)).then(mapLegacyReplanPlan);
 }
 
 export function setTicketStatus(ticketId: number, status: TicketStatus): Promise<TicketSummary> {

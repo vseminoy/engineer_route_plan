@@ -84,7 +84,34 @@ export interface PlanDiff {
   planStability: number;
 }
 
+// POST /plan/build queues the build and answers 202 before it finishes;
+// GET /plan/{id} returns the same shape in whichever of the three states the
+// build is currently in — poll it until status stops being 'running'.
+export type PlanStatus = 'running' | 'done' | 'failed';
+
+// osrm_unavailable — маршрутный сервис недоступен; db_unavailable — недоступна
+// БД при сохранении плана; build_error — непредвиденная ошибка построения.
+export type PlanFailedReason = 'osrm_unavailable' | 'db_unavailable' | 'build_error';
+
 export interface Plan {
+  planId: number;
+  algorithm: Algorithm;
+  status: PlanStatus;
+  parentPlanId?: number;
+  // Present only once status === 'done'.
+  engineers?: EngineerRoute[];
+  unassigned?: UnassignedTicket[];
+  metrics?: PlanMetrics;
+  // Present only once status === 'failed'.
+  failedReason?: PlanFailedReason;
+  diff?: PlanDiff;
+}
+
+// The view every plan-detail component actually renders against: a Plan
+// whose build has finished, so the fields that only exist once status ===
+// 'done' are no longer optional. PlanScreen builds one of these after
+// checking `plan.status` and passes it down instead of the raw Plan.
+export interface DonePlan {
   planId: number;
   algorithm: Algorithm;
   parentPlanId?: number;

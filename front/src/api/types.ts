@@ -1,7 +1,12 @@
-// Raw wire shapes for the plan endpoints (POST /plan/build, GET /plan/{id},
-// POST /plan/{id}/replan), hand-written ahead of their generated client.
-// Regions, engineers, tickets and data loading use the generated types from
-// src/api/generated/schemas instead. Nothing outside src/api reads these directly.
+// Raw wire shape for POST /plan/{id}/replan, hand-written ahead of its
+// generated client — the operation isn't in specs/openapi.yaml yet. Regions,
+// engineers, tickets, data loading, and the plan build/get pair all use the
+// generated types from src/api/generated/schemas instead. Nothing outside
+// src/api reads these directly.
+//
+// This is also the last place a plan is still returned as a single
+// synchronous shape (replan has no queued/running state of its own): mapped
+// by mapLegacyReplanPlan in mappers.ts into a Plan with status: 'done'.
 
 export interface ApiRouteStop {
   ticket_id: number;
@@ -62,9 +67,10 @@ export interface ApiPlan {
   diff?: ApiPlanDiff;
 }
 
-// GET /plan/{id}/compare exists in the contract, but its documented example
-// response has two metrics colliding on the same `main`/`baseline` keys in
-// one JSON object — an unreliable shape to parse. Both plans we compare
+// GET /plan/{id}/compare is described only in prose so far, not yet part of
+// the machine contract, and its documented example response has two metrics
+// colliding on the same `main`/`baseline` keys in one JSON object — an
+// unreliable shape to parse even once it lands. Both plans we compare
 // (main + baseline) are already fetched in full for the Metrics tab, so the
 // app derives the comparison client-side from PlanMetrics instead (see
 // src/queries/usePlanCompare.ts) rather than depend on that endpoint.

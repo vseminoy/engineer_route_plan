@@ -7,10 +7,10 @@ import { TicketMarker } from './TicketMarker';
 import { EngineerStartMarker } from './EngineerStartMarker';
 import { getEngineerColor } from '@/lib/colors';
 import { useUiStore } from '@/store/useUiStore';
-import { URGENT_PRIORITY, type EngineerRoster, type Plan, type TicketSummary } from '@/types/domain';
+import { URGENT_PRIORITY, type DonePlan, type EngineerRoster, type TicketSummary } from '@/types/domain';
 
 interface Props {
-  plan: Plan;
+  plan: DonePlan;
   roster: EngineerRoster[];
   tickets: TicketSummary[];
 }

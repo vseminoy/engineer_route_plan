@@ -1,4 +1,4 @@
-import type { InvalidRowReason, Skill, TicketStatus, UnassignedReason } from '@/types/domain';
+import type { InvalidRowReason, PlanFailedReason, Skill, TicketStatus, UnassignedReason } from '@/types/domain';
 import { ApiError, NetworkError } from '@/api/client';
 import { isFieldErrors } from '@/lib/fieldErrors';
 
@@ -46,6 +46,13 @@ export const invalidRowReasonText: Record<InvalidRowReason, string> = {
   address_not_found: 'Для адреса не нашлось координат'
 };
 
+// A queued build that never finished (GET /plan/{id} status: 'failed').
+export const planFailedReasonText: Record<PlanFailedReason, string> = {
+  osrm_unavailable: 'Сервис маршрутов недоступен',
+  db_unavailable: 'База данных недоступна',
+  build_error: 'Не удалось построить план'
+};
+
 // A response status with no body: text by status, used when the endpoint has
 // no more specific entry below.
 const statusMessage: Record<number, string> = {
@@ -59,7 +66,8 @@ const statusMessage: Record<number, string> = {
 // operation's failure, for a status the generic table above doesn't fit well.
 const endpointStatusMessage: Record<string, string> = {
   'POST /data/upload 413': 'Файл слишком большой (предел — 1 МБ).',
-  'PATCH /tickets/{id}/status 404': 'Заявка не найдена'
+  'PATCH /tickets/{id}/status 404': 'Заявка не найдена',
+  'GET /plan/{id} 404': 'План не найден — возможно, ссылка устарела'
 };
 
 function textForStatus(endpoint: string, status: number): string {
