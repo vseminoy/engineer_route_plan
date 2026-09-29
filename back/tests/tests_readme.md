@@ -7,9 +7,11 @@
 - [`src/errors.py` — доменные исключения](#srcerrorspy--доменные-исключения)
 - [`alembic/versions/5d23f2956ce7_initial_schema.py` — схема БД](#alembicversions5d23f2956ce7_initial_schemapy--схема-бд)
 - [`alembic/versions/cb3db41d521a_tickets_type_hd_not_null.py` — тип заявки HD обязателен](#alembicversionscb3db41d521a_tickets_type_hd_not_nullpy--тип-заявки-hd-обязателен)
+- [`alembic/versions/1b0ce84eb128_engineer_sets.py` — наборы бригад](#alembicversions1b0ce84eb128_engineer_setspy--наборы-бригад)
 - [`alembic/env.py` — запуск миграций](#alembicenvpy--запуск-миграций)
 - [`src/repository/db.py` — обёртка запросов к БД](#srcrepositorydbpy--обёртка-запросов-к-бд)
 - [`src/repository/region_data.py` — замена данных региона](#srcrepositoryregion_datapy--замена-данных-региона)
+- [`src/repository/engineer_sets.py` — наборы бригад](#srcrepositoryengineer_setspy--наборы-бригад)
 - [`src/repository/region_lists.py` — чтение бригад и заявок региона](#srcrepositoryregion_listspy--чтение-бригад-и-заявок-региона)
 - [`src/repository/tickets.py` — статус заявки](#srcrepositoryticketspy--статус-заявки)
 - [`src/repository/plans.py` — sweep зависших планов](#srcrepositoryplanspy--sweep-зависших-планов)
@@ -19,6 +21,7 @@
 - [`src/service/engineers_generator.py` — генератор демо-бригад](#srcserviceengineers_generatorpy--генератор-демо-бригад)
 - [`src/service/geocoding.py` — координаты адресов](#srcservicegeocodingpy--координаты-адресов)
 - [`src/service/loader.py` — загрузка данных региона](#srcserviceloaderpy--загрузка-данных-региона)
+- [`src/service/engineer_sets.py` — создание и удаление наборов бригад](#srcserviceengineer_setspy--создание-и-удаление-наборов-бригад)
 - [`src/service/region_lists.py` — регионы, бригады и заявки региона](#srcserviceregion_listspy--регионы-бригады-и-заявки-региона)
 - [`src/service/ticket_status.py` — переходы статусов заявки](#srcserviceticket_statuspy--переходы-статусов-заявки)
 - [`src/service/solver.py` — модель солвера, ступенчатая (лексикографическая) оптимизация](#srcservicesolverpy--модель-солвера-ступенчатая-лексикографическая-оптимизация)
@@ -35,6 +38,7 @@
 - [`src/app.py` — app factory и lifespan](#srcapppy--app-factory-и-lifespan)
 - [`api` — GET /health](#api--get-health)
 - [`api` — GET /api/v1/regions](#api--get-apiv1regions)
+- [`api` — GET/POST /api/v1/engineer-sets, DELETE /api/v1/engineer-sets/{id}](#api--getpost-apiv1engineer-sets-delete-apiv1engineer-setsid)
 - [`api` — GET /api/v1/engineers](#api--get-apiv1engineers)
 - [`api` — GET /api/v1/tickets](#api--get-apiv1tickets)
 - [`api` — PATCH /api/v1/tickets/{ticket_id}/status](#api--patch-apiv1ticketsticket_idstatus)
@@ -183,6 +187,34 @@
 | `test_plan_failed_reason_closed_set` | `status = 'failed', failed_reason = 'timeout'` | `CheckViolation`, `ck_plans__failed_reason` |
 | `test_plan_status_failed_reason_shape` (`failed` без причины / `done` или `running` с причиной) | несогласованная пара `status`/`failed_reason` | `CheckViolation`, `ck_plans__status_failed_reason` |
 
+## `alembic/versions/1b0ce84eb128_engineer_sets.py` — наборы бригад
+
+Файл: `tests/db/test_schema.py`.
+
+> Мока нет: `@pytest.mark.integration`, контейнер PostGIS, окружение и роли — как в разделе
+> схемы БД. Состояние до ревизии — `upgrade c124884e0c63`, регион(ы) и их бригады заведены
+> напрямую (владельцем схемы) до наката, чтобы проверить backfill. `data/regions.toml`
+> подменяется временным файлом там, где сценарий проверяет чтение конфигурации, а не
+> реальные три региона репозитория.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_upgrade_backfills_default_set_from_config` | регион `east` (код есть в подменённом `regions.toml` с `engineers=13`, `shifts.morning.share=0.25`, `shifts.evening.share=0.25`) с 13 бригадами; `upgrade head` | один `engineer_sets` (`name='default', kind='demo', engineers=13, morning_share=0.25, evening_share=0.25, seed='east'`); все 13 бригад получили этот `engineer_set_id`, `region_id` у `engineers` больше нет |
+| `test_upgrade_backfills_unknown_region_from_db` | регион `west` с 5 бригадами, код отсутствует в подменённом `regions.toml`; `upgrade head` | `engineer_sets` для `west` — `engineers=5, morning_share=0, evening_share=0, seed='west'`; 5 бригад получили этот `engineer_set_id` |
+| `test_upgrade_plans_get_default_engineer_set_id` | регион с бригадами и планом; `upgrade head` | `plans.engineer_set_id` плана равен `id` `default`-набора того же региона |
+| `test_upgrade_keeps_engineer_and_plan_ids` | регион с 2 бригадами (`id` известны) и планом (`id` известен) до наката; `upgrade head` | те же `id` бригад и плана после наката — backfill не пересоздаёт строки |
+| `test_engineer_set_kind_closed_set` | `kind = 'bogus'` | `CheckViolation`, `ck_engineer_sets__kind` |
+| `test_engineer_set_engineers_bounds` | `engineers` = 0, 31, 1, 30 | 0 и 31 — `CheckViolation` `ck_engineer_sets__engineers`; 1 и 30 — вставлено |
+| `test_engineer_set_share_bounds` (параметризован: `morning_share`, `evening_share`) | значение -0.1, 1.1, 0, 1 | -0.1 и 1.1 — `CheckViolation`; 0 и 1 — вставлено |
+| `test_engineer_set_seed_not_blank` | `seed = ''` | `CheckViolation`, `ck_engineer_sets__seed` |
+| `test_engineer_set_name_unique_per_region` | второй набор с тем же `name` в том же регионе; тот же `name` в другом регионе | первое — `UniqueViolation` `ux_engineer_sets__region_id_name`; второе — вставлено |
+| `test_engineers_engineer_set_id_required` | `engineer_set_id = NULL` в обход домена | `NotNullViolation` |
+| `test_engineers_engineer_set_id_foreign_key` | несуществующий `engineer_set_id` | `ForeignKeyViolation` |
+| `test_plans_engineer_set_id_required_and_fk` | `engineer_set_id = NULL`; несуществующий `engineer_set_id` | `NotNullViolation`; `ForeignKeyViolation` |
+| `test_downgrade_then_upgrade` | `downgrade c124884e0c63`, затем `upgrade head` | после отката `engineer_sets` нет, `engineers.region_id` восстановлен (тот же `region_id`, что был у набора), `engineers.engineer_set_id` и `plans.engineer_set_id` нет; повторный накат проходит и снова создаёт `default`-наборы |
+| `test_every_new_table_and_column_is_commented` | каталог: `engineer_sets` и её колонки, `engineers.engineer_set_id`, `plans.engineer_set_id` | ни одного пустого комментария |
+| `test_engineer_sets_grants` | под `app_rw`: `INSERT`/`UPDATE`/`DELETE`/`SELECT` `engineer_sets`; под `app_ro`: `SELECT` | `app_rw` — все проходят; `app_ro` — `SELECT` проходит |
+
 ## `alembic/env.py` — запуск миграций
 
 > Мока нет: `@pytest.mark.integration`, контейнер PostGIS как в предыдущем разделе.
@@ -221,19 +253,44 @@
 > запросы из `queries/*.sql` вызываются через aiosql под ролью `app_rw`. Нарушение ограничения
 > проверяется по имени ограничения в исходной ошибке драйвера (`__cause__`).
 
+Каждый набор передаётся отдельно: `replace_region_data` принимает не один список бригад
+региона, а список наборов (`EngineerSetDraft` — параметры генератора и его бригады), и
+регенерирует бригады каждого набора по тем же правилам сравнения состава, что раньше
+применялись к региону целиком.
+
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_replace_inserts_region_engineers_tickets` | пустая БД; регион `east`, 2 бригады, 3 заявки | возвращены `id` региона и `engineers_kept = false`; в БД 1 регион, 2 бригады и 3 заявки этого региона; точки, смены, навыки, окна и `received_at` прочитаны обратно без изменений (время — наивное, как передано) |
+| `test_replace_inserts_region_default_set_engineers_tickets` | пустая БД; регион `east`, один набор (`default`) с 2 бригадами, 3 заявки | возвращены `id` региона и `engineers_kept = {default: false}`; в БД 1 регион, один `engineer_sets` (`kind=demo, name=default`), 2 бригады этого набора и 3 заявки региона; точки, смены, навыки, окна и `received_at` прочитаны обратно без изменений |
 | `test_replace_same_code_keeps_region_id` | регион `east` загружен дважды с разным названием и офисом | тот же `id`; название, адрес и точка офиса — из второй загрузки |
-| `test_replace_removes_previous_region_data` | у региона есть бригады, заявки, два плана (второй — потомок первого), строки плана и событие перепланирования; загрузка нового набора с другим составом бригад (другие названия) | прежних бригад, заявок, планов, строк планов и событий региона нет; бригады и заявки — из нового набора |
-| `test_replace_same_roster_keeps_engineers` | у региона есть 2 бригады, заявки и план с назначением бригаде; повторная загрузка с теми же бригадами (названия, навыки, транспорт, смены), другими точками старта и новыми заявками | `engineers_kept = true`; `id` бригад прежние; точки старта — из второй загрузки; остальные поля бригад прежние; заявки — из второй загрузки; планов, строк планов и событий региона нет |
-| `test_replace_changed_roster_recreates_engineers` | у региона 2 бригады; повторная загрузка с 3 бригадами | `engineers_kept = false`; у региона 3 бригады из второй загрузки; прежних `id` бригад нет |
-| `test_replace_skills_order_keeps_engineers` | повторная загрузка той же бригады с навыками в другом порядке | `engineers_kept = true`, `id` бригады прежний: порядок навыков на сравнение состава не влияет |
-| `test_replace_changed_brigade_recreates_engineers` (параметризован: навыки, транспорт, начало смены, конец смены второй бригады) | у региона 2 бригады; повторная загрузка с теми же названиями, у второй бригады изменено одно поле | `engineers_kept = false`, бригады созданы заново: прежних `id` нет — состав сравнивается по всем полям генератора, а не только по названиям |
-| `test_replace_keeps_other_regions` | загружены `east` и `south_east`, затем `east` загружен повторно | данные `south_east` не изменились |
+| `test_replace_removes_previous_region_data_all_sets` | у региона демо-набор и дополнительный набор, у каждого бригады, план и потомок плана, строки планов и событие перепланирования; загрузка нового набора заявок | планов, строк планов и событий обоих наборов региона нет; бригады обоих `engineer_sets` остаются (сравниваются по составу отдельно, ниже); заявки — из новой загрузки |
+| `test_replace_second_load_keeps_existing_engineer_sets` | у региона демо-набор и один дополнительный (`kind=generated`); повторная загрузка | оба `engineer_sets` на месте (не создаются заново, не удаляются); у обоих обновлены только точки старта бригад |
+| `test_replace_same_roster_keeps_engineers_per_set` | демо-набор и дополнительный набор, у каждого свои 2 бригады, заявки и план с назначением; повторная загрузка с теми же бригадами каждого набора, другими точками старта и новыми заявками | `engineers_kept = {default: true, <доп.набор>: true}`; `id` бригад обоих наборов прежние; точки старта — из второй загрузки; заявки — из второй загрузки; планов, строк планов и событий обоих наборов нет |
+| `test_replace_changed_roster_recreates_engineers_of_that_set_only` | демо-набор (2 бригады) и дополнительный набор (2 бригады); повторная загрузка, у которой состав демо-набора региона (13 бригад по конфигурации) не совпадает с сохранённым | `engineers_kept = {default: false, <доп.набор>: true}`; бригады демо-набора пересозданы (новые `id`), бригады дополнительного набора и их `id` не тронуты — регенерация одного набора не задевает другой |
+| `test_replace_skills_order_keeps_engineers` | повторная загрузка той же бригады набора с навыками в другом порядке | `engineers_kept` этого набора `true`, `id` бригады прежний: порядок навыков на сравнение состава не влияет |
+| `test_replace_changed_brigade_recreates_engineers` (параметризован: навыки, транспорт, начало смены, конец смены второй бригады) | у набора 2 бригады; повторная загрузка с теми же названиями, у второй бригады изменено одно поле | `engineers_kept` этого набора `false`, бригады набора созданы заново: прежних `id` нет |
+| `test_replace_keeps_other_regions` | загружены `east` и `south_east`, затем `east` загружен повторно | данные `south_east` (включая его наборы) не изменились |
 | `test_replace_duplicate_external_id_loads_both` | две заявки с одинаковым `external_id` | обе вставлены, у каждой свой `id` |
-| `test_replace_constraint_violation_rolls_back` | у региона уже есть данные; новый набор содержит бригаду с 4 навыками | поднято `DatabaseFailure(reason="db_query_failed")`, причина — нарушение `ck_engineers__skills`; запись `db_query_failed`; прежние данные региона на месте, новых нет |
+| `test_replace_constraint_violation_rolls_back` | у региона уже есть данные; новый состав демо-набора содержит бригаду с 4 навыками | поднято `DatabaseFailure(reason="db_query_failed")`, причина — нарушение `ck_engineers__skills`; запись `db_query_failed`; прежние данные региона (все наборы) на месте, новых нет |
 | `test_replace_overnight_shift_rolls_back` | бригада со сменой `22:00–06:00` | `DatabaseFailure`, нарушение `ck_engineers__shift_order`; прежние данные на месте |
+
+## `src/repository/engineer_sets.py` — наборы бригад
+
+Файл: `tests/repository/test_engineer_sets.py`.
+
+> Мока нет: `@pytest.mark.integration`, контейнер PostGIS и ревизия, как в разделе схемы БД;
+> запросы из `queries/engineer_sets.sql` и `queries/plans.sql` вызываются через aiosql под
+> ролью `app_rw`. Регионы и их демо-наборы заводятся `replace_region_data`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_list_engineer_sets_by_region` | у региона демо-набор и 2 дополнительных | все 3, по возрастанию `id` (демо первым — вставлен первым); поля `name`, `kind`, `engineers`, `morning_share`, `evening_share`, `seed` как в БД |
+| `test_list_engineer_sets_other_region_excluded` | два региона со своими наборами | список одного региона не содержит наборов другого |
+| `test_get_default_engineer_set_id` | регион с демо-набором | его `id`; для кода без загруженных данных — `None` |
+| `test_get_engineer_set` | набор с известными параметрами | все поля строки, включая `region_id`; несуществующий `id` — `None` |
+| `test_insert_generated_engineer_set` | `region_id`, `name="Вариант Б"`, `engineers=15`, `morning_share=0.2`, `evening_share=0.2`, `seed="42"` | возвращён `id`; строка `engineer_sets` с `kind='generated'` и этими значениями |
+| `test_insert_generated_engineer_set_name_conflict` | `name`, уже занятое в регионе (в т.ч. `"default"`) | `UniqueViolation`, `ux_engineer_sets__region_id_name` |
+| `test_delete_engineer_set_cascade` | набор с бригадами, планом, потомком плана, событием перепланирования | все строки удалены (`engineer_sets`, `engineers`, `plans`, `assignments`, `replan_events` этого набора); набор и планы других наборов региона не тронуты |
+| `test_engineer_sets_queries_db_unavailable` (параметризован по каждому запросу) | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` с именем запроса |
 
 ## `src/repository/region_lists.py` — чтение бригад и заявок региона
 
@@ -246,7 +303,7 @@
 | Test | Scenario | Expected result |
 |---|---|---|
 | `test_get_region_id` | загружен регион `east`; коды `east` и `south_east` (не загружен) | для `east` — его `id`; для `south_east` — `None` |
-| `test_list_engineers_of_region` | загружены `east` (2 бригады) и `south_east` (1 бригада) | для `east` — ровно его 2 бригады по возрастанию `id`; у бригады `start` — `Point` с переданными широтой и долготой (не переставлены), навыки — кортеж `Skill`, транспорт — `VehicleType`, смены — `time`, как переданы |
+| `test_list_engineers_of_set` | загружены `east` (демо-набор — 2 бригады, доп. набор — 1 бригада) и `south_east` (демо-набор — 1 бригада) | для демо-набора `east` — ровно его 2 бригады по возрастанию `id`, бригады доп. набора и `south_east` не попадают; у бригады `start` — `Point` с переданными широтой и долготой (не переставлены), навыки — кортеж `Skill`, транспорт — `VehicleType`, смены — `time`, как переданы |
 | `test_list_tickets_of_region` | загружены `east` (3 заявки) и `south_east` (1 заявка) | для `east` — ровно его 3 заявки по возрастанию `id`; `location` — `Point` с переданными координатами; окна и `received_at` — наивные `datetime`, равные переданным; `type_bk`, `district`, `required_vehicle`, не заданные у заявки, — `None` |
 | `test_lists_of_region_without_rows` | `id`, под которым в БД нет ни бригад, ни заявок | оба списка пустые |
 | `test_lists_db_unavailable` | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` с именем запроса |
@@ -373,25 +430,31 @@
 | `test_too_many_engineers_rejected` | 31 бригада у региона; 30 бригад | 31 — ошибка при чтении конфигурации; 30 — конфигурация читается |
 | `test_too_few_full_day_engineers_rejected` | 5 бригад при долях 25 % / 25 % (на весь день остаётся 3) | ошибка при чтении: бригад «весь день» меньше четырёх |
 
-## `src/service/engineers_generator.py` — генератор демо-бригад
+## `src/service/engineers_generator.py` — генератор бригад набора
 
 Файл: `tests/service/test_engineers_generator.py`.
 
-> Мок не нужен: генератор — чистая функция от конфигурации региона, точки офиса и районов
-> заявок.
+> Мок не нужен: генератор — чистая функция от параметров набора (число бригад, доли
+> утренней и вечерней смен, seed), точки офиса и районов заявок; часы смен и точки
+> удалённых городов — из конфигурации регионов (общие для всех наборов). Демо-набор
+> вызывает генератор с параметрами конфигурации своего региона (число бригад, доли смен
+> из `data/regions.toml`, seed = код региона) — тестами этого раздела и покрывается, без
+> отдельного сценария «демо-набор»: у него просто такие входные параметры.
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_count_from_region_config` | регион с 13 бригадами | 13 бригад |
-| `test_skills_one_to_three` | каждый регион из конфигурации | у каждой бригады от 1 до 3 различных навыков из `local_work`, `connection`, `emergency` |
-| `test_all_skills_and_vehicles_present` | каждый регион | в наборе есть все три навыка и все четыре типа транспорта |
-| `test_shift_kinds_split` | 13 бригад, доли 25 % / 25 % | 3 утренние `10:00–18:00`, 3 вечерние `15:30–23:30`, 7 на весь день `10:00–23:30` |
-| `test_full_day_covers_skills_and_vehicles` | каждый регион | бригады «весь день» вместе имеют все три навыка и все четыре типа транспорта |
-| `test_shifts_within_one_day` | каждый регион | у каждой бригады начало смены раньше конца, конец не позже `23:59` |
-| `test_deterministic` | два вызова с одинаковым входом | одинаковые бригады: имена, навыки, транспорт, смены, точки |
+| `test_count_from_param` | `engineers=13` | 13 бригад |
+| `test_skills_one_to_three` | несколько сочетаний параметров | у каждой бригады от 1 до 3 различных навыков из `local_work`, `connection`, `emergency` |
+| `test_all_skills_and_vehicles_present` | несколько сочетаний параметров, `engineers >= 4` | в наборе есть все три навыка и все четыре типа транспорта |
+| `test_shift_kinds_split` | `engineers=13`, `morning_share=0.25`, `evening_share=0.25` | 3 утренние `10:00–18:00`, 3 вечерние `15:30–23:30`, 7 на весь день `10:00–23:30` |
+| `test_shift_kinds_split_custom_shares` | `engineers=15`, `morning_share=0.2`, `evening_share=0.2` | 3 утренние, 3 вечерние, 9 на весь день — доли применяются к параметру набора, не к конфигурации региона |
+| `test_full_day_covers_skills_and_vehicles` | несколько сочетаний параметров с `engineers >= 4` | бригады «весь день» вместе имеют все три навыка и все четыре типа транспорта |
+| `test_shifts_within_one_day` | несколько сочетаний параметров | у каждой бригады начало смены раньше конца, конец не позже `23:59` |
+| `test_deterministic` | два вызова с одинаковым `seed` и остальными параметрами | одинаковые бригады: имена, навыки, транспорт, смены, точки |
+| `test_different_seed_different_roster` | тот же `engineers`/доли, разный `seed` | хотя бы один параметр состава (навыки, транспорт или точка старта) отличается |
 | `test_start_at_office` | районы заявок только московские | все бригады стартуют из точки офиса |
 | `test_remote_town_start` | среди районов заявок `Домодедово` и `Ступино` | по одной бригаде «весь день» стартует из точки каждого из этих городов, остальные — из офиса |
-| `test_names_without_personal_data` | каждый регион | имя бригады — «Бригада N», без фамилий |
+| `test_names_without_personal_data` | несколько сочетаний параметров | имя бригады — «Бригада N», без фамилий |
 
 ## `src/service/geocoding.py` — координаты адресов
 
@@ -433,7 +496,8 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_load_csv` | CSV региона `east`: 3 заявки, 2 пустые строки, служебная строка, 1 невалидная строка | в репозиторий переданы регион `east` с офисом из служебной строки, бригады генератора и 3 заявки; итог: `rows_total = 7`, `rows_skipped = 3`, `rows_invalid = 1` с номером строки и причиной; запись `data_load_finished` с `source = csv`, `region`, `rows_total`, `rows_skipped`, `rows_invalid`, `invalid_by_reason = {"bad_datetime": 1}`, `engineers`, `engineers_kept` (как вернул репозиторий), `tickets`, `duration_ms`, `wait_ms` не больше `duration_ms` |
+| `test_load_csv` | CSV региона `east`: 3 заявки, 2 пустые строки, служебная строка, 1 невалидная строка; регион ещё не загружен (наборов бригад нет) | в репозиторий передан один набор — сгенерированный демо-набор (параметры из `data/regions.toml`) с офисом из служебной строки, и 3 заявки; итог: `rows_total = 7`, `rows_skipped = 3`, `rows_invalid = 1` с номером строки и причиной, `engineers = 13` (число бригад демо-набора); запись `data_load_finished` с `source = csv`, `region`, `rows_total`, `rows_skipped`, `rows_invalid`, `invalid_by_reason = {"bad_datetime": 1}`, `engineers`, `engineers_kept` (по набору, как вернул репозиторий), `tickets`, `duration_ms`, `wait_ms` не больше `duration_ms` |
+| `test_load_csv_region_with_extra_set` | тот же CSV; у региона уже есть демо-набор (13 бригад) и дополнительный набор (5 бригад) | в репозиторий переданы оба набора со своими параметрами и пересчитанными точками старта; итог `engineers = 18` (сумма обоих); `engineers_kept` в логе — по набору |
 | `test_load_json` | тот же набор в JSON | тот же итог, `source = json` |
 | `test_load_demo` | демо-набор `south_east` | заявки из `data/demo/south_east.csv`: 83 заявки, `rows_invalid = 0`, `source = demo` |
 | `test_load_demo_offline` | демо-набор каждого региона, гео-кэш из репозитория, клиента Nominatim нет | все заявки загружены, `rows_invalid = 0`; сетевых вызовов нет |
@@ -454,11 +518,36 @@
 | `test_files_read_one_at_a_time` | три загрузки запущены одновременно; разбор файла в подклассе загрузчика занимает время в своём потоке | все три завершились; одновременно разбирался не больше одного файла |
 | `test_writes_one_at_a_time` | три загрузки запущены одновременно; фейковый репозиторий отдаёт управление event loop внутри записи | все три записаны; одновременно шла не больше одной записи — загрузки занимают не больше одного соединения пула; последняя в очереди загрузка пишет в `data_load_finished` `wait_ms` не меньше 15 мс (ждала две записи по 20 мс) |
 
+## `src/service/engineer_sets.py` — создание и удаление наборов бригад
+
+Файл: `tests/service/test_engineer_sets.py`.
+
+> Замена стабами: репозиторий (`get_region_id`, `get_office_and_districts` — уже загруженные
+> данные региона, `insert_generated_engineer_set`, `list_engineer_sets_by_region`,
+> `get_engineer_set`, `delete_engineer_set` — фейки), генератор — настоящий
+> (`engineers_generator.generate_engineers`, синтетический вход в 1–3 бригады).
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_list_sets_of_region` | репозиторий вернул 2 набора | те же 2 набора, `description` каждого собран из его параметров (число бригад, доли смен, seed) |
+| `test_list_sets_unknown_region` | код не из конфигурации | `InvalidInput(reason="unknown_region")` |
+| `test_create_generated_set` | валидные параметры, `engineers=15, morning_share=0.2, evening_share=0.2` (12 «весь день») | набор создан с `kind=generated`; сгенерировано 15 бригад теми же параметрами; запись `engineer_set_created` |
+| `test_create_unknown_region` | код не из конфигурации | `InvalidInput(reason="unknown_region")`; набор не создаётся |
+| `test_create_region_not_loaded` | `get_region_id` вернул `None` | `InvalidInput(reason="region_not_loaded")` |
+| `test_create_insufficient_full_day_engineers` | `engineers=5, morning_share=0.25, evening_share=0.25` (3 «весь день») | `InvalidInput(reason="insufficient_full_day_engineers")`; набор не создаётся, генератор не вызывается |
+| `test_create_name_conflict` | репозиторий поднимает `Conflict` при вставке (имя занято) | `Conflict` пробрасывается; запись `engineer_set_create_failed` с `reason="name_taken"` |
+| `test_create_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | репозиторий поднимает эту ошибку при вставке | ошибка пробрасывается; запись `engineer_set_create_failed` |
+| `test_delete_generated_set` | `get_engineer_set` вернул `kind=generated` | репозиторий-каскад вызван с `engineer_set_id`; запись `engineer_set_deleted` |
+| `test_delete_demo_set_conflict` | `get_engineer_set` вернул `kind=demo` | `Conflict`; репозиторий-каскад не вызван |
+| `test_delete_not_found` | `get_engineer_set` вернул `None` | `NotFound(reason="engineer_set_not_found")` |
+| `test_delete_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | репозиторий поднимает эту ошибку | ошибка пробрасывается; запись `engineer_set_delete_failed` |
+
 ## `src/service/region_lists.py` — регионы, бригады и заявки региона
 
 Файл: `tests/service/test_region_lists.py`.
 
-> Замена стабами: репозиторий (`get_region_id`, `list_engineers`, `list_tickets` — фейки,
+> Замена стабами: репозиторий (`get_region_id`, `get_default_engineer_set_id`,
+> `get_engineer_set`, `list_engineers` (по `engineer_set_id`), `list_tickets` — фейки,
 > которые возвращают заданное значение, поднимают заданное исключение и запоминают вызовы),
 > фабрика соединений — фейк, который считает взятые соединения. Конфигурация регионов —
 > `data/regions.toml` из репозитория.
@@ -466,9 +555,12 @@
 | Test | Scenario | Expected result |
 |---|---|---|
 | `test_regions_in_config_order` | конфигурация с регионами `east`, `south_east`, `south_center` | пары (код, название) в порядке конфигурации; соединение не взято |
-| `test_engineers_of_loaded_region` | `get_region_id` вернул `7`, `list_engineers` — 2 бригады | эти 2 бригады без изменений; `list_engineers` вызван с `region_id = 7` |
+| `test_engineers_of_default_set` | `get_region_id` вернул `7`, `get_default_engineer_set_id` вернул `70`, `list_engineers` — 2 бригады; вызов без `engineer_set_id` | эти 2 бригады без изменений; `list_engineers` вызван с `engineer_set_id = 70` |
+| `test_engineers_of_given_set` | `get_engineer_set(9)` вернул набор с `region_id = 7`; вызов с `engineer_set_id = 9` для региона `7` | `list_engineers` вызван с `engineer_set_id = 9`; `get_default_engineer_set_id` не вызван |
+| `test_engineers_set_not_in_region` | `get_engineer_set(9)` вернул набор с другим `region_id`; вызов с `engineer_set_id = 9` | `InvalidInput(fields=[("engineer_set_id", ...)])`; `list_engineers` не вызван |
+| `test_engineers_set_not_found` | `get_engineer_set(9)` вернул `None` | `InvalidInput(fields=[("engineer_set_id", ...)])` |
 | `test_tickets_of_loaded_region` | `get_region_id` вернул `7`, `list_tickets` — 3 заявки | эти 3 заявки без изменений; `list_tickets` вызван с `region_id = 7` |
-| `test_region_not_loaded_is_empty` | регион из конфигурации, `get_region_id` вернул `None` | пустой список бригад и заявок; `list_engineers` и `list_tickets` не вызваны |
+| `test_region_not_loaded_is_empty` | регион из конфигурации, `get_region_id` вернул `None` | пустой список бригад и заявок; `get_default_engineer_set_id`, `list_engineers` и `list_tickets` не вызваны |
 | `test_unknown_region` | код `north` | `InvalidInput(reason="unknown_region")` с `fields = [("region", "Неизвестный регион")]`; соединение не взято |
 | `test_repository_failure_propagates` | репозиторий поднимает `DependencyUnavailable` и `DatabaseFailure` (параметризовано) | исключение пробрасывается без изменений |
 | `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; запись `db_query_failed` с `query = list_engineers` |
@@ -735,8 +827,9 @@
 
 Файл: `tests/service/test_plan_builder.py`.
 
-> Замена стабами: `connect`/`get_region_id`/`list_open_tickets`/`list_engineers`/
-> `insert_running_plan`/`mark_plan_done`/`mark_plan_failed`/`mark_running_plans_failed` —
+> Замена стабами: `connect`/`get_region_id`/`get_default_engineer_set_id`/`get_engineer_set`/
+> `list_open_tickets`/`list_engineers`/`insert_running_plan`/`mark_plan_done`/
+> `mark_plan_failed`/`mark_running_plans_failed` —
 > асинхронные функции без реальной БД; OSRM — фейк с `table()`, возвращающий заданные
 > матрицы или ошибку; пул солвера — `FakeSolverPool` (реализует протокол `SolverPool` из
 > `solver_pool.py`): `.executor` — `SyncPool` (выполняет переданную функцию синхронно в
@@ -753,7 +846,9 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_enqueue_queues_a_running_plan` | валидный вход | `QueuedPlan` с `plan_id`, `algorithm` и теми же `tickets`/`engineers`, что вернули стабы |
+| `test_enqueue_queues_a_running_plan` | валидный вход без `engineer_set_id` | `QueuedPlan` с `plan_id`, `algorithm`, `engineer_set_id` (набор `default` региона) и теми же `tickets`/`engineers`, что вернули стабы; `insert_running_plan` вызван с этим `engineer_set_id` |
+| `test_enqueue_given_engineer_set` | `engineer_set_id` дополнительного набора этого региона передан явно | `QueuedPlan.engineer_set_id` — переданный набор; `list_engineers` вызван с ним, а не с набором `default` |
+| `test_enqueue_engineer_set_not_in_region` | `engineer_set_id` набора другого региона | `InvalidInput(fields=[("engineer_set_id", ...)])`; строка плана не вставляется |
 | `test_enqueue_unknown_region` | код региона не из `regions.toml` | `InvalidInput(reason="unknown_region")`; строка плана не вставляется |
 | `test_enqueue_region_not_loaded` | `get_region_id` возвращает `None` | `InvalidInput(reason="region_not_loaded")` |
 | `test_enqueue_plan_date_mismatch` | у заявки окно не на дату плана | `InvalidInput(reason="plan_date_mismatch")` |
@@ -819,7 +914,7 @@
 | `test_plan_not_found` | `get_plan` возвращает `None` | `NotFound(reason="plan_not_found")` |
 | `test_running_plan_has_no_routes` | `status="running"` | `engineers`/`unassigned`/`metrics` — `None` |
 | `test_failed_plan_carries_reason` | `status="failed"`, `failed_reason` задан | тот же `failed_reason` в ответе; `engineers`/`unassigned`/`metrics` — `None` |
-| `test_done_plan_lists_every_region_engineer` | 2 бригады региона, назначение только у одной | обе в ответе, по возрастанию `engineer_id`; у незадействованной — пустой маршрут |
+| `test_done_plan_lists_every_set_engineer` | 2 бригады набора плана (`list_engineers` вызван с `plan.engineer_set_id`), назначение только у одной | обе в ответе, по возрастанию `engineer_id`; у незадействованной — пустой маршрут |
 | `test_visit_fields_and_distance_rounding` | визит с `travel_distance_m=1234` | `travel_distance_km == 1.2` (округление до 0.1 км), остальные поля визита как в строке |
 | `test_idle_time_is_shift_minus_travel_and_duration` | смена 120 мин, 2 визита (15+5 мин переезда, 30+20 мин на объекте) | `idle_time_min == 120 - 20 - 50` |
 | `test_visits_sorted_by_sequence_no` | строки назначений в БД в произвольном порядке | маршрут отсортирован по `sequence_no` |
@@ -844,6 +939,8 @@
 | `test_compare_baseline_not_found` | план из пути `done`, `get_plan(baseline_plan_id)` вернул `None` | `NotFound(reason="plan_not_found", params={"plan_id": <baseline_plan_id>})` |
 | `test_compare_main_not_ready` (параметризован: `status="running"`, `status="failed"`) | план из пути не `done` | `InvalidInput(reason="plan_not_ready")`; план-baseline не читается |
 | `test_compare_baseline_not_ready` (параметризован: `status="running"`, `status="failed"`) | план из пути `done`, план-baseline не `done` | `InvalidInput(reason="plan_not_ready")` |
+| `test_compare_engineer_set_mismatch` | план из пути `done` с `engineer_set_id=1`, план-baseline `done` с `engineer_set_id=2` | `InvalidInput(reason="engineer_set_mismatch")`; метрики не считаются |
+| `test_compare_same_engineer_set_ok` | оба плана `done` с одним и тем же `engineer_set_id` | список из 2 записей, как в остальных сценариях `compare` |
 | `test_compare_dependency_unavailable_propagates` | `get_plan` любого из двух планов поднимает `DependencyUnavailable` | ошибка поднята как есть |
 
 ## `src/service/replan.py` — перепланирование по событию (Contract Net)
@@ -852,9 +949,10 @@
 
 > Замена стабами: `connect`/`get_plan`/`list_engineers`/`list_tickets`/`list_plan_assignments`/
 > `insert_ticket`/`insert_replanned_plan` — без реальной БД (`FakeRepo`, `tests/service/test_replan.py`).
-> OSRM — `FakeOsrm`: любой перегон занимает ровно 5 минут (300 с) и 1 км, кроме точки до
-> самой себя, так что времена прибытия в тестах считаются вручную. `clock` — фиксированное
-> время.
+> `list_engineers` вызывается с `plan.engineer_set_id`, а не с `plan.region_id` — кандидаты
+> любого события берутся из набора плана-родителя, а не из всего региона. OSRM — `FakeOsrm`:
+> любой перегон занимает ровно 5 минут (300 с) и 1 км, кроме точки до самой себя, так что
+> времена прибытия в тестах считаются вручную. `clock` — фиксированное время.
 
 | Test | Scenario | Expected result |
 |---|---|---|
@@ -879,6 +977,7 @@
 | `test_plan_not_found` | `get_plan` вернул `None` | `NotFound(reason="plan_not_found")` |
 | `test_triggered_at_outside_plan_date_is_rejected` | `triggered_at` — другая календарная дата, чем `plan_date` | `InvalidInput(reason="triggered_at_out_of_range")` |
 | `test_untouched_engineer_row_is_copied_forward_unchanged` | бригада без навыка `emergency` с уже назначенной заявкой | её строка в новом плане совпадает со строкой плана-родителя дословно; заявка не входит в `diff.changed_assignments` |
+| `test_candidates_from_plan_engineer_set_not_whole_region` | план-родитель построен по дополнительному набору бригад; `list_engineers` возвращает бригады этого набора | `list_engineers` вызван с `engineer_set_id` плана-родителя; `insert_replanned_plan` вызван с тем же `engineer_set_id` |
 
 ## `api` — POST /api/v1/plan/{plan_id}/replan
 
@@ -891,7 +990,7 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_replan_new_urgent_ticket_returns_the_new_plan` | валидное тело `new_urgent_ticket`, `Replanner.replan` вернул `ReplanOutcome` с непустым `diff` | `200`, тело `PlanReplanResult` — `plan_id`/`parent_plan_id`/`status=done` из исхода, `engineers`/`unassigned`/`metrics` из `PlanReader.get`, `diff` — как вернул сервис, `reassigned_from_unavailable_engineer` всегда `[]`; событие дошло до `Replanner.replan` разобранным (`NewUrgentTicketEvent` с полями заявки и `reaction_min`) |
+| `test_replan_new_urgent_ticket_returns_the_new_plan` | валидное тело `new_urgent_ticket`, `Replanner.replan` вернул `ReplanOutcome` с непустым `diff` и `engineer_set_id` родителя | `200`, тело `PlanReplanResult` — `plan_id`/`parent_plan_id`/`status=done`/`engineer_set_id` из исхода, `engineers`/`unassigned`/`metrics` из `PlanReader.get`, `diff` — как вернул сервис, `reassigned_from_unavailable_engineer` всегда `[]`; событие дошло до `Replanner.replan` разобранным (`NewUrgentTicketEvent` с полями заявки и `reaction_min`) |
 | `test_replan_ticket_cancelled_reaches_the_service` | валидное тело `ticket_cancelled` | `Replanner.replan` вызван с `TicketCancelledEvent(ticket_id=...)` |
 | `test_replan_new_ticket_reaches_the_service` | валидное тело `new_ticket` | `Replanner.replan` вызван с `NewTicketEvent`, поля заявки и окно разобраны в `datetime` |
 | `test_replan_new_ticket_invalid_window_date` | `ticket.window_start="2026-02-30T09:00:00"` (несуществующая дата, форму спека принимает) | `400`, `{"fields": [{"name": "ticket.window_start", "message": "Несуществующие дата или время"}]}` |
@@ -1135,6 +1234,33 @@
 |---|---|---|
 | `test_list_regions` | сервис вернул `east`/«Восток», `south_east`/«Юго-Восток» | `200`, тело `[{"code": "east", "name": "Восток"}, {"code": "south_east", "name": "Юго-Восток"}]` в том же порядке; есть `X-Request-ID` |
 
+## `api` — GET/POST /api/v1/engineer-sets, DELETE /api/v1/engineer-sets/{id}
+
+Файл: `tests/api/test_engineer_sets.py`.
+
+> Замена стабами: сервис наборов бригад — фейк через `app.dependency_overrides`, возвращает
+> заданные наборы или поднимает заданное исключение и запоминает вызовы; БД нет.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_list_engineer_sets` | `?region=east`; сервис вернул демо- и дополнительный набор | `200`, массив `EngineerSet` в порядке ответа сервиса, `kind`/`description` каждого как вернул сервис |
+| `test_list_engineer_sets_empty` | сервис вернул `[]` | `200`, `[]` |
+| `test_list_engineer_sets_region_invalid` (параметризован: нет параметра, `East!`, 51 символ) | запрос с таким `region` | `400`, `{"fields": [{"name": "region", ...}]}`; сервис не вызван |
+| `test_list_engineer_sets_unknown_region` | сервис поднимает `InvalidInput(reason="unknown_region", fields=...)` | `400`, `{"fields": [{"name": "region", ...}]}` |
+| `test_create_engineer_set` | валидное тело | `201`, тело `EngineerSet` (`kind=generated`) как вернул сервис; сервис вызван с телом запроса |
+| `test_create_engineer_set_body_invalid` (параметризован: пустое тело, `engineers=0`, `engineers=31`, `morning_share=-0.1`, `morning_share=1.1`, `seed=""`, `name=""`, лишнее поле) | запрос с таким телом | `400`, `{"fields": [...]}`; сервис не вызван |
+| `test_create_engineer_set_unknown_region` | сервис поднимает `InvalidInput(reason="unknown_region", fields=...)` | `400`, `{"fields": [{"name": "region", ...}]}` |
+| `test_create_engineer_set_region_not_loaded` | сервис поднимает `InvalidInput(reason="region_not_loaded")` | `400`, `{"fields": [{"name": "region", ...}]}` |
+| `test_create_engineer_set_insufficient_full_day` | сервис поднимает `InvalidInput(reason="insufficient_full_day_engineers", message=...)` | `400`, `{"message": ...}` |
+| `test_create_engineer_set_name_conflict` | сервис поднимает `Conflict` | `409` без тела |
+| `test_create_engineer_set_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | сервис поднимает эту ошибку | `503` \| `500` без тела |
+| `test_delete_engineer_set` | сервис отработал без ошибки | `204` без тела; сервис вызван с `engineer_set_id` из пути |
+| `test_delete_engineer_set_invalid_id` | `engineer_set_id=0` | `400`; сервис не вызван |
+| `test_delete_engineer_set_not_found` | сервис поднимает `NotFound` | `404` без тела |
+| `test_delete_engineer_set_demo_conflict` | сервис поднимает `Conflict` | `409` без тела |
+| `test_delete_engineer_set_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | сервис поднимает эту ошибку | `503` \| `500` без тела |
+| `test_engineer_sets_failed_logged` | каждая ошибка выше | запись `engineer_set_create_failed`/`engineer_set_delete_failed`/`list_engineer_sets_failed` соответствующего уровня с `reason` |
+
 ## `api` — GET /api/v1/engineers
 
 Файл: `tests/api/test_engineers.py`.
@@ -1145,10 +1271,13 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_list_engineers` | `?region=east`; сервис вернул бригаду: смена `10:00`–`23:30`, старт `(55.72, 37.74)`, навыки `connection`, `emergency`, транспорт `car` | `200`, `[{"id", "name", "vehicle_type": "car", "skills": ["connection", "emergency"], "shift_start": "10:00", "shift_end": "23:30", "start": {"lat": 55.72, "lon": 37.74}}]`; сервис вызван с `east` |
+| `test_list_engineers` | `?region=east`; сервис вернул бригаду: смена `10:00`–`23:30`, старт `(55.72, 37.74)`, навыки `connection`, `emergency`, транспорт `car` | `200`, `[{"id", "name", "vehicle_type": "car", "skills": ["connection", "emergency"], "shift_start": "10:00", "shift_end": "23:30", "start": {"lat": 55.72, "lon": 37.74}}]`; сервис вызван с `(east, None)` |
+| `test_list_engineers_given_set` | `?region=east&engineer_set_id=9` | сервис вызван с `(east, 9)` |
 | `test_list_engineers_empty` | сервис вернул `[]` | `200`, `[]` |
 | `test_list_engineers_region_invalid` (параметризован: нет параметра, `East!`, 51 символ) | запрос с таким `region` | `400`, `{"fields": [{"name": "region", ...}]}`; сервис не вызван |
+| `test_list_engineers_set_id_invalid` (параметризован: `0`, `-1`, `abc`) | `engineer_set_id` с таким значением | `400`, `{"fields": [{"name": "engineer_set_id", ...}]}`; сервис не вызван |
 | `test_list_engineers_unknown_region` | сервис поднимает `InvalidInput(reason="unknown_region", fields=[("region", "Неизвестный регион")])` | `400`, `{"fields": [{"name": "region", "message": "Неизвестный регион"}]}`; запись `list_engineers_failed` уровня `warning` с `reason = unknown_region`, `region` и `request_id` ответа |
+| `test_list_engineers_set_not_in_region` | сервис поднимает `InvalidInput(fields=[("engineer_set_id", ...)])` | `400`, `{"fields": [{"name": "engineer_set_id", ...}]}` |
 | `test_list_engineers_db_unavailable` | сервис поднимает `DependencyUnavailable(reason="db_unavailable")` | `503` без тела; запись `list_engineers_failed` уровня `error` |
 | `test_list_engineers_db_failure` | сервис поднимает `DatabaseFailure` | `500` без тела |
 
@@ -1203,12 +1332,14 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_build_plan_returns_202_running` | валидный запрос | `202`, тело `Plan` со `status=running` и без `engineers`/`unassigned`; `enqueue` вызван с `(region, plan_date, algorithm)`; фоновая задача `build` поставлена с `plan_id`, теми же `tickets`/`engineers`, что вернул `enqueue`, `plan_date` и `algorithm` |
+| `test_build_plan_returns_202_running` | валидный запрос без `engineer_set_id` | `202`, тело `Plan` со `status=running`, `engineer_set_id` (набор `default`, как вернул `enqueue`) и без `engineers`/`unassigned`; `enqueue` вызван с `(region, plan_date, algorithm, None)`; фоновая задача `build` поставлена с `plan_id`, теми же `tickets`/`engineers`, что вернул `enqueue`, `plan_date` и `algorithm` |
+| `test_build_plan_given_engineer_set` | тело с `engineer_set_id=9` | `enqueue` вызван с `engineer_set_id=9`; `202`, `Plan.engineer_set_id == 9` |
 | `test_build_plan_invalid_date` | `plan_date="2026-02-30"` (несуществующая дата, форму регулярное выражение спеки принимает) | `400`, `{"fields": [{"name": "plan_date", "message": "Несуществующая дата"}]}` |
-| `test_build_plan_rejects_malformed_body` (параметризован: пустое тело, без `algorithm`, `algorithm` вне перечня, лишнее поле) | запрос с таким телом | `400` |
+| `test_build_plan_rejects_malformed_body` (параметризован: пустое тело, без `algorithm`, `algorithm` вне перечня, `engineer_set_id=0`, лишнее поле) | запрос с таким телом | `400` |
 | `test_build_plan_unknown_region` | `enqueue` поднимает `InvalidInput(reason="unknown_region", fields=...)` | `400`, `{"fields": [{"name": "region", ...}]}`; фоновая задача не ставится |
+| `test_build_plan_engineer_set_not_in_region` | `enqueue` поднимает `InvalidInput(fields=[("engineer_set_id", ...)])` | `400`, `{"fields": [{"name": "engineer_set_id", ...}]}`; фоновая задача не ставится |
 | `test_build_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `enqueue` поднимает эту ошибку | `503` \| `500` без тела |
-| `test_get_running_plan` | `PlanRead(status="running", ...)` | `200`, `engineers`/`unassigned`/`failed_reason` — `null` |
+| `test_get_running_plan` | `PlanRead(status="running", engineer_set_id=..., ...)` | `200`, `engineer_set_id` в теле независимо от статуса; `engineers`/`unassigned`/`failed_reason` — `null` |
 | `test_get_failed_plan` | `PlanRead(status="failed", failed_reason=...)` | `200`, тот же `failed_reason`; `engineers`/`unassigned` — `null` |
 | `test_get_done_plan` | `PlanRead(status="done", ...)` с одной бригадой и одним визитом, одной неназначенной заявкой, заполненным `metrics` | `200`, тело `Plan` с `engineers`/`unassigned`/`metrics`, все поля контракта (`Visit`, `EngineerRoute`, `UnassignedTicket`, `PlanMetrics`) заполнены как в `PlanRead` |
 | `test_get_plan_not_found` | `reader.get` поднимает `NotFound` | `404` без тела |
@@ -1220,6 +1351,7 @@
 | `test_compare_plan_missing_baseline_query` | запрос без `baseline_plan_id` | `400` |
 | `test_compare_plan_not_found` | `reader.compare` поднимает `NotFound` | `404` без тела |
 | `test_compare_plan_not_ready` | `reader.compare` поднимает `InvalidInput(reason="plan_not_ready", message=...)` | `400`, `{"message": ...}` |
+| `test_compare_plan_engineer_set_mismatch` | `reader.compare` поднимает `InvalidInput(reason="engineer_set_mismatch", message=...)` | `400`, `{"message": ...}` |
 | `test_compare_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `reader.compare` поднимает эту ошибку | `503` \| `500` без тела |
 | `test_compare_plan_failed_logged` | `reader.compare` поднимает `NotFound`/`InvalidInput` | запись `plan_compare_failed` уровня `warning` с `reason`, `plan_id`, `baseline_plan_id` |
 
@@ -1356,11 +1488,14 @@
 > `schemathesis` строит кейсы из `specs/openapi.yaml` (ссылки на `specs/common.yaml`
 > разрешаются от корня) и прогоняет их против поднятого приложения в двух режимах —
 > позитивном и негативном; пишется один раз на всё приложение, а не по эндпоинту, и
-> растёт вместе со спекой. Загрузчик, сервис списков, построитель и читатель плана заменены
+> растёт вместе со спекой. Загрузчик, сервис списков, сервис наборов бригад, построитель и
+> читатель плана заменены
 > через `app.dependency_overrides` фейками, которые возвращают валидный по контракту
 > результат (итог загрузки с невалидной строкой, одна бригада, одна заявка; смена статуса —
-> заявка с запрошенным статусом; построение плана — план в очереди с той же бригадой и
-> заявкой; чтение плана — план `done` без маршрутов и неназначенных), а на неизвестный
+> заявка с запрошенным статусом; наборы бригад — список из одного демо-набора, создание —
+> набор `kind=generated`, удаление — успех; построение плана — план в очереди с той же
+> бригадой, заявкой и `engineer_set_id`; чтение плана — план `done` без маршрутов и
+> неназначенных, с тем же `engineer_set_id`), а на неизвестный
 > регион поднимают `InvalidInput` — так позитивные кейсы проверяют форму успешных ответов
 > без БД. Чтение плана возвращает `metrics`, заполненный по той же схеме, что и
 > `engineers`/`unassigned`; сравнение планов (`compare`) возвращает фиксированный список из
