@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, time
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from src.domain import (
     VehicleType,
 )
 from src.errors import DatabaseFailure, DependencyUnavailable, InvalidInput
+from src.repository.plans import PlanSummaryRow
 from src.service.region_lists import RegionLists
 from src.service.regions import Regions
 from tests.log_records import events, json_logs
@@ -57,6 +58,20 @@ TICKETS = [
         received_at=datetime(2026, 8, 17, 0, 0),
     )
     for n in (1, 2, 3)
+]
+PLANS = [
+    PlanSummaryRow(
+        id=n,
+        region_code="east",
+        engineer_set_id=DEFAULT_SET_ID,
+        plan_date=date(2026, 8, 17),
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
+        parent_plan_id=None,
+        created_at=datetime(2026, 8, 17, 9, 0),
+    )
+    for n in (1, 2)
 ]
 
 
@@ -131,6 +146,12 @@ class FakeRepository:
         self.calls.append(("list_tickets", region_id))
         return TICKETS
 
+    async def list_plans(
+        self, _conn: Any, region_id: int, engineer_set_id: int | None
+    ) -> list[PlanSummaryRow]:
+        self.calls.append(("list_plans", (region_id, engineer_set_id)))
+        return PLANS
+
 
 def _lists(repo: FakeRepository, connect: FakeConnect | None = None) -> RegionLists:
     return RegionLists(
@@ -141,6 +162,7 @@ def _lists(repo: FakeRepository, connect: FakeConnect | None = None) -> RegionLi
         repo.get_engineer_set,
         repo.list_engineers,
         repo.list_tickets,
+        repo.list_plans,
     )
 
 
@@ -196,20 +218,59 @@ async def test_tickets_of_loaded_region() -> None:
     assert repo.calls == [("get_region_id", "east"), ("list_tickets", 7)]
 
 
+async def test_plans_of_region_all_sets() -> None:
+    repo = FakeRepository()
+    assert await _lists(repo).plans("east", None) == PLANS
+    assert repo.calls == [("get_region_id", "east"), ("list_plans", (7, None))]
+    assert ("get_engineer_set", 9) not in repo.calls
+
+
+async def test_plans_of_given_set() -> None:
+    repo = FakeRepository(engineer_set_region={9: 7})
+    assert await _lists(repo).plans("east", 9) == PLANS
+    assert repo.calls == [
+        ("get_region_id", "east"),
+        ("get_engineer_set", 9),
+        ("list_plans", (7, 9)),
+    ]
+
+
+async def test_plans_set_not_in_region() -> None:
+    repo = FakeRepository(region_id=7, engineer_set_region={9: 8})
+    with pytest.raises(InvalidInput) as e:
+        await _lists(repo).plans("east", 9)
+    assert e.value.fields == [("engineer_set_id", "Набор не принадлежит региону")]
+    assert ("list_plans", (7, 9)) not in repo.calls
+
+
+async def test_plans_set_not_found() -> None:
+    repo = FakeRepository(region_id=7, engineer_set_region={})
+    with pytest.raises(InvalidInput) as e:
+        await _lists(repo).plans("east", 9)
+    assert e.value.fields == [("engineer_set_id", "Набор не принадлежит региону")]
+
+
 async def test_region_not_loaded_is_empty() -> None:
     repo = FakeRepository(region_id=None)
     lists = _lists(repo)
     assert await lists.engineers("south_east", None) == []
     assert await lists.tickets("south_east") == []
-    assert [name for name, _ in repo.calls] == ["get_region_id", "get_region_id"]
+    assert await lists.plans("south_east", None) == []
+    assert [name for name, _ in repo.calls] == ["get_region_id"] * 3
 
 
 async def test_unknown_region() -> None:
     connect = FakeConnect()
-    with pytest.raises(InvalidInput) as e:
-        await _lists(FakeRepository(), connect).engineers("north", None)
-    assert e.value.reason == "unknown_region"
-    assert e.value.fields == [("region", "Неизвестный регион")]
+    lists = _lists(FakeRepository(), connect)
+    for call in (
+        lambda: lists.engineers("north", None),
+        lambda: lists.tickets("north"),
+        lambda: lists.plans("north", None),
+    ):
+        with pytest.raises(InvalidInput) as e:
+            await call()
+        assert e.value.reason == "unknown_region"
+        assert e.value.fields == [("region", "Неизвестный регион")]
     assert connect.taken == 0
 
 
@@ -220,6 +281,9 @@ async def test_unknown_region() -> None:
 async def test_repository_failure_propagates(error: Exception) -> None:
     with pytest.raises(type(error)) as e:
         await _lists(FakeRepository(error=error)).tickets("east")
+    assert e.value is error
+    with pytest.raises(type(error)) as e:
+        await _lists(FakeRepository(error=error)).plans("east", None)
     assert e.value is error
 
 

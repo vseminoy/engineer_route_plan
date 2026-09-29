@@ -1,4 +1,13 @@
-import type { InvalidRowReason, PlanFailedReason, Skill, TicketStatus, UnassignedReason } from '@/types/domain';
+import type {
+  Algorithm,
+  InvalidRowReason,
+  PlanFailedReason,
+  PlanStatus,
+  Skill,
+  TicketStatus,
+  UnassignedReason,
+  VehicleType
+} from '@/types/domain';
 import { ApiError, NetworkError } from '@/api/client';
 import { isFieldErrors } from '@/lib/fieldErrors';
 
@@ -10,6 +19,19 @@ export function skillLabel(skill: Skill): string {
       return 'Подключение';
     case 'local_work':
       return 'Локальные работы';
+  }
+}
+
+export function vehicleLabel(vehicleType: VehicleType): string {
+  switch (vehicleType) {
+    case 'car':
+      return 'Автомобиль';
+    case 'foot':
+      return 'Пешком';
+    case 'bike':
+      return 'Велосипед';
+    case 'public_transport':
+      return 'Общественный транспорт';
   }
 }
 
@@ -55,6 +77,17 @@ export const planFailedReasonText: Record<PlanFailedReason, string> = {
   shutdown: 'Сервер был перезапущен во время расчёта'
 };
 
+export const planStatusLabel: Record<PlanStatus, string> = {
+  running: 'Строится',
+  done: 'Готов',
+  failed: 'Не удалось построить'
+};
+
+export const algorithmLabel: Record<Algorithm, string> = {
+  or_tools: 'Основной алгоритм',
+  baseline_fcfs: 'Baseline (по порядку поступления)'
+};
+
 // A response status with no body: text by status, used when the endpoint has
 // no more specific entry below.
 const statusMessage: Record<number, string> = {
@@ -73,7 +106,9 @@ const endpointStatusMessage: Record<string, string> = {
   'POST /plan/{id}/replan 409': 'Заявка ещё не отмечена отменённой — сначала измените её статус',
   'POST /engineer-sets 409': 'Набор с таким названием уже есть в регионе',
   'DELETE /engineer-sets/{id} 404': 'Набор уже удалён',
-  'DELETE /engineer-sets/{id} 409': 'Набор по умолчанию удалить нельзя'
+  'DELETE /engineer-sets/{id} 409': 'Набор по умолчанию удалить нельзя',
+  'DELETE /plan/{id} 404': 'План уже удалён',
+  'DELETE /plan/{id} 409': 'План ещё строится — подождите и попробуйте снова'
 };
 
 function textForStatus(endpoint: string, status: number): string {

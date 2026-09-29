@@ -1,4 +1,5 @@
 import { SkillIcons } from './SkillIcons';
+import { VehicleIcon } from './VehicleIcon';
 import { EngineerTimeline } from './EngineerTimeline';
 import { formatKm, formatMinutes, minutesToTimeLabel, timeOnly } from '@/lib/format';
 import type { EngineerRoster, EngineerRoute, TicketSummary } from '@/types/domain';
@@ -29,6 +30,7 @@ export function EngineerCard({ engineer, roster, color, ticketById, diffTags, se
       <div className="engineer-card__header">
         <span className="engineer-card__dot" style={{ background: color }} />
         <span className="engineer-card__name">{engineer.name}</span>
+        {roster && <VehicleIcon vehicleType={roster.vehicleType} />}
         {roster && <SkillIcons skills={roster.skills} />}
       </div>
       <div className="engineer-card__meta">

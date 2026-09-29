@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo } from 'react';
+import { Fragment, useEffect, useMemo, useRef } from 'react';
 import { MapContainer, TileLayer, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -26,10 +26,31 @@ function FitBounds({ points }: { points: [number, number][] }) {
   return null;
 }
 
+// Recenters on the selected ticket whenever the selection changes (e.g. a
+// stop clicked from the Бригады tab), so the user can see where it is even
+// if it's off-screen. Keyed on the ticket id only, via a ref for the lookup
+// map, so a data refetch (which produces a new ticketById reference on the
+// same selection) never re-triggers the pan.
+function FlyToTicket({ ticketId, ticketById }: { ticketId: number | null; ticketById: Map<number, TicketSummary> }) {
+  const map = useMap();
+  const ticketByIdRef = useRef(ticketById);
+  ticketByIdRef.current = ticketById;
+
+  useEffect(() => {
+    if (ticketId === null) return;
+    const ticket = ticketByIdRef.current.get(ticketId);
+    if (!ticket || ticket.lat === null || ticket.lon === null) return;
+    map.flyTo([ticket.lat, ticket.lon], Math.max(map.getZoom(), 14), { duration: 0.6 });
+  }, [ticketId, map]);
+
+  return null;
+}
+
 export function MapView({ plan, roster, tickets }: Props) {
   const highlightedEngineerId = useUiStore((s) => s.highlightedEngineerId);
   const toggleHighlightedEngineer = useUiStore((s) => s.toggleHighlightedEngineer);
   const openTicket = useUiStore((s) => s.openTicket);
+  const selectedTicketId = useUiStore((s) => s.selectedTicketId);
 
   const rosterById = useMemo(() => new Map(roster.map((r) => [r.engineerId, r])), [roster]);
   const ticketById = useMemo(() => new Map(tickets.map((t) => [t.ticketId, t])), [tickets]);
@@ -68,6 +89,7 @@ export function MapView({ plan, roster, tickets }: Props) {
         const position: [number, number] = [ticket.lat, ticket.lon];
         stopPositions.push(position);
         allPoints.push(position);
+        const selected = selectedTicketId === stop.ticketId;
         return (
           <TicketMarker
             key={stop.ticketId}
@@ -76,8 +98,10 @@ export function MapView({ plan, roster, tickets }: Props) {
             urgent={ticket.priority === URGENT_PRIORITY}
             emergency={ticket.requiredSkill === 'emergency'}
             unassigned={false}
+            status={ticket.status}
             diffHighlight={diffTicketIds.has(stop.ticketId)}
-            opacity={dimmed ? 0.3 : 1}
+            selected={selected}
+            opacity={selected ? 1 : dimmed ? 0.3 : 1}
             onClick={() => openTicket(stop.ticketId)}
           />
         );
@@ -125,6 +149,8 @@ export function MapView({ plan, roster, tickets }: Props) {
           urgent={ticket.priority === URGENT_PRIORITY}
           emergency={false}
           unassigned
+          status={ticket.status}
+          selected={selectedTicketId === u.ticketId}
           onClick={() => openTicket(u.ticketId)}
         />
       );
@@ -145,6 +171,7 @@ export function MapView({ plan, roster, tickets }: Props) {
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
       <FitBounds points={allPoints} />
+      <FlyToTicket ticketId={selectedTicketId} ticketById={ticketById} />
       {officePositions.map((pos) => (
         <EngineerStartMarker key={pos.join(',')} position={pos} />
       ))}

@@ -3,11 +3,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Path, Query
 
-from src.api.deps import get_plan_builder, get_plan_reader, get_replanner
+from src.api.deps import get_plan_builder, get_plan_reader, get_region_lists, get_replanner
 from src.api.schemas.generated import models as api
 from src.domain import Point, VehicleType
 from src.errors import AppError, DatabaseFailure, DependencyUnavailable, InvalidInput
 from src.logging import get_logger
+from src.repository.plans import PlanSummaryRow
 from src.service.plan_builder import PlanBuilder
 from src.service.plan_reader import (
     ComparisonEntryRead,
@@ -18,6 +19,7 @@ from src.service.plan_reader import (
     UnassignedRead,
     VisitRead,
 )
+from src.service.region_lists import RegionLists
 from src.service.replan import (
     AssignmentChange,
     EngineerUnavailableEvent,
@@ -37,10 +39,14 @@ router = APIRouter(prefix="/api/v1", tags=["plan"])
 
 Builder = Annotated[PlanBuilder, Depends(get_plan_builder)]
 Reader = Annotated[PlanReader, Depends(get_plan_reader)]
+Lists = Annotated[RegionLists, Depends(get_region_lists)]
 ReplannerDep = Annotated[Replanner, Depends(get_replanner)]
 # `plan_id`/`baseline_plan_id` as in the contract: a BIGINT key.
 PlanId = Annotated[int, Path(ge=1, le=9223372036854775807)]
 BaselinePlanId = Annotated[int, Query(ge=1, le=9223372036854775807)]
+# The `region`/`engineer_set_id` query parameters as in the contract, same pattern as regions.py.
+RegionQuery = Annotated[str, Query(min_length=1, max_length=50, pattern="^[a-z][a-z0-9_]*$")]
+EngineerSetIdQuery = Annotated[int | None, Query(ge=1, le=9223372036854775807)]
 
 
 def _log_failed(event: str, error: AppError, **params: object) -> None:
@@ -137,6 +143,32 @@ def _plan(p: PlanRead) -> api.Plan:
     )
 
 
+def _plan_summary(p: PlanSummaryRow) -> api.PlanSummary:
+    return api.PlanSummary(
+        plan_id=p.id,
+        region=api.RegionCode(p.region_code),
+        engineer_set_id=p.engineer_set_id,
+        plan_date=api.LocalDate(p.plan_date.isoformat()),
+        algorithm=api.PlanAlgorithm(p.algorithm),
+        status=api.PlanStatus(p.status),
+        created_at=api.LocalDateTime(p.created_at.isoformat()),
+        parent_plan_id=p.parent_plan_id,
+        failed_reason=api.PlanFailedReason(p.failed_reason) if p.failed_reason else None,
+    )
+
+
+@router.get("/plan", response_model=list[api.PlanSummary], operation_id="list_plans")
+async def list_plans(
+    region: RegionQuery, lists: Lists, engineer_set_id: EngineerSetIdQuery = None
+) -> list[api.PlanSummary]:
+    try:
+        plans = await lists.plans(region, engineer_set_id)
+    except AppError as e:
+        _log_failed("list_plans_failed", e, region=region, engineer_set_id=engineer_set_id)
+        raise
+    return [_plan_summary(p) for p in plans]
+
+
 @router.post("/plan/build", response_model=api.Plan, status_code=202, operation_id="build_plan")
 async def build_plan(
     body: api.PlanBuildRequest, background_tasks: BackgroundTasks, builder: Builder
@@ -169,6 +201,15 @@ async def get_plan(plan_id: PlanId, reader: Reader) -> api.Plan:
         _log_failed("plan_get_failed", e, plan_id=plan_id)
         raise
     return _plan(plan)
+
+
+@router.delete("/plan/{plan_id}", status_code=204, operation_id="delete_plan")
+async def delete_plan(plan_id: PlanId, reader: Reader) -> None:
+    try:
+        await reader.delete(plan_id)
+    except AppError as e:
+        _log_failed("plan_delete_failed", e, plan_id=plan_id)
+        raise
 
 
 @router.get(

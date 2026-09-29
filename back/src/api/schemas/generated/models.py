@@ -441,7 +441,7 @@ class EngineerRoute(BaseModel):
     idle_time_min: Annotated[
         int,
         Field(
-            description="Простой бригады: длина смены минус суммарное время визитов и переездов; только для отображения — не входит в целевую функцию построения плана",
+            description="Простой бригады: суммарное время ожидания между визитами (от окончания одного визита до выезда на следующий), без времени до выезда на первый визит и после окончания последнего до конца смены; только для отображения — не входит в целевую функцию построения плана",
             ge=0,
         ),
     ]
@@ -564,6 +564,30 @@ class Plan(BaseModel):
     failed_reason: Annotated[
         PlanFailedReason | None, Field(description="Причина отказа; null, если status не failed")
     ] = None
+
+
+class PlanSummary(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    plan_id: Annotated[int, Field(description="Идентификатор плана на сервере")]
+    region: RegionCode
+    engineer_set_id: Annotated[int, Field(description="Набор бригад, для которого построен план")]
+    plan_date: Annotated[LocalDate, Field(description="Дата плана")]
+    algorithm: PlanAlgorithm
+    status: PlanStatus
+    created_at: Annotated[
+        LocalDateTime, Field(description="Когда построение плана поставлено в очередь")
+    ]
+    parent_plan_id: Annotated[
+        int | None,
+        Field(
+            description="План, от которого этот получен перепланированием; null — план построен POST /plan/build напрямую"
+        ),
+    ]
+    failed_reason: Annotated[
+        PlanFailedReason | None, Field(description="Причина отказа; null, если status не failed")
+    ]
 
 
 class IncidentTicketInput(BaseModel):

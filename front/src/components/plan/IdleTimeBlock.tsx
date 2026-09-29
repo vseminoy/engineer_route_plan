@@ -1,6 +1,7 @@
 import { getEngineerColor } from '@/lib/colors';
 import { minutesToTimeLabel } from '@/lib/format';
 import { SkillIcons } from './SkillIcons';
+import { VehicleIcon } from './VehicleIcon';
 import type { EngineerRoster, EngineerRoute } from '@/types/domain';
 
 interface Props {
@@ -35,6 +36,7 @@ export function IdleTimeBlock({ engineers, roster }: Props) {
                     {minutesToTimeLabel(r.shiftStartMin)}–{minutesToTimeLabel(r.shiftEndMin)}
                   </span>
                 )}
+                {r && <VehicleIcon vehicleType={r.vehicleType} />}
                 {r && <SkillIcons skills={r.skills} />}
               </div>
               <div className="bar-row__body">
@@ -68,6 +70,7 @@ export function IdleTimeBlock({ engineers, roster }: Props) {
                       {minutesToTimeLabel(r.shiftStartMin)}–{minutesToTimeLabel(r.shiftEndMin)}
                     </span>
                   )}
+                  {r && <VehicleIcon vehicleType={r.vehicleType} />}
                   {r && <SkillIcons skills={r.skills} />}
                   <span className="diff-tag diff-tag--idle">не задействована</span>
                 </div>

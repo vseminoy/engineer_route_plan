@@ -7,7 +7,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from src.repository.db import fetch_all, run_query
+from src.repository.db import database_errors, fetch_all, run_query
 from src.repository.region_data import queries
 
 
@@ -21,6 +21,21 @@ class PlanRow:
     algorithm: str
     status: str
     failed_reason: str | None
+
+
+@dataclass(frozen=True)
+class PlanSummaryRow:
+    """One row of `GET /api/v1/plan` — no routes, no metrics, just the plan itself."""
+
+    id: int
+    region_code: str
+    engineer_set_id: int
+    plan_date: date
+    algorithm: str
+    status: str
+    failed_reason: str | None
+    parent_plan_id: int | None
+    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -129,6 +144,26 @@ async def mark_running_plans_failed(conn: AsyncConnection[Any], failed_reason: s
     return [row[0] for row in rows]
 
 
+async def delete_plan(conn: AsyncConnection[Any], plan_id: int) -> None:
+    """Deletes `plan_id` and every plan replanned from it, directly or through a chain,
+    with their assignments and replan events — one transaction. A no-op if `plan_id`
+    does not exist (the caller checks existence separately, via `get_plan`). Wrapped in
+    `database_errors` itself, not just its queries: a closed connection fails opening
+    the transaction, before any named query runs."""
+    async with database_errors("delete_plan_tree"), conn.transaction():
+        await run_query(
+            "delete_plan_tree_replan_events",
+            lambda: queries.delete_plan_tree_replan_events(conn, plan_id=plan_id),
+        )
+        await run_query(
+            "delete_plan_tree_assignments",
+            lambda: queries.delete_plan_tree_assignments(conn, plan_id=plan_id),
+        )
+        await run_query(
+            "delete_plan_tree", lambda: fetch_all(queries.delete_plan_tree(conn, plan_id=plan_id))
+        )
+
+
 async def get_plan(conn: AsyncConnection[Any], plan_id: int) -> PlanRow | None:
     row = await run_query("get_plan", lambda: queries.get_plan(conn, plan_id=plan_id))
     if row is None:
@@ -144,6 +179,41 @@ async def get_plan(conn: AsyncConnection[Any], plan_id: int) -> PlanRow | None:
         status=status,
         failed_reason=failed_reason,
     )
+
+
+def _plan_summary_row(row: tuple[Any, ...]) -> PlanSummaryRow:
+    id_, region_code, engineer_set_id, plan_date, algorithm, status, failed_reason, parent_plan_id, created_at = row
+    return PlanSummaryRow(
+        id=id_,
+        region_code=region_code,
+        engineer_set_id=engineer_set_id,
+        plan_date=plan_date,
+        algorithm=algorithm,
+        status=status,
+        failed_reason=failed_reason,
+        parent_plan_id=parent_plan_id,
+        created_at=created_at,
+    )
+
+
+async def list_plans(
+    conn: AsyncConnection[Any], region_id: int, engineer_set_id: int | None
+) -> list[PlanSummaryRow]:
+    """All plans of the region, or (with `engineer_set_id`) only that set's — always
+    sorted by `created_at` descending, by the query itself."""
+    if engineer_set_id is None:
+        rows = await run_query(
+            "list_plans_by_region",
+            lambda: fetch_all(queries.list_plans_by_region(conn, region_id=region_id)),
+        )
+    else:
+        rows = await run_query(
+            "list_plans_by_engineer_set",
+            lambda: fetch_all(
+                queries.list_plans_by_engineer_set(conn, engineer_set_id=engineer_set_id)
+            ),
+        )
+    return [_plan_summary_row(row) for row in rows]
 
 
 async def insert_replanned_plan(

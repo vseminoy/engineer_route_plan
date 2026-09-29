@@ -383,6 +383,42 @@ paths:
           $ref: "./common.yaml#/components/responses/ServiceUnavailable"
           description: Недоступна база данных. Статус заявки не изменился.
 
+  /api/v1/plan:
+    get:
+      operationId: list_plans
+      summary: Список планов региона
+      description: >-
+        Все планы выбранного региона (опционально — только одного набора
+        бригад), в любом статусе running/done/failed, по убыванию created_at
+        (сначала новые). Лёгкая сводка без маршрутов и метрик — детали
+        конкретного плана отдаёт GET /plan/{plan_id}. Регион без загруженных
+        данных — пустой список.
+      parameters:
+        - $ref: "#/components/parameters/RegionQuery"
+        - $ref: "#/components/parameters/EngineerSetIdQuery"
+      responses:
+        "200":
+          description: Планы региона (или одного набора бригад)
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PlanSummary"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+          description: >-
+            region не из конфигурации или не передан, либо engineer_set_id не
+            из этого региона (`fields`).
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных.
+
   /api/v1/plan/build:
     post:
       operationId: build_plan
@@ -499,6 +535,44 @@ paths:
         "503":
           $ref: "./common.yaml#/components/responses/ServiceUnavailable"
           description: Недоступна база данных.
+    delete:
+      operationId: delete_plan
+      summary: Удалить план вместе со всеми его перепланированиями
+      description: >-
+        Удаляет план и всю цепочку планов, порождённых от него
+        `POST /plan/{plan_id}/replan` (прямо или через несколько
+        перепланирований), вместе с их визитами и событиями перепланирования,
+        в одной транзакции. План в состоянии running удалить нельзя — 409:
+        его может ещё дописывать фоновое построение.
+      parameters:
+        - name: plan_id
+          in: path
+          required: true
+          description: Идентификатор плана на сервере
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 9223372036854775807
+      responses:
+        "204":
+          description: План и вся цепочка его перепланирований удалены
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+          description: plan_id вне допустимого диапазона.
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+          description: Плана с таким plan_id нет.
+        "409":
+          $ref: "./common.yaml#/components/responses/Conflict"
+          description: План ещё в состоянии running.
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных. План не удалён.
 
   /api/v1/plan/{plan_id}/compare:
     get:
@@ -1172,8 +1246,10 @@ components:
           type: integer
           minimum: 0
           description: >-
-            Простой бригады: длина смены минус суммарное время визитов и
-            переездов; только для отображения — не входит в целевую функцию
+            Простой бригады: суммарное время ожидания между визитами (от
+            окончания одного визита до выезда на следующий), без времени до
+            выезда на первый визит и после окончания последнего до конца
+            смены; только для отображения — не входит в целевую функцию
             построения плана
 
     UnassignedTicket:
@@ -1324,6 +1400,51 @@ components:
             - $ref: "#/components/schemas/PlanMetrics"
             - type: "null"
           description: Обязательные метрики плана; null, если status не done
+        failed_reason:
+          anyOf:
+            - $ref: "#/components/schemas/PlanFailedReason"
+            - type: "null"
+          description: Причина отказа; null, если status не failed
+
+    PlanSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - plan_id
+        - region
+        - engineer_set_id
+        - plan_date
+        - algorithm
+        - status
+        - created_at
+        - parent_plan_id
+        - failed_reason
+      properties:
+        plan_id:
+          type: integer
+          description: Идентификатор плана на сервере
+        region:
+          $ref: "#/components/schemas/RegionCode"
+        engineer_set_id:
+          type: integer
+          description: Набор бригад, для которого построен план
+        plan_date:
+          $ref: "./common.yaml#/components/schemas/LocalDate"
+          description: Дата плана
+        algorithm:
+          $ref: "#/components/schemas/PlanAlgorithm"
+        status:
+          $ref: "#/components/schemas/PlanStatus"
+        created_at:
+          $ref: "./common.yaml#/components/schemas/LocalDateTime"
+          description: Когда построение плана поставлено в очередь
+        parent_plan_id:
+          anyOf:
+            - type: integer
+            - type: "null"
+          description: >-
+            План, от которого этот получен перепланированием; null — план
+            построен POST /plan/build напрямую
         failed_reason:
           anyOf:
             - $ref: "#/components/schemas/PlanFailedReason"

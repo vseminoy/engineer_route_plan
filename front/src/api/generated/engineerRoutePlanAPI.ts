@@ -14,11 +14,13 @@ import type {
   HealthStatus,
   ListEngineerSetsParams,
   ListEngineersParams,
+  ListPlansParams,
   ListTicketsParams,
   Plan,
   PlanBuildRequest,
   PlanComparisonEntry,
   PlanReplanResult,
+  PlanSummary,
   Region,
   RegionDataUpload,
   ReplanEventRequest,
@@ -721,6 +723,74 @@ const res = await fetch(getChangeTicketStatusUrl(ticketId),
 
 
 
+export type listPlansResponse200 = {
+  data: PlanSummary[]
+  status: 200
+}
+
+export type listPlansResponse400 = {
+  data: ValidationError
+  status: 400
+}
+
+export type listPlansResponse500 = {
+  data: void
+  status: 500
+}
+
+export type listPlansResponse503 = {
+  data: void
+  status: 503
+}
+
+export type listPlansResponseSuccess = (listPlansResponse200) & {
+  headers: Headers;
+};
+export type listPlansResponseError = (listPlansResponse400 | listPlansResponse500 | listPlansResponse503) & {
+  headers: Headers;
+};
+
+export type listPlansResponse = (listPlansResponseSuccess | listPlansResponseError)
+
+export const getListPlansUrl = (params: ListPlansParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/v1/plan?${stringifiedParams}` : `/api/v1/plan`
+}
+
+/**
+ * Все планы выбранного региона (опционально — только одного набора бригад), в любом статусе running/done/failed, по убыванию created_at (сначала новые). Лёгкая сводка без маршрутов и метрик — детали конкретного плана отдаёт GET /plan/{plan_id}. Регион без загруженных данных — пустой список.
+ * @summary Список планов региона
+ */
+export const listPlans = async (params: ListPlansParams, options?: RequestInit): Promise<listPlansResponse> => {
+
+  const res = await fetch(getListPlansUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listPlansResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listPlansResponse
+}
+
+
+
 export type buildPlanResponse202 = {
   data: Plan
   status: 202
@@ -871,6 +941,72 @@ export const getPlan = async (planId: number, options?: RequestInit): Promise<ge
 
   const data: getPlanResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getPlanResponse
+}
+
+
+
+export type deletePlanResponse204 = {
+  data: void
+  status: 204
+}
+
+export type deletePlanResponse404 = {
+  data: void
+  status: 404
+}
+
+export type deletePlanResponse409 = {
+  data: void
+  status: 409
+}
+
+export type deletePlanResponse500 = {
+  data: void
+  status: 500
+}
+
+export type deletePlanResponse503 = {
+  data: void
+  status: 503
+}
+
+export type deletePlanResponseSuccess = (deletePlanResponse204) & {
+  headers: Headers;
+};
+export type deletePlanResponseError = (deletePlanResponse404 | deletePlanResponse409 | deletePlanResponse500 | deletePlanResponse503) & {
+  headers: Headers;
+};
+
+export type deletePlanResponse = (deletePlanResponseSuccess | deletePlanResponseError)
+
+export const getDeletePlanUrl = (planId: number,) => {
+
+
+
+
+  return `/api/v1/plan/${planId}`
+}
+
+/**
+ * Удаляет план и всю цепочку планов, порождённых от него `POST /plan/{plan_id}/replan` (прямо или через несколько перепланирований), вместе с их визитами и событиями перепланирования, в одной транзакции. План в состоянии running удалить нельзя — 409: его может ещё дописывать фоновое построение.
+ * @summary Удалить план вместе со всеми его перепланированиями
+ */
+export const deletePlan = async (planId: number, options?: RequestInit): Promise<deletePlanResponse> => {
+
+  const res = await fetch(getDeletePlanUrl(planId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: deletePlanResponse['data'] = body ? JSON.parse(body) : undefined
+  return { data, status: res.status, headers: res.headers } as deletePlanResponse
 }
 
 

@@ -107,6 +107,23 @@ export type PlanStatus = 'running' | 'done' | 'failed';
 // план остался running на момент остановки сервера и был закрыт при следующем запуске.
 export type PlanFailedReason = 'osrm_unavailable' | 'db_unavailable' | 'build_error' | 'timeout' | 'shutdown';
 
+// From GET /plan (list_plans) — every plan built for a region/engineer set,
+// newest first. Used to recover the baseline_fcfs plan paired with a main
+// plan when the session-only pointer to it (useUiStore.baselinePlanId) was
+// never set, e.g. the plan screen was opened straight from its URL instead
+// of just having been built.
+export interface PlanSummary {
+  planId: number;
+  region: RegionCode;
+  engineerSetId: number;
+  planDate: string; // naive local date, ISO-8601 ('2026-08-17')
+  algorithm: Algorithm;
+  status: PlanStatus;
+  createdAt: string; // naive local datetime, ISO-8601
+  parentPlanId: number | null;
+  failedReason: PlanFailedReason | null;
+}
+
 export interface Plan {
   planId: number;
   algorithm: Algorithm;

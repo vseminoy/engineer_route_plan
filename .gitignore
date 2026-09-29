@@ -19,9 +19,8 @@ back/.env.*.local
 
 #trunkline
 .claude
-.pipeline/workdir
+.pipeline
 .trunkline
-.pipeline/README.md
 /docs/backend
 /docs/frontend
 /docs/ymarchive

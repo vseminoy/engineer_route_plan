@@ -26,6 +26,7 @@ from src.domain import (
     TicketStatus,
     VehicleType,
 )
+from src.repository.plans import PlanSummaryRow
 from src.service.loader import LoadResult
 from src.service.plan_builder import QueuedPlan
 from src.service.plan_reader import ComparisonEntryRead, MetricsRead, PlanRead
@@ -76,6 +77,17 @@ ENGINEER_SET = EngineerSet(
     evening_share=0.25,
     seed="east",
 )
+PLAN_SUMMARY = PlanSummaryRow(
+    id=1,
+    region_code="east",
+    engineer_set_id=70,
+    plan_date=date(2026, 8, 17),
+    algorithm="or_tools",
+    status="done",
+    failed_reason=None,
+    parent_plan_id=None,
+    created_at=datetime(2026, 8, 17, 9, 0),
+)
 
 
 class FakeLists:
@@ -83,10 +95,12 @@ class FakeLists:
         self,
         engineers: list[Engineer] | None = None,
         tickets: list[Ticket] | None = None,
+        plans: list[PlanSummaryRow] | None = None,
         error: Exception | None = None,
     ) -> None:
         self._engineers = [ENGINEER] if engineers is None else engineers
         self._tickets = [TICKET] if tickets is None else tickets
+        self._plans = [PLAN_SUMMARY] if plans is None else plans
         self.error = error
         self.calls: list[tuple[str, str, int | None] | tuple[str, str]] = []
 
@@ -109,6 +123,12 @@ class FakeLists:
         if self.error:
             raise self.error
         return self._tickets
+
+    async def plans(self, region: str, engineer_set_id: int | None = None) -> list[PlanSummaryRow]:
+        self.calls.append(("plans", region, engineer_set_id))
+        if self.error:
+            raise self.error
+        return self._plans
 
 
 class FakeLoader:
@@ -177,6 +197,7 @@ class FakePlanReader:
         error: Exception | None = None,
         compare_result: "tuple[ComparisonEntryRead, ...] | None" = None,
         compare_error: Exception | None = None,
+        delete_error: Exception | None = None,
     ) -> None:
         self.plan = plan or PlanRead(
             plan_id=1,
@@ -204,8 +225,10 @@ class FakePlanReader:
             ),
         )
         self.compare_error = compare_error
+        self.delete_error = delete_error
         self.calls: list[int] = []
         self.compare_calls: list[tuple[int, int]] = []
+        self.delete_calls: list[int] = []
 
     async def get(self, plan_id: int) -> PlanRead:
         self.calls.append(plan_id)
@@ -218,6 +241,11 @@ class FakePlanReader:
         if self.compare_error:
             raise self.compare_error
         return self.compare_result
+
+    async def delete(self, plan_id: int) -> None:
+        self.delete_calls.append(plan_id)
+        if self.delete_error:
+            raise self.delete_error
 
 
 class FakeReplanner:

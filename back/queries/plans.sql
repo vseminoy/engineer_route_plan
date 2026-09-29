@@ -30,6 +30,41 @@ WHERE plan_id IN (SELECT id FROM plans WHERE engineer_set_id = :engineer_set_id)
 -- All plans of the set in one statement, same reasoning as delete_region_plans.
 DELETE FROM plans WHERE engineer_set_id = :engineer_set_id;
 
+-- name: delete_plan_tree_replan_events(plan_id)!
+-- Replan events of plan_id and every plan replanned from it, directly or through a
+-- chain (WITH RECURSIVE over parent_plan_id), whether the plan is the one an event was
+-- applied to or the one it produced. Runs before delete_plan_tree_assignments.
+WITH RECURSIVE tree AS (
+    SELECT id FROM plans WHERE id = :plan_id
+    UNION ALL
+    SELECT p.id FROM plans p JOIN tree t ON p.parent_plan_id = t.id
+)
+DELETE FROM replan_events
+WHERE plan_id IN (SELECT id FROM tree) OR result_plan_id IN (SELECT id FROM tree);
+
+-- name: delete_plan_tree_assignments(plan_id)!
+-- Assignment rows of plan_id and every plan replanned from it.
+WITH RECURSIVE tree AS (
+    SELECT id FROM plans WHERE id = :plan_id
+    UNION ALL
+    SELECT p.id FROM plans p JOIN tree t ON p.parent_plan_id = t.id
+)
+DELETE FROM assignments
+WHERE plan_id IN (SELECT id FROM tree);
+
+-- name: delete_plan_tree(plan_id)
+-- plan_id and every plan replanned from it, directly or through a chain, in one
+-- statement: a plan's parent is in the same deleted set, and the reference is checked
+-- once the whole statement has run — same reasoning as delete_region_plans. Returns the
+-- deleted ids.
+WITH RECURSIVE tree AS (
+    SELECT id FROM plans WHERE id = :plan_id
+    UNION ALL
+    SELECT p.id FROM plans p JOIN tree t ON p.parent_plan_id = t.id
+)
+DELETE FROM plans WHERE id IN (SELECT id FROM tree)
+RETURNING id;
+
 -- name: insert_running_plan(region_id, engineer_set_id, plan_date, algorithm, created_at)$
 -- Queues a build: a plan row with no routes yet. Returns its id.
 INSERT INTO plans (region_id, engineer_set_id, plan_date, algorithm, status, created_at)
@@ -60,6 +95,25 @@ INSERT INTO assignments (plan_id, ticket_id, engineer_id, sequence_no, planned_a
                          travel_time_min, travel_distance_m, unassigned_reason, explanation)
 VALUES (:plan_id, :ticket_id, :engineer_id, :sequence_no, :planned_arrival,
         :travel_time_min, :travel_distance_m, :unassigned_reason, :explanation);
+
+-- name: list_plans_by_region(region_id)
+-- Все планы региона (любой статус), по убыванию created_at — сначала новые.
+SELECT p.id, r.code AS region_code, p.engineer_set_id, p.plan_date, p.algorithm,
+       p.status, p.failed_reason, p.parent_plan_id, p.created_at
+FROM plans p
+JOIN regions r ON r.id = p.region_id
+WHERE p.region_id = :region_id
+ORDER BY p.created_at DESC;
+
+-- name: list_plans_by_engineer_set(engineer_set_id)
+-- Планы одного набора бригад (любой статус), по убыванию created_at — та же форма
+-- строки, что list_plans_by_region, для набора вместо целого региона.
+SELECT p.id, r.code AS region_code, p.engineer_set_id, p.plan_date, p.algorithm,
+       p.status, p.failed_reason, p.parent_plan_id, p.created_at
+FROM plans p
+JOIN regions r ON r.id = p.region_id
+WHERE p.engineer_set_id = :engineer_set_id
+ORDER BY p.created_at DESC;
 
 -- name: get_plan(plan_id)^
 -- The plan row by id, with its region's code; None if there is no such plan.

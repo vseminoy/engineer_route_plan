@@ -45,6 +45,32 @@ textarea {
   font-family: inherit;
 }
 
+/* ---- App nav ---- */
+
+.app-nav {
+  display: flex;
+  gap: 4px;
+}
+
+.app-nav__link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.app-nav__link:hover {
+  background: var(--color-bg);
+}
+
+.app-nav__link--active {
+  color: var(--color-accent);
+  background: var(--color-bg);
+}
+
 /* ---- Plan screen shell ---- */
 
 .plan-screen {
@@ -433,6 +459,31 @@ textarea {
   color: var(--color-danger-text);
 }
 
+.plan-status {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.plan-status--running {
+  background: var(--color-changed-bg);
+  color: var(--color-changed-text);
+}
+
+.plan-status--done {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.plan-status--failed {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+}
+
 .bar-row {
   display: flex;
   align-items: center;
@@ -576,6 +627,34 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Leaflet injects a flag icon into its attribution control; hide it. */
+.leaflet-attribution-flag {
+  display: none !important;
+}
+
+/* ---- Map markers ---- */
+
+.ticket-marker--selected {
+  z-index: 1000 !important;
+}
+
+.ticket-marker__pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ticket-marker-pulse 1.4s ease-out infinite;
+}
+
+@keyframes ticket-marker-pulse {
+  0% {
+    transform: scale(0.75);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
 }
 
 /* ---- Ticket modal ---- */

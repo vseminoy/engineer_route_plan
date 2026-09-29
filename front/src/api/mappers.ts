@@ -8,6 +8,7 @@ import type {
   PlanDiff as ApiPlanDiff,
   PlanMetrics as ApiPlanMetrics,
   PlanReplanResult,
+  PlanSummary as ApiPlanSummary,
   Region as ApiRegion,
   Ticket,
   UnassignedTicket as ApiUnassignedTicket,
@@ -24,8 +25,10 @@ import type {
   Plan,
   PlanCompare,
   PlanDiff,
+  PlanFailedReason,
   PlanMetrics,
   PlanStatus,
+  PlanSummary,
   Region,
   RegionCode,
   RouteStop,
@@ -178,6 +181,20 @@ export function mapPlanReplanResult(api: PlanReplanResult): Plan {
     unassigned: api.unassigned.map(mapUnassignedTicket),
     metrics: mapPlanMetrics(api.metrics),
     diff: mapDiff(api.diff)
+  };
+}
+
+export function mapPlanSummary(api: ApiPlanSummary): PlanSummary {
+  return {
+    planId: api.plan_id,
+    region: api.region as RegionCode,
+    engineerSetId: api.engineer_set_id,
+    planDate: api.plan_date,
+    algorithm: api.algorithm as Algorithm,
+    status: api.status as PlanStatus,
+    createdAt: api.created_at,
+    parentPlanId: api.parent_plan_id,
+    failedReason: api.failed_reason as PlanFailedReason | null
   };
 }
 

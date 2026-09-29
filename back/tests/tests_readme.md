@@ -14,7 +14,7 @@
 - [`src/repository/engineer_sets.py` — наборы бригад](#srcrepositoryengineer_setspy--наборы-бригад)
 - [`src/repository/region_lists.py` — чтение бригад и заявок региона](#srcrepositoryregion_listspy--чтение-бригад-и-заявок-региона)
 - [`src/repository/tickets.py` — статус заявки](#srcrepositoryticketspy--статус-заявки)
-- [`src/repository/plans.py` — sweep зависших планов](#srcrepositoryplanspy--sweep-зависших-планов)
+- [`src/repository/plans.py` — sweep зависших планов, список планов региона, удаление плана](#srcrepositoryplanspy--sweep-зависших-планов-список-планов-региона-удаление-плана)
 - [`src/service/ticket_file.py` — чтение файла заявок](#srcserviceticket_filepy--чтение-файла-заявок)
 - [`src/service/ticket_types.py` — таблица соответствия типов заявок](#srcserviceticket_typespy--таблица-соответствия-типов-заявок)
 - [`src/service/regions.py` — конфигурация регионов](#srcserviceregionspy--конфигурация-регионов)
@@ -340,7 +340,7 @@
 | `test_lock_ticket_waits_for_concurrent_change` | соединение A в транзакции взяло `lock_ticket` и записало `en_route`; соединение B вызывает `lock_ticket` той же заявки | B не получает строку, пока A не зафиксировал транзакцию (за 0,3 с ожидания результата нет); после COMMIT у A — B получает заявку со статусом `en_route` |
 | `test_ticket_queries_db_unavailable` (параметризован: `lock_ticket`, `update_ticket_status`) | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` с именем запроса |
 
-## `src/repository/plans.py` — sweep зависших планов
+## `src/repository/plans.py` — sweep зависших планов, список планов региона, удаление плана
 
 Файл: `tests/repository/test_plans.py`.
 
@@ -354,6 +354,15 @@
 | `test_sweep_running_plans_closes_all_regions` | два региона, у каждого по одному `running`-плану и по одному `done` | оба `running`-плана получают `status='failed', failed_reason='shutdown'`; `done`-планы не тронуты; возвращены оба id `running`-планов |
 | `test_sweep_running_plans_no_running_plans` | у всех планов региона `status` не `running` | пустой список; ни одна строка `plans` не изменена |
 | `test_sweep_running_plans_db_unavailable` | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` с именем запроса |
+| `test_list_plans_sorted_desc_all_statuses` | регион с тремя планами разного статуса (`running`, `done`, `failed`) и разного `created_at` | `PlanSummaryRow` по убыванию `created_at`, все три статуса присутствуют |
+| `test_list_plans_other_region_excluded` | два региона, у каждого свои планы | список первого региона не содержит строк второго |
+| `test_list_plans_empty_region` | регион без единого плана | пустой список |
+| `test_list_plans_by_engineer_set` | регион с планами двух наборов бригад | список набора содержит только его планы |
+| `test_list_plans_row_shape` | план — результат `insert_replanned_plan` (есть `parent_plan_id`) с последующим `mark_plan_failed` | `PlanSummaryRow.parent_plan_id`, `.failed_reason`, `.plan_date`, `.algorithm`, `.region_code`, `.created_at` — те же значения, что записаны |
+| `test_delete_plan_removes_plan_and_assignments` | `done`-план с двумя строками `assignments` | `get_plan` после удаления — `None`, `list_plan_assignments` — `[]` |
+| `test_delete_plan_cascades_replan_chain` | план → `insert_replanned_plan` (потомок) → ещё один `insert_replanned_plan` от потомка (внук), плюс строка `replan_events` (`plan_id`=план, `result_plan_id`=потомок) | `delete_plan(план)` удаляет все три плана и строку `replan_events`; `get_plan` каждого — `None` |
+| `test_delete_plan_nonexistent_is_noop` | `delete_plan(999)`, такого плана нет | не поднимает исключение, ни одна строка `plans` не тронута |
+| `test_delete_plan_db_unavailable` | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` |
 
 ## `src/service/ticket_file.py` — чтение файла заявок
 
@@ -560,10 +569,11 @@
 Файл: `tests/service/test_region_lists.py`.
 
 > Замена стабами: репозиторий (`get_region_id`, `get_default_engineer_set_id`,
-> `get_engineer_set`, `list_engineers` (по `engineer_set_id`), `list_tickets` — фейки,
-> которые возвращают заданное значение, поднимают заданное исключение и запоминают вызовы),
-> фабрика соединений — фейк, который считает взятые соединения. Конфигурация регионов —
-> `data/regions.toml` из репозитория.
+> `get_engineer_set`, `list_engineers` (по `engineer_set_id`), `list_tickets`, `list_plans`
+> (по `region_id` и опциональному `engineer_set_id`) — фейки, которые возвращают заданное
+> значение, поднимают заданное исключение и запоминают вызовы), фабрика соединений — фейк,
+> который считает взятые соединения. Конфигурация регионов — `data/regions.toml` из
+> репозитория.
 
 | Test | Scenario | Expected result |
 |---|---|---|
@@ -573,9 +583,13 @@
 | `test_engineers_set_not_in_region` | `get_engineer_set(9)` вернул набор с другим `region_id`; вызов с `engineer_set_id = 9` | `InvalidInput(fields=[("engineer_set_id", ...)])`; `list_engineers` не вызван |
 | `test_engineers_set_not_found` | `get_engineer_set(9)` вернул `None` | `InvalidInput(fields=[("engineer_set_id", ...)])` |
 | `test_tickets_of_loaded_region` | `get_region_id` вернул `7`, `list_tickets` — 3 заявки | эти 3 заявки без изменений; `list_tickets` вызван с `region_id = 7` |
-| `test_region_not_loaded_is_empty` | регион из конфигурации, `get_region_id` вернул `None` | пустой список бригад и заявок; `get_default_engineer_set_id`, `list_engineers` и `list_tickets` не вызваны |
-| `test_unknown_region` | код `north` | `InvalidInput(reason="unknown_region")` с `fields = [("region", "Неизвестный регион")]`; соединение не взято |
-| `test_repository_failure_propagates` | репозиторий поднимает `DependencyUnavailable` и `DatabaseFailure` (параметризовано) | исключение пробрасывается без изменений |
+| `test_plans_of_region_all_sets` | `get_region_id` вернул `7`, `list_plans` — 3 сводки; вызов без `engineer_set_id` | эти 3 сводки без изменений; `list_plans` вызван с `(region_id=7, engineer_set_id=None)`; `get_engineer_set` не вызван |
+| `test_plans_of_given_set` | `get_engineer_set(9)` вернул набор с `region_id = 7`; вызов с `engineer_set_id = 9` для региона `7` | `list_plans` вызван с `(region_id=7, engineer_set_id=9)` |
+| `test_plans_set_not_in_region` | `get_engineer_set(9)` вернул набор с другим `region_id`; вызов с `engineer_set_id = 9` | `InvalidInput(fields=[("engineer_set_id", ...)])`; `list_plans` не вызван |
+| `test_plans_set_not_found` | `get_engineer_set(9)` вернул `None` | `InvalidInput(fields=[("engineer_set_id", ...)])` |
+| `test_region_not_loaded_is_empty` | регион из конфигурации, `get_region_id` вернул `None`; проверено для бригад, заявок и планов | пустые списки; `get_default_engineer_set_id`, `list_engineers`, `list_tickets` и `list_plans` не вызваны |
+| `test_unknown_region` | код `north`; проверено для бригад, заявок и планов | `InvalidInput(reason="unknown_region")` с `fields = [("region", "Неизвестный регион")]`; соединение не взято |
+| `test_repository_failure_propagates` | репозиторий поднимает `DependencyUnavailable` и `DatabaseFailure` (параметризовано); проверено для бригад, заявок и планов | исключение пробрасывается без изменений |
 | `test_pool_timeout_is_dependency_unavailable` | фабрика соединений поднимает `PoolTimeout` | `DependencyUnavailable(reason="db_unavailable")`; репозиторий не вызван; запись `db_query_failed` с `query = list_engineers` |
 
 ## `src/service/ticket_status.py` — переходы статусов заявки
@@ -914,12 +928,12 @@
 | `test_shutdown_does_not_wait_for_a_busy_worker` | воркер занят (сигналит старт, затем спит 3600с); `shutdown(cancel_futures=True)` засечён по времени | возврат меньше чем за 5с — `shutdown()` не наследует `Executor.shutdown`'s `wait=True` по умолчанию, иначе `app.py`'s `finally` ждал бы текущий солв вместо быстрого выхода |
 | `test_shutdown_kills_a_busy_worker` | воркер занят тем же образом; после `shutdown(cancel_futures=True)` — `process.join(timeout=5)` | воркер не `is_alive()` — `shutdown()` убивает занятый процесс так же, как `restart()`, а не оставляет его пережившим `backend`'ом-сиротой (не демон с Python 3.9) |
 
-## `src/service/plan_reader.py` — чтение плана
+## `src/service/plan_reader.py` — чтение и удаление плана
 
 Файл: `tests/service/test_plan_reader.py`.
 
-> Замена стабами: `connect`/`get_plan`/`list_engineers`/`list_plan_assignments` — без
-> реальной БД. Идентичность бригады и её визитов проверяется на маленьком синтетическом
+> Замена стабами: `connect`/`get_plan`/`list_engineers`/`list_plan_assignments`/`delete_plan`
+> — без реальной БД. Идентичность бригады и её визитов проверяется на маленьком синтетическом
 > входе (1–2 бригады, 1–2 назначения).
 
 | Test | Scenario | Expected result |
@@ -929,14 +943,27 @@
 | `test_failed_plan_carries_reason` | `status="failed"`, `failed_reason` задан | тот же `failed_reason` в ответе; `engineers`/`unassigned`/`metrics` — `None` |
 | `test_done_plan_lists_every_set_engineer` | 2 бригады набора плана (`list_engineers` вызван с `plan.engineer_set_id`), назначение только у одной | обе в ответе, по возрастанию `engineer_id`; у незадействованной — пустой маршрут |
 | `test_visit_fields_and_distance_rounding` | визит с `travel_distance_m=1234` | `travel_distance_km == 1.2` (округление до 0.1 км), остальные поля визита как в строке |
-| `test_idle_time_is_shift_minus_travel_and_duration` | смена 120 мин, 2 визита (15+5 мин переезда, 30+20 мин на объекте) | `idle_time_min == 120 - 20 - 50` |
+| `test_idle_time_is_gap_between_visits` | 2 визита: визит 1 заканчивается в 10:30, у визита 2 переезд 5 мин и прибытие 11:00 (выезд в 10:55) | `idle_time_min == 25` — только разрыв между визитами, не длина смены |
+| `test_idle_time_is_zero_when_next_visit_follows_immediately` | выезд на визит 2 совпадает с окончанием визита 1 | `idle_time_min == 0` |
 | `test_visits_sorted_by_sequence_no` | строки назначений в БД в произвольном порядке | маршрут отсортирован по `sequence_no` |
-| `test_engineer_without_assignments_has_full_shift_idle` | у бригады нет ни одного назначения | `idle_time_min` — вся смена, `total_travel_time_min`/`total_distance_km` — 0 |
+| `test_engineer_without_assignments_has_no_idle_time` | у бригады нет ни одного назначения | `idle_time_min == 0` (нет визитов — нет разрыва между ними), `total_travel_time_min`/`total_distance_km` — 0 |
+| `test_engineer_with_single_visit_has_no_idle_time` | у бригады один визит | `idle_time_min == 0` — не с чем сравнивать |
 | `test_get_plan_dependency_unavailable_propagates` | `get_plan` поднимает `DependencyUnavailable` | ошибка поднята как есть |
 | `test_metrics_engineers_used_counts_used_only` | 2 бригады региона, у одной 1 визит, у другой ни одного | `metrics.engineers_used == 1` |
 | `test_metrics_total_distance_km_sums_all_routes` | 2 бригады с маршрутами по 21.4 и 14.0 км | `metrics.total_distance_km == 35.4` |
-| `test_metrics_distance_and_idle_by_engineer_cover_every_engineer` | 2 бригады региона, у одной нет визитов | `distance_by_engineer` и `idle_time_by_engineer_min` содержат ключ каждой бригады (`engineer_id`), включая незадействованную — с 0 км и полной сменой простоя |
+| `test_metrics_distance_and_idle_by_engineer_cover_every_engineer` | 2 бригады региона, у одной нет визитов | `distance_by_engineer` и `idle_time_by_engineer_min` содержат ключ каждой бригады (`engineer_id`), включая незадействованную — с 0 км и 0 мин простоя |
 | `test_metrics_assigned_and_unassigned_counts` | 2 назначенные заявки одной бригаде, 1 неназначенная | `assigned_count == 2`, `unassigned_count == 1` |
+
+### `delete`
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_delete_plan_success` | `get_plan` вернул план `status="done"`, `delete_plan` не поднимает исключение | `delete_plan` вызван с `plan_id`; исключений нет |
+| `test_delete_plan_not_found` | `get_plan` вернул `None` | `NotFound(reason="plan_not_found")`; `delete_plan` не вызван |
+| `test_delete_plan_running_conflict` | `get_plan` вернул план `status="running"` | `Conflict(reason="plan_running")`; `delete_plan` не вызван |
+| `test_delete_plan_failed_status_allowed` | `get_plan` вернул план `status="failed"` | `delete_plan` вызван — запрет только на `running` |
+| `test_delete_plan_get_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `get_plan` поднимает эту ошибку | ошибка поднята как есть; `delete_plan` не вызван |
+| `test_delete_plan_repository_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `get_plan` вернул план `status="done"`, `delete_plan` поднимает эту ошибку | ошибка поднята как есть |
 
 ### `compare`
 
@@ -1340,19 +1367,28 @@
 | `test_change_ticket_status_too_large` | тело больше предела 1024 байта | `413` без тела; сервис не вызван |
 | `test_ticket_status_get_not_implemented` | `GET /api/v1/tickets/87/status` | `501` без тела (метода нет у операции); сервис не вызван |
 
-## `api` — POST /api/v1/plan/build, GET /api/v1/plan/{plan_id}, GET /api/v1/plan/{plan_id}/compare
+## `api` — GET /api/v1/plan, POST /api/v1/plan/build, GET /api/v1/plan/{plan_id}, DELETE /api/v1/plan/{plan_id}, GET /api/v1/plan/{plan_id}/compare
 
 Файл: `tests/api/test_plan.py`.
 
-> Замена стабами: `PlanBuilder`/`PlanReader` — фейки через `app.dependency_overrides`
-> (`FakePlanBuilder`/`FakePlanReader` в `tests/api/region_fakes.py`), которые запоминают
-> вызовы (включая `compare`) и возвращают заданный результат или поднимают заданное
-> исключение; БД, OSRM и солвер не участвуют. `background_tasks.add_task` в `TestClient`
-> выполняется до возврата ответа клиенту, так что `build_calls` фейка проверяется сразу
-> после запроса.
+> Замена стабами: `RegionLists`/`PlanBuilder`/`PlanReader` — фейки через
+> `app.dependency_overrides` (`FakeLists`/`FakePlanBuilder`/`FakePlanReader` в
+> `tests/api/region_fakes.py`), которые запоминают вызовы (включая `compare` и `delete`) и
+> возвращают заданный результат или поднимают заданное исключение; БД, OSRM и солвер не
+> участвуют. `background_tasks.add_task` в `TestClient` выполняется до возврата ответа
+> клиенту, так что `build_calls` фейка проверяется сразу после запроса.
 
 | Test | Scenario | Expected result |
 |---|---|---|
+| `test_list_plans` | `?region=east`; `FakeLists.plans` вернул одну сводку (`plan_id`, `region`, `engineer_set_id`, `plan_date`, `algorithm`, `status`, `created_at`, `parent_plan_id`, `failed_reason` заполнены) | `200`, тело — массив `PlanSummary` с теми же полями; сервис вызван с `(east, None)` |
+| `test_list_plans_given_set` | `?region=east&engineer_set_id=9` | сервис вызван с `(east, 9)` |
+| `test_list_plans_empty` | сервис вернул `[]` | `200`, `[]` |
+| `test_list_plans_region_invalid` (параметризован: нет параметра, `East!`, 51 символ) | запрос с таким `region` | `400`, `{"fields": [{"name": "region", ...}]}`; сервис не вызван |
+| `test_list_plans_set_id_invalid` (параметризован: `0`, `-1`, `abc`) | `engineer_set_id` с таким значением | `400`, `{"fields": [{"name": "engineer_set_id", ...}]}`; сервис не вызван |
+| `test_list_plans_unknown_region` | сервис поднимает `InvalidInput(reason="unknown_region", fields=[("region", ...)])` | `400`, `{"fields": [{"name": "region", ...}]}`; запись `list_plans_failed` уровня `warning` с `reason = unknown_region` |
+| `test_list_plans_set_not_in_region` | сервис поднимает `InvalidInput(fields=[("engineer_set_id", ...)])` | `400`, `{"fields": [{"name": "engineer_set_id", ...}]}` |
+| `test_list_plans_db_unavailable` | сервис поднимает `DependencyUnavailable(reason="db_unavailable")` | `503` без тела; запись `list_plans_failed` уровня `error` |
+| `test_list_plans_db_failure` | сервис поднимает `DatabaseFailure` | `500` без тела |
 | `test_build_plan_returns_202_running` | валидный запрос без `engineer_set_id` | `202`, тело `Plan` со `status=running`, `engineer_set_id` (набор `default`, как вернул `enqueue`) и без `engineers`/`unassigned`; `enqueue` вызван с `(region, plan_date, algorithm, None)`; фоновая задача `build` поставлена с `plan_id`, теми же `tickets`/`engineers`, что вернул `enqueue`, `plan_date` и `algorithm` |
 | `test_build_plan_given_engineer_set` | тело с `engineer_set_id=9` | `enqueue` вызван с `engineer_set_id=9`; `202`, `Plan.engineer_set_id == 9` |
 | `test_build_plan_invalid_date` | `plan_date="2026-02-30"` (несуществующая дата, форму регулярное выражение спеки принимает) | `400`, `{"fields": [{"name": "plan_date", "message": "Несуществующая дата"}]}` |
@@ -1367,6 +1403,12 @@
 | `test_get_plan_invalid_id` | `plan_id=0` | `400` |
 | `test_get_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `reader.get` поднимает эту ошибку | `503` \| `500` без тела |
 | `test_build_and_get_failed_events_logged` | `enqueue`/`reader.get` поднимают `InvalidInput`/`NotFound` | записи `plan_build_failed`/`plan_get_failed` уровня `warning` с `reason` |
+| `test_delete_plan_returns_204` | `reader.delete` не поднимает исключение | `204` без тела; `reader.delete` вызван с `plan_id` |
+| `test_delete_plan_invalid_id` (параметризован: `0`, `-1`, `abc`) | `plan_id` с таким значением в пути | `400`, `{"fields": [{"name": "plan_id", ...}]}`; `reader.delete` не вызван |
+| `test_delete_plan_not_found` | `reader.delete` поднимает `NotFound` | `404` без тела |
+| `test_delete_plan_running_conflict` | `reader.delete` поднимает `Conflict(reason="plan_running")` | `409` без тела |
+| `test_delete_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `reader.delete` поднимает эту ошибку | `503` \| `500` без тела |
+| `test_delete_plan_failed_logged` | `reader.delete` поднимает `NotFound`/`Conflict` | запись `plan_delete_failed` уровня `warning` с `reason` |
 | `test_compare_plan_returns_entries` | `reader.compare` возвращает 2 записи (`engineers_used`, `total_distance_km`) | `200`, тело — массив `PlanComparisonEntry` в том же порядке, поля `metric`/`main`/`baseline`/`delta` как вернул сервис |
 | `test_compare_plan_invalid_ids` (параметризован: `plan_id=0`, `baseline_plan_id=0`) | путь или query-параметр вне 1..2^63−1 | `400` |
 | `test_compare_plan_missing_baseline_query` | запрос без `baseline_plan_id` | `400` |

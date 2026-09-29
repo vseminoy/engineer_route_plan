@@ -2,7 +2,14 @@ from datetime import date, datetime
 
 import pytest
 
-from src.errors import AppError, DatabaseFailure, DependencyUnavailable, InvalidInput, NotFound
+from src.errors import (
+    AppError,
+    Conflict,
+    DatabaseFailure,
+    DependencyUnavailable,
+    InvalidInput,
+    NotFound,
+)
 from src.service.plan_builder import QueuedPlan
 from src.service.plan_reader import (
     ComparisonEntryRead,
@@ -12,7 +19,18 @@ from src.service.plan_reader import (
     UnassignedRead,
     VisitRead,
 )
-from tests.api.region_fakes import ENGINEER, TICKET, FakePlanBuilder, FakePlanReader, client
+from tests.api.region_fakes import (
+    ENGINEER,
+    PLAN_SUMMARY,
+    TICKET,
+    FakeLists,
+    FakePlanBuilder,
+    FakePlanReader,
+    client,
+)
+from tests.log_records import events
+
+LIST_URL = "/api/v1/plan"
 
 COMPARE_URL = "/api/v1/plan/1/compare"
 
@@ -21,6 +39,110 @@ BUILD_URL = "/api/v1/plan/build"
 UNKNOWN_REGION = InvalidInput(
     "unknown_region", fields=[("region", "Неизвестный регион")], params={"region": "north"}
 )
+
+
+def test_list_plans() -> None:
+    lists = FakeLists(plans=[PLAN_SUMMARY])
+    response = client(lists).get(LIST_URL, params={"region": "east"})
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "plan_id": 1,
+            "region": "east",
+            "engineer_set_id": 70,
+            "plan_date": "2026-08-17",
+            "algorithm": "or_tools",
+            "status": "done",
+            "created_at": "2026-08-17T09:00:00",
+            "parent_plan_id": None,
+            "failed_reason": None,
+        }
+    ]
+    assert lists.calls == [("plans", "east", None)]
+
+
+def test_list_plans_given_set() -> None:
+    lists = FakeLists()
+    response = client(lists).get(LIST_URL, params={"region": "east", "engineer_set_id": 9})
+
+    assert response.status_code == 200
+    assert lists.calls == [("plans", "east", 9)]
+
+
+def test_list_plans_empty() -> None:
+    response = client(FakeLists(plans=[])).get(LIST_URL, params={"region": "east"})
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.parametrize("params", [{}, {"region": "East!"}, {"region": "e" * 51}])
+def test_list_plans_region_invalid(params: dict[str, str]) -> None:
+    lists = FakeLists()
+    response = client(lists).get(LIST_URL, params=params)
+
+    assert response.status_code == 400
+    assert [f["name"] for f in response.json()["fields"]] == ["region"]
+    assert lists.calls == []
+
+
+@pytest.mark.parametrize("engineer_set_id", ["0", "-1", "abc"])
+def test_list_plans_set_id_invalid(engineer_set_id: str) -> None:
+    lists = FakeLists()
+    response = client(lists).get(
+        LIST_URL, params={"region": "east", "engineer_set_id": engineer_set_id}
+    )
+
+    assert response.status_code == 400
+    assert [f["name"] for f in response.json()["fields"]] == ["engineer_set_id"]
+    assert lists.calls == []
+
+
+def test_list_plans_unknown_region(capsys: pytest.CaptureFixture[str]) -> None:
+    response = client(FakeLists(error=UNKNOWN_REGION)).get(LIST_URL, params={"region": "north"})
+
+    assert response.status_code == 400
+    assert response.json() == {"fields": [{"name": "region", "message": "Неизвестный регион"}]}
+    (record,) = events(capsys, "list_plans_failed")
+    assert record["level"] == "warning"
+    assert record["reason"] == "unknown_region"
+
+
+def test_list_plans_set_not_in_region() -> None:
+    error = InvalidInput(
+        "engineer_set_not_in_region",
+        fields=[("engineer_set_id", "Набор не принадлежит региону")],
+        params={"engineer_set_id": 9, "region": "east"},
+    )
+    response = client(FakeLists(error=error)).get(
+        LIST_URL, params={"region": "east", "engineer_set_id": 9}
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "fields": [{"name": "engineer_set_id", "message": "Набор не принадлежит региону"}]
+    }
+
+
+def test_list_plans_db_unavailable(capsys: pytest.CaptureFixture[str]) -> None:
+    response = client(FakeLists(error=DependencyUnavailable(reason="db_unavailable"))).get(
+        LIST_URL, params={"region": "east"}
+    )
+
+    assert response.status_code == 503
+    assert response.content == b""
+    (record,) = events(capsys, "list_plans_failed")
+    assert record["level"] == "error"
+
+
+def test_list_plans_db_failure() -> None:
+    response = client(FakeLists(error=DatabaseFailure(reason="db_query_failed"))).get(
+        LIST_URL, params={"region": "east"}
+    )
+
+    assert response.status_code == 500
+    assert response.content == b""
 
 
 def test_build_plan_returns_202_running() -> None:
@@ -330,6 +452,68 @@ def test_build_and_get_failed_events_logged(capsys: pytest.CaptureFixture[str]) 
     json_logs()
     client(plan_reader=FakePlanReader(error=NotFound("plan_not_found"))).get("/api/v1/plan/1")
     (record,) = events(capsys, "plan_get_failed")
+    assert record["level"] == "warning"
+    assert record["reason"] == "plan_not_found"
+
+
+def test_delete_plan_returns_204() -> None:
+    reader = FakePlanReader()
+    response = client(plan_reader=reader).delete("/api/v1/plan/1")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert reader.delete_calls == [1]
+
+
+@pytest.mark.parametrize("plan_id", ["0", "-1", "abc"])
+def test_delete_plan_invalid_id(plan_id: str) -> None:
+    reader = FakePlanReader()
+    response = client(plan_reader=reader).delete(f"/api/v1/plan/{plan_id}")
+
+    assert response.status_code == 400
+    assert [f["name"] for f in response.json()["fields"]] == ["plan_id"]
+    assert reader.delete_calls == []
+
+
+def test_delete_plan_not_found() -> None:
+    response = client(plan_reader=FakePlanReader(delete_error=NotFound("plan_not_found"))).delete(
+        "/api/v1/plan/1"
+    )
+
+    assert response.status_code == 404
+    assert response.content == b""
+
+
+def test_delete_plan_running_conflict() -> None:
+    error = Conflict("plan_running", params={"plan_id": 1})
+    response = client(plan_reader=FakePlanReader(delete_error=error)).delete("/api/v1/plan/1")
+
+    assert response.status_code == 409
+    assert response.content == b""
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (DependencyUnavailable(reason="db_unavailable"), 503),
+        (DatabaseFailure(reason="db_query_failed"), 500),
+    ],
+)
+def test_delete_plan_dependency_failure(error: Exception, status: int) -> None:
+    response = client(plan_reader=FakePlanReader(delete_error=error)).delete("/api/v1/plan/1")
+
+    assert response.status_code == status
+    assert response.content == b""
+
+
+def test_delete_plan_failed_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    from tests.log_records import events, json_logs
+
+    json_logs()
+    client(plan_reader=FakePlanReader(delete_error=NotFound("plan_not_found"))).delete(
+        "/api/v1/plan/1"
+    )
+    (record,) = events(capsys, "plan_delete_failed")
     assert record["level"] == "warning"
     assert record["reason"] == "plan_not_found"
 

@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from src.domain import Engineer, Point, Skill, VehicleType
-from src.errors import DependencyUnavailable, InvalidInput, NotFound
+from src.errors import Conflict, DatabaseFailure, DependencyUnavailable, InvalidInput, NotFound
 from src.repository.plans import AssignmentRow, PlanRow
 from src.service.plan_reader import EngineerRouteRead, PlanRead, PlanReader, UnassignedRead
 
@@ -32,12 +32,13 @@ def _assigned(
     travel_min: int = 10,
     duration: int = 30,
     distance_m: int = 1500,
+    planned_arrival: datetime = datetime(2026, 9, 1, 10, 0),
 ) -> AssignmentRow:
     return AssignmentRow(
         ticket_id=ticket_id,
         engineer_id=engineer_id,
         sequence_no=sequence_no,
-        planned_arrival=datetime(2026, 9, 1, 10, 0),
+        planned_arrival=planned_arrival,
         travel_time_min=travel_min,
         travel_distance_m=distance_m,
         unassigned_reason=None,
@@ -80,6 +81,7 @@ class FakeRepo:
         plans: dict[int, PlanRow] | None = None,
         engineers_by_set: dict[int, list[Engineer]] | None = None,
         assignments_by_plan: dict[int, list[AssignmentRow]] | None = None,
+        delete_error: Exception | None = None,
     ) -> None:
         self.plan = plan
         self.engineers = engineers or []
@@ -88,7 +90,9 @@ class FakeRepo:
         self.plans = plans
         self.engineers_by_set = engineers_by_set
         self.assignments_by_plan = assignments_by_plan
+        self.delete_error = delete_error
         self.get_plan_calls: list[int] = []
+        self.delete_calls: list[int] = []
 
     async def get_plan(self, _conn: Any, plan_id: int) -> PlanRow | None:
         self.get_plan_calls.append(plan_id)
@@ -108,6 +112,11 @@ class FakeRepo:
             return self.assignments_by_plan.get(plan_id, [])
         return self.assignments
 
+    async def delete_plan(self, _conn: Any, plan_id: int) -> None:
+        self.delete_calls.append(plan_id)
+        if self.delete_error:
+            raise self.delete_error
+
 
 def _engineers(plan: PlanRead) -> tuple[EngineerRouteRead, ...]:
     assert plan.engineers is not None
@@ -125,6 +134,7 @@ def _reader(repo: FakeRepo) -> PlanReader:
         get_plan=repo.get_plan,
         list_engineers=repo.list_engineers,
         list_plan_assignments=repo.list_plan_assignments,
+        delete_plan=repo.delete_plan,
     )
 
 
@@ -224,7 +234,10 @@ async def test_visit_fields_and_distance_rounding() -> None:
     assert visit.explanation == "назначено"
 
 
-async def test_idle_time_is_shift_minus_travel_and_duration() -> None:
+async def test_idle_time_is_gap_between_visits() -> None:
+    """Visit 1 runs 10:00-10:30 (30 min duration); visit 2's 5-min travel leg means
+    departure at 10:55 for an 11:00 arrival — the 25-min gap between finishing visit 1
+    and leaving for visit 2 is the only idle time, not the shift bounds."""
     plan = PlanRow(
         id=1,
         region_id=9,
@@ -235,18 +248,42 @@ async def test_idle_time_is_shift_minus_travel_and_duration() -> None:
         status="done",
         failed_reason=None,
     )
-    engineer = _engineer(1, shift_start=time(10, 0), shift_end=time(12, 0))  # 120 min shift
+    engineer = _engineer(1, shift_start=time(10, 0), shift_end=time(12, 0))
     repo = FakeRepo(
         plan,
         engineers=[engineer],
         assignments=[
-            _assigned(10, 1, 1, travel_min=15, duration=30),
-            _assigned(11, 1, 2, travel_min=5, duration=20),
+            _assigned(10, 1, 1, travel_min=15, duration=30, planned_arrival=datetime(2026, 9, 1, 10, 0)),
+            _assigned(11, 1, 2, travel_min=5, duration=20, planned_arrival=datetime(2026, 9, 1, 11, 0)),
         ],
     )
     (route,) = _engineers(await _reader(repo).get(1))
     assert route.total_travel_time_min == 20
-    assert route.idle_time_min == 120 - 20 - 50
+    assert route.idle_time_min == 25
+
+
+async def test_idle_time_is_zero_when_next_visit_follows_immediately() -> None:
+    """Departure for visit 2 lines up exactly with visit 1's finish — no gap, no idle."""
+    plan = PlanRow(
+        id=1,
+        region_id=9,
+        region_code="east",
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
+    )
+    repo = FakeRepo(
+        plan,
+        engineers=[_engineer(1)],
+        assignments=[
+            _assigned(10, 1, 1, travel_min=15, duration=30, planned_arrival=datetime(2026, 9, 1, 10, 0)),
+            _assigned(11, 1, 2, travel_min=5, duration=20, planned_arrival=datetime(2026, 9, 1, 10, 35)),
+        ],
+    )
+    (route,) = _engineers(await _reader(repo).get(1))
+    assert route.idle_time_min == 0
 
 
 async def test_visits_sorted_by_sequence_no() -> None:
@@ -269,7 +306,9 @@ async def test_visits_sorted_by_sequence_no() -> None:
     assert [v.ticket_id for v in route.route] == [10, 20]
 
 
-async def test_engineer_without_assignments_has_full_shift_idle() -> None:
+async def test_engineer_without_assignments_has_no_idle_time() -> None:
+    """No visits means no gap between visits to sum — idle time is 0, not the shift
+    length: there is no ticket for the brigade to be idle between."""
     plan = PlanRow(
         id=1,
         region_id=9,
@@ -285,7 +324,24 @@ async def test_engineer_without_assignments_has_full_shift_idle() -> None:
     (route,) = _engineers(await _reader(repo).get(1))
     assert route.total_distance_km == 0
     assert route.total_travel_time_min == 0
-    assert route.idle_time_min == 9 * 60
+    assert route.idle_time_min == 0
+
+
+async def test_engineer_with_single_visit_has_no_idle_time() -> None:
+    """A single visit has no "between visits" to be idle in either."""
+    plan = PlanRow(
+        id=1,
+        region_id=9,
+        region_code="east",
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
+    )
+    repo = FakeRepo(plan, engineers=[_engineer(1)], assignments=[_assigned(10, 1, 1)])
+    (route,) = _engineers(await _reader(repo).get(1))
+    assert route.idle_time_min == 0
 
 
 async def test_get_plan_dependency_unavailable_propagates() -> None:
@@ -362,7 +418,7 @@ async def test_metrics_distance_and_idle_by_engineer_cover_every_engineer() -> N
     assert set(result.metrics.distance_by_engineer) == {1, 2}
     assert result.metrics.distance_by_engineer[2] == 0
     assert set(result.metrics.idle_time_by_engineer_min) == {1, 2}
-    assert result.metrics.idle_time_by_engineer_min[2] == 9 * 60
+    assert result.metrics.idle_time_by_engineer_min[2] == 0
 
 
 async def test_metrics_assigned_and_unassigned_counts() -> None:
@@ -386,6 +442,76 @@ async def test_metrics_assigned_and_unassigned_counts() -> None:
 
     assert result.metrics is not None
     assert (result.metrics.assigned_count, result.metrics.unassigned_count) == (2, 1)
+
+
+# --- delete -----------------------------------------------------------------------------
+
+
+def _plan_row(status: str) -> PlanRow:
+    return PlanRow(
+        id=1,
+        region_id=9,
+        region_code="east",
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status=status,
+        failed_reason=None,
+    )
+
+
+async def test_delete_plan_success() -> None:
+    repo = FakeRepo(_plan_row("done"))
+
+    await _reader(repo).delete(1)
+
+    assert repo.delete_calls == [1]
+
+
+async def test_delete_plan_not_found() -> None:
+    with pytest.raises(NotFound) as e:
+        await _reader(FakeRepo(None)).delete(1)
+    assert e.value.reason == "plan_not_found"
+    assert e.value.params == {"plan_id": 1}
+
+
+async def test_delete_plan_running_conflict() -> None:
+    repo = FakeRepo(_plan_row("running"))
+
+    with pytest.raises(Conflict) as e:
+        await _reader(repo).delete(1)
+
+    assert e.value.reason == "plan_running"
+    assert repo.delete_calls == []
+
+
+async def test_delete_plan_failed_status_allowed() -> None:
+    repo = FakeRepo(_plan_row("failed"))
+
+    await _reader(repo).delete(1)
+
+    assert repo.delete_calls == [1]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [DependencyUnavailable(reason="db_unavailable"), DatabaseFailure(reason="db_query_failed")],
+)
+async def test_delete_plan_get_dependency_failure(error: Exception) -> None:
+    with pytest.raises(type(error)) as e:
+        await _reader(FakeRepo(error=error)).delete(1)
+    assert e.value is error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [DependencyUnavailable(reason="db_unavailable"), DatabaseFailure(reason="db_query_failed")],
+)
+async def test_delete_plan_repository_failure(error: Exception) -> None:
+    repo = FakeRepo(_plan_row("done"), delete_error=error)
+    with pytest.raises(type(error)) as e:
+        await _reader(repo).delete(1)
+    assert e.value is error
 
 
 # --- compare ----------------------------------------------------------------------------

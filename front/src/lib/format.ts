@@ -33,6 +33,14 @@ export function minutesToTimeLabel(minutes: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+// '2026-08-17T09:05:00' -> '17.08.2026, 09:05'.
+export function formatDateTime(value: string): string {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/);
+  if (!match) return value;
+  const [, year, month, day, time] = match;
+  return `${day}.${month}.${year}, ${time}`;
+}
+
 export function formatSignedDelta(value: number, unit: (v: number) => string): string {
   const sign = value > 0 ? '+' : value < 0 ? '−' : '';
   return `${sign}${unit(Math.abs(value))}`;

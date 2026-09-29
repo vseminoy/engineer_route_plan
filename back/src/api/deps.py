@@ -17,10 +17,12 @@ from src.repository.engineer_sets import (
     list_engineer_sets,
 )
 from src.repository.plans import (
+    delete_plan,
     get_plan,
     insert_replanned_plan,
     insert_running_plan,
     list_plan_assignments,
+    list_plans,
     mark_plan_done,
     mark_plan_failed,
 )
@@ -84,6 +86,7 @@ def create_data_services(
         get_engineer_set,
         list_engineers,
         list_tickets,
+        list_plans,
     )
     return loader, lists, ticket_types
 
@@ -136,6 +139,7 @@ def create_plan_services(
         get_plan=get_plan,
         list_engineers=list_engineers,
         list_plan_assignments=list_plan_assignments,
+        delete_plan=delete_plan,
     )
     replanner = Replanner(
         connect=db_pool.connection,

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { AppNav } from '@/components/common/AppNav';
 import { MapView } from '@/components/map/MapView';
 import { SidePanel } from './SidePanel';
 import { DiffBanner } from './DiffBanner';
@@ -124,11 +125,12 @@ export function PlanScreen() {
   return (
     <div className="plan-screen">
       <div className="plan-screen__header">
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
           <h1 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
             Диспетчер{selectedRegion ? ` · ${selectedRegion}` : ''}
             {engineerSetName ? ` · ${engineerSetName}` : ''}
           </h1>
+          <AppNav />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--color-text-secondary)' }}>
           <span>Бригад в плане: {donePlan.engineers.length}</span>

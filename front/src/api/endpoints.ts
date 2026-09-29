@@ -5,9 +5,11 @@ import {
   comparePlan as getPlanCompareRequest,
   createEngineerSet as postEngineerSet,
   deleteEngineerSet as deleteEngineerSetRequest,
+  deletePlan as deletePlanRequest,
   getPlan as getPlanRequest,
   listEngineerSets,
   listEngineers,
+  listPlans,
   listRegions,
   listTickets,
   loadDemoData,
@@ -21,6 +23,7 @@ import {
   mapPlan,
   mapPlanCompare,
   mapPlanReplanResult,
+  mapPlanSummary,
   mapRegion,
   mapTicketSummary
 } from './mappers';
@@ -32,6 +35,7 @@ import type {
   Plan as ApiPlanGenerated,
   PlanComparisonEntry,
   PlanReplanResult,
+  PlanSummary as ApiPlanSummary,
   Region as ApiRegion,
   ReplanEventRequest,
   Ticket
@@ -43,6 +47,7 @@ import type {
   EngineerSet,
   Plan,
   PlanCompare,
+  PlanSummary,
   RegionCode,
   ReplanEvent,
   Region,
@@ -104,6 +109,20 @@ export function buildPlan(
 
 export function getPlan(planId: number): Promise<Plan> {
   return unwrap<ApiPlanGenerated>(getPlanRequest(planId), 200).then(mapPlan);
+}
+
+// Every plan built for the region/engineer set, newest first — used to
+// recover which baseline_fcfs plan pairs with a main plan when it wasn't
+// just built in this session (see usePlanCompare).
+export function getPlans(region: RegionCode, engineerSetId?: number | null): Promise<PlanSummary[]> {
+  return unwrap<ApiPlanSummary[]>(
+    listPlans(engineerSetId ? { region, engineer_set_id: engineerSetId } : { region }),
+    200
+  ).then((rows) => rows.map(mapPlanSummary));
+}
+
+export function deletePlan(planId: number): Promise<void> {
+  return unwrap<void>(deletePlanRequest(planId), 204);
 }
 
 // Both plans must already be status: 'done' — the backend rejects the

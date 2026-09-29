@@ -16,12 +16,15 @@ from src.domain import (
     VehicleType,
 )
 from src.errors import DatabaseFailure, DependencyUnavailable
-from src.repository.engineer_sets import get_default_engineer_set_id
+from src.repository.engineer_sets import get_default_engineer_set_id, insert_generated_engineer_set
 from src.repository.plans import (
     AssignmentWrite,
+    delete_plan,
     get_plan,
+    insert_replanned_plan,
     insert_running_plan,
     list_plan_assignments,
+    list_plans,
     mark_plan_done,
     mark_plan_failed,
     mark_running_plans_failed,
@@ -264,3 +267,173 @@ async def test_sweep_running_plans_db_unavailable(
         await mark_running_plans_failed(conn, "shutdown")
     assert e.value.reason == "db_unavailable"
     assert events(capsys, "db_query_failed")[-1]["query"] == "sweep_running_plans"
+
+
+async def test_list_plans_sorted_desc_all_statuses(conn: AsyncConnection[Any]) -> None:
+    p1 = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 8, 0))
+    p2 = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    await mark_plan_done(conn, p2, [])
+    p3 = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 10, 0))
+    await mark_plan_failed(conn, p3, "osrm_unavailable")
+    await conn.commit()
+
+    rows = await list_plans(conn, 1, None)
+
+    assert [r.id for r in rows] == [p3, p2, p1]
+    assert {r.status for r in rows} == {"running", "done", "failed"}
+
+
+async def test_list_plans_other_region_excluded(conn: AsyncConnection[Any]) -> None:
+    other_region = RegionDraft(
+        code="south_east", name="Юго-Восток", office_address="офис", office=OFFICE
+    )
+    other_params = EngineerSetParams(
+        engineers=1, morning_share=0.25, evening_share=0.25, seed="south_east"
+    )
+    other = await replace_region_data(
+        conn, other_region, other_params, lambda *_a: [_engineer()], [_ticket("3")]
+    )
+    await conn.commit()
+    other_set_id = await get_default_engineer_set_id(conn, other.region_id)
+    assert other_set_id is not None
+    own = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    await insert_running_plan(
+        conn, other.region_id, other_set_id, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
+    )
+    await conn.commit()
+
+    rows = await list_plans(conn, 1, None)
+
+    assert [r.id for r in rows] == [own]
+
+
+async def test_list_plans_empty_region(conn: AsyncConnection[Any]) -> None:
+    assert await list_plans(conn, 1, None) == []
+
+
+async def test_list_plans_by_engineer_set(conn: AsyncConnection[Any]) -> None:
+    other_set_id = await insert_generated_engineer_set(conn, 1, "second", 1, 0.25, 0.25, "seed2", [])
+    await conn.commit()
+    default_plan = await insert_running_plan(
+        conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
+    )
+    other_plan = await insert_running_plan(
+        conn, 1, other_set_id, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
+    )
+    await conn.commit()
+
+    rows = await list_plans(conn, 1, other_set_id)
+
+    assert [r.id for r in rows] == [other_plan]
+    assert default_plan not in [r.id for r in rows]
+
+
+async def test_list_plans_row_shape(conn: AsyncConnection[Any]) -> None:
+    parent = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    await mark_plan_done(conn, parent, [])
+    child = await insert_replanned_plan(
+        conn, 1, 1, PLAN_DATE, "or_tools", parent, datetime(2026, 8, 17, 10, 0), []
+    )
+    await mark_plan_failed(conn, child, "build_error")
+    await conn.commit()
+
+    rows = await list_plans(conn, 1, None)
+    row = next(r for r in rows if r.id == child)
+
+    assert row.region_code == "east"
+    assert row.engineer_set_id == 1
+    assert row.plan_date == PLAN_DATE
+    assert row.algorithm == "or_tools"
+    assert row.status == "failed"
+    assert row.failed_reason == "build_error"
+    assert row.parent_plan_id == parent
+    assert row.created_at == datetime(2026, 8, 17, 10, 0)
+
+
+async def test_delete_plan_removes_plan_and_assignments(conn: AsyncConnection[Any]) -> None:
+    plan_id = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    await mark_plan_done(
+        conn,
+        plan_id,
+        [
+            AssignmentWrite(
+                ticket_id=1,
+                engineer_id=1,
+                sequence_no=1,
+                planned_arrival=datetime(2026, 8, 17, 10, 30),
+                travel_time_min=15,
+                travel_distance_m=5400,
+                unassigned_reason=None,
+                explanation="назначено",
+            ),
+            AssignmentWrite(
+                ticket_id=2,
+                engineer_id=None,
+                sequence_no=None,
+                planned_arrival=None,
+                travel_time_min=None,
+                travel_distance_m=None,
+                unassigned_reason="no_skill",
+                explanation="нет навыка",
+            ),
+        ],
+    )
+    await conn.commit()
+
+    await delete_plan(conn, plan_id)
+    await conn.commit()
+
+    assert await get_plan(conn, plan_id) is None
+    assert await list_plan_assignments(conn, plan_id) == []
+
+
+async def test_delete_plan_cascades_replan_chain(conn: AsyncConnection[Any]) -> None:
+    parent = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    await mark_plan_done(conn, parent, [])
+    child = await insert_replanned_plan(
+        conn, 1, 1, PLAN_DATE, "or_tools", parent, datetime(2026, 8, 17, 10, 0), []
+    )
+    grandchild = await insert_replanned_plan(
+        conn, 1, 1, PLAN_DATE, "or_tools", child, datetime(2026, 8, 17, 11, 0), []
+    )
+    await conn.execute(
+        "INSERT INTO replan_events (plan_id, event_type, payload, triggered_at, result_plan_id)"
+        " VALUES (%s, 'ticket_cancelled', '{}', %s, %s)",
+        (parent, datetime(2026, 8, 17, 10, 0), child),
+    )
+    await conn.commit()
+
+    await delete_plan(conn, parent)
+    await conn.commit()
+
+    assert await get_plan(conn, parent) is None
+    assert await get_plan(conn, child) is None
+    assert await get_plan(conn, grandchild) is None
+    cur = await conn.execute(
+        "SELECT count(*) FROM replan_events WHERE plan_id = %s OR result_plan_id = %s",
+        (parent, child),
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    assert row[0] == 0
+
+
+async def test_delete_plan_nonexistent_is_noop(conn: AsyncConnection[Any]) -> None:
+    other = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    await conn.commit()
+
+    await delete_plan(conn, 999)
+    await conn.commit()
+
+    assert await get_plan(conn, other) is not None
+
+
+async def test_delete_plan_db_unavailable(
+    conn: AsyncConnection[Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    json_logs()
+    await conn.close()
+    with pytest.raises(DependencyUnavailable) as e:
+        await delete_plan(conn, 1)
+    assert e.value.reason == "db_unavailable"
+    assert events(capsys, "db_query_failed")[-1]["query"] == "delete_plan_tree"

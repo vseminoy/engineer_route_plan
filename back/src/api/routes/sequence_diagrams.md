@@ -689,6 +689,63 @@ sequenceDiagram
     end
 ```
 
+## `GET /api/v1/plan`
+
+Список планов одного региона, всех статусов (`running`/`done`/`failed`), по убыванию
+`created_at`. Без `engineer_set_id` — планы всех наборов бригад региона; с ним — только
+планы этого набора, если он принадлежит региону из query (та же проверка, что у
+`GET /api/v1/engineers`, отличие — без `engineer_set_id` берутся планы **всех** наборов, а
+не набора `default`: список — история построений региона, а не бригад одного набора).
+Отдаёт `PlanSummary` — без `engineers`/`unassigned`/`metrics`; детали одного плана
+по-прежнему у `GET /api/v1/plan/{plan_id}`.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут plan)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (регион → списки)
+    participant Repo as queries (регионы/наборы/планы)
+    participant DB as PostgreSQL
+
+    Client->>API: GET /api/v1/plan?region=east[&engineer_set_id=7]
+    alt region не по шаблону/нет, либо engineer_set_id не целое или вне 1..2^63−1
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [region | engineer_set_id]}
+    else
+        API->>Svc: plans(region, engineer_set_id)
+        alt регион не из конфигурации
+            Svc-->>API: InvalidInput(fields: region)
+            API->>API: лог list_plans_failed (warning, reason=unknown_region)
+            API->>H: InvalidInput
+            H-->>Client: 400 {fields: [region]}
+        else нет свободного соединения в пуле или БД недоступна
+            Svc->>Svc: лог db_query_failed
+            Svc-->>API: DependencyUnavailable
+            API->>API: лог list_plans_failed (error)
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела
+        else регион не загружен (нет region_id)
+            Svc->>Repo: id региона по коду
+            Repo-->>Svc: None
+            Svc-->>API: []
+            API-->>Client: 200 []
+        else engineer_set_id передан и не принадлежит региону
+            Svc->>Repo: region_id набора engineer_set_id
+            Repo-->>Svc: region_id набора ≠ region_id региона, либо набора нет
+            Svc-->>API: InvalidInput(fields: engineer_set_id)
+            API->>API: лог list_plans_failed (warning, reason=engineer_set_not_in_region)
+            API->>H: InvalidInput
+            H-->>Client: 400 {fields: [engineer_set_id]}
+        else
+            Repo->>DB: SELECT ... FROM plans WHERE region_id [AND engineer_set_id] ORDER BY created_at DESC
+            DB-->>Repo: строки планов
+            Repo-->>API: PlanSummary[]
+            API-->>Client: 200 [PlanSummary]
+        end
+    end
+```
+
 ## `POST /api/v1/plan/build`
 
 Ставит построение плана региона на дату в очередь и отвечает, не дожидаясь его конца:
@@ -899,6 +956,72 @@ sequenceDiagram
             Svc->>Svc: собрать маршруты (idle_time_min из смены и визитов) и metrics из них, без лога
             Svc-->>API: Plan (status=done, engineers, unassigned, metrics)
             API-->>Client: 200 Plan
+        end
+    end
+```
+
+## `DELETE /api/v1/plan/{plan_id}`
+
+Удаляет план и всю цепочку планов, порождённых от него `POST /plan/{plan_id}/replan`
+(прямо или через несколько перепланирований), вместе с их визитами и событиями
+перепланирования — в одной транзакции, тем же приёмом, что `DELETE
+/api/v1/engineer-sets/{engineer_set_id}`: дерево потомков находится рекурсивным CTE по
+`parent_plan_id`, самореференс разрешается в одной инструкции DELETE. Статус проверяется
+тем же чтением, что и `GET /api/v1/plan/{plan_id}` (`PlanRepo.get_plan`) — план в
+состоянии `running` удалить нельзя: его может ещё дописывать фоновая задача
+`POST /plan/build`.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут plan)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (чтение и удаление плана)
+    participant PlanRepo as queries (планы, дерево перепланирований)
+    participant DB as PostgreSQL
+
+    Client->>API: DELETE /api/v1/plan/42
+    alt plan_id не целое или вне 1..2^63−1
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [plan_id]}
+    else
+        API->>Svc: delete(plan_id)
+        Svc->>PlanRepo: план plan_id (статус)
+        alt нет свободного соединения в пуле или БД недоступна
+            PlanRepo->>PlanRepo: лог db_query_failed
+            PlanRepo-->>Svc: DependencyUnavailable
+            Svc->>Svc: лог plan_delete_failed (error)
+            Svc-->>API: DependencyUnavailable
+            API->>H: DependencyUnavailable
+            H-->>Client: 503 без тела (план не удалён)
+        else плана с таким id нет
+            PlanRepo-->>Svc: None
+            Svc->>Svc: лог plan_delete_failed (warning, reason=plan_not_found)
+            Svc-->>API: NotFound
+            API->>H: NotFound
+            H-->>Client: 404 без тела
+        else status=running
+            PlanRepo-->>Svc: план (status=running)
+            Svc->>Svc: лог plan_delete_failed (warning, reason=plan_running)
+            Svc-->>API: Conflict
+            API->>H: Conflict
+            H-->>Client: 409 без тела
+        else status=done|failed
+            PlanRepo-->>Svc: план (status=done|failed)
+            Svc->>PlanRepo: BEGIN; дерево потомков plan_id (WITH RECURSIVE по parent_plan_id); DELETE replan_events, assignments, plans WHERE id IN дерево
+            alt БД отклонила запрос
+                DB-->>PlanRepo: ошибка → ROLLBACK
+                PlanRepo-->>Svc: DatabaseFailure
+                Svc-->>API: DatabaseFailure
+                API->>API: лог plan_delete_failed (error)
+                API->>H: DatabaseFailure
+                H-->>Client: 500 без тела (план не удалён)
+            else
+                DB-->>PlanRepo: COMMIT
+                Svc->>Svc: лог plan_deleted (plan_id)
+                Svc-->>API: OK
+                API-->>Client: 204 без тела
+            end
         end
     end
 ```

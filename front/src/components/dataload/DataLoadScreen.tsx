@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
+import { AppNav } from '@/components/common/AppNav';
 import { RegionSelect } from './RegionSelect';
 import { EngineerSetSelect } from './EngineerSetSelect';
 import { EngineerSetCreateForm } from './EngineerSetCreateForm';
@@ -143,6 +144,7 @@ export function DataLoadScreen() {
 
   return (
     <div style={{ maxWidth: 480, margin: '64px auto', padding: '0 16px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <AppNav />
       <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>Диспетчер маршрутов</h1>
 
       {loadResult ? (

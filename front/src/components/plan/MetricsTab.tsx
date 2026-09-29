@@ -42,6 +42,8 @@ export function MetricsTab({ plan, roster, engineerSetName }: Props) {
         <div style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>
           {describeError(compareQuery.error, 'GET /plan/{id}/compare')}
         </div>
+      ) : compareQuery.baselineUnavailable ? (
+        <div style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Нет baseline-плана для сравнения</div>
       ) : (
         <div style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Считаем сравнение с baseline…</div>
       )}

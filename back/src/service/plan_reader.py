@@ -3,9 +3,12 @@
 `running` and `failed` plans have no routes yet (or ever); a `done` plan's assignment
 rows are grouped by brigade, sorted back into visit order, and merged with every brigade
 of the plan's region — including one with no visits, absent from the stored rows
-entirely — so the response always lists all of them. A brigade's idle time is its shift
-minus the summed travel and on-site time of its visits, recomputed here rather than
-stored: `duration_min` (on-site time) comes along with each row through its ticket join.
+entirely — so the response always lists all of them. A brigade's idle time is the
+waiting time between its visits only — the gap between finishing one visit and leaving
+for the next — recomputed here rather than stored: `duration_min` (on-site time) comes
+along with each row through its ticket join. Time from shift start to departure for the
+first visit, and from finishing the last visit to shift end, is not idle time: the
+brigade has no ticket waiting on it there, so nothing to be idle between.
 
 `compare` (`GET /api/v1/plan/{plan_id}/compare`) reads two plans through `get` and
 diffs their mandatory metrics (`engineers_used`, `total_distance_km`) — `idle_time` is
@@ -14,13 +17,14 @@ excluded, display-only by the same rule that keeps it out of the solver's object
 
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from itertools import pairwise
 from typing import Any
 
 from psycopg import AsyncConnection
 
 from src.domain import Engineer
-from src.errors import InvalidInput, NotFound
+from src.errors import Conflict, InvalidInput, NotFound
 from src.repository.db import database_errors
 from src.repository.plans import AssignmentRow, PlanRow
 from src.service.loader import Connect
@@ -28,6 +32,7 @@ from src.service.loader import Connect
 GetPlan = Callable[[AsyncConnection[Any], int], Awaitable[PlanRow | None]]
 ListEngineers = Callable[[AsyncConnection[Any], int], Awaitable[list[Engineer]]]
 ListPlanAssignments = Callable[[AsyncConnection[Any], int], Awaitable[list[AssignmentRow]]]
+DeletePlan = Callable[[AsyncConnection[Any], int], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,7 @@ class PlanReader:
     get_plan: GetPlan
     list_engineers: ListEngineers
     list_plan_assignments: ListPlanAssignments
+    delete_plan: DeletePlan
 
     async def get(self, plan_id: int) -> PlanRead:
         async with database_errors("plan_get"), self.connect() as conn:
@@ -175,6 +181,18 @@ class PlanReader:
             )
         )
 
+    async def delete(self, plan_id: int) -> None:
+        """Deletes the plan and its whole replan chain. Raises `Conflict` for a plan
+        still `running` — the background build behind `POST /plan/build` may still be
+        writing assignments into it."""
+        async with database_errors("plan_delete"), self.connect() as conn:
+            row = await self.get_plan(conn, plan_id)
+            if row is None:
+                raise NotFound("plan_not_found", params={"plan_id": plan_id})
+            if row.status == "running":
+                raise Conflict("plan_running", params={"plan_id": plan_id})
+            await self.delete_plan(conn, plan_id)
+
 
 def _visit(a: AssignmentRow) -> VisitRead:
     """`a.engineer_id is not None`: `ck_assignments__assigned_or_reason` guarantees the
@@ -206,7 +224,6 @@ def _engineer_routes(
         visits = [_visit(a) for a in rows]
         travel_total = sum(v.travel_time_min for v in visits)
         distance_total = sum(v.travel_distance_km for v in visits)
-        duration_total = sum(a.duration_min for a in rows)
         routes.append(
             EngineerRouteRead(
                 engineer_id=e.id,
@@ -214,10 +231,27 @@ def _engineer_routes(
                 route=tuple(visits),
                 total_distance_km=round(distance_total, 1),
                 total_travel_time_min=travel_total,
-                idle_time_min=_shift_min(e) - travel_total - duration_total,
+                idle_time_min=_idle_between_visits(rows),
             )
         )
     return routes
+
+
+def _idle_between_visits(rows: Sequence[AssignmentRow]) -> int:
+    """Sum of the gaps between consecutive visits: the time from finishing one visit
+    (`planned_arrival + duration_min`) to leaving for the next (`planned_arrival -
+    travel_time_min` of the next row). A route of 0 or 1 visits has no such gap."""
+    total = timedelta()
+    for prev, curr in pairwise(rows):
+        assert prev.planned_arrival is not None
+        assert curr.planned_arrival is not None
+        assert curr.travel_time_min is not None
+        finish = prev.planned_arrival + timedelta(minutes=prev.duration_min)
+        departure = curr.planned_arrival - timedelta(minutes=curr.travel_time_min)
+        gap = departure - finish
+        if gap > timedelta():
+            total += gap
+    return round(total.total_seconds() / 60)
 
 
 def _unassigned(assignments: Sequence[AssignmentRow]) -> list[UnassignedRead]:
@@ -254,9 +288,3 @@ def _require_done(plan: PlanRead) -> None:
             message="План ещё не готов для сравнения",
             params={"plan_id": plan.plan_id, "status": plan.status},
         )
-
-
-def _shift_min(e: Engineer) -> int:
-    return (e.shift_end.hour * 60 + e.shift_end.minute) - (
-        e.shift_start.hour * 60 + e.shift_start.minute
-    )

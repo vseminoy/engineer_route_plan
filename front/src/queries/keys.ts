@@ -3,6 +3,8 @@ export const queryKeys = {
   regions: () => ['regions'] as const,
   plan: (planId: number) => ['plan', planId] as const,
   planCompare: (planId: number, baselinePlanId: number) => ['plan', planId, 'compare', baselinePlanId] as const,
+  // engineerSetId omitted means the region's default set, same convention as `engineers`.
+  plans: (regionCode: string, engineerSetId: number | null = null) => ['plans', regionCode, engineerSetId] as const,
   engineerSets: (regionCode: string) => ['engineer-sets', regionCode] as const,
   // engineerSetId omitted (or null) means the region's default set — a third
   // key element of `null` still lets invalidating ['engineers', regionCode]
