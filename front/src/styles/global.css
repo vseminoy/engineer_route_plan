@@ -239,6 +239,9 @@ textarea {
   gap: 8px;
   cursor: pointer;
   background: var(--color-surface);
+  /* Same fix as .unassigned-card: without it, a long roster gets squeezed
+     to fit .side-panel__body instead of scrolling, and content overflows. */
+  flex-shrink: 0;
 }
 
 .engineer-card--selected {
@@ -393,7 +396,7 @@ textarea {
 /* ---- Unassigned card ---- */
 
 .unassigned-card {
-  border: 1px solid var(--color-border);
+  border: 1px solid rgba(18, 21, 26, 0.12);
   border-radius: 12px;
   padding: 14px;
   min-height: 44px;
@@ -402,7 +405,15 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: var(--color-surface);
+  /* .side-panel__body is a scrollable column flex container: without this,
+     flex-shrink's default of 1 lets the browser squeeze each card down to
+     min-height instead of scrolling once the list is taller than the panel,
+     and the card's own text then overflows below its shrunk border. */
+  flex-shrink: 0;
+  /* Sits inside a panel with the same --color-surface background, so a
+     border alone (8% opacity) is invisible; the tint keeps each card
+     visually separate from its neighbours and from the panel. */
+  background: #f8f9fb;
 }
 
 .unassigned-card:hover {
