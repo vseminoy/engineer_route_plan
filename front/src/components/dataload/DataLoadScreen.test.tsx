@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 describe('DataLoadScreen — POST /plan/build failing before it even queues', () => {
-  it('shows a full-screen retry notice on a 503 from the build that follows a clean demo load', async () => {
+  it('shows a full-screen retry notice on a 503 from an explicit build after a clean demo load', async () => {
     loadDemoDatasetMock.mockResolvedValue({
       region: 'east',
       engineersCount: 12,
@@ -50,7 +50,13 @@ describe('DataLoadScreen — POST /plan/build failing before it even queues', ()
     renderScreen();
 
     fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'east' } });
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Использовать демо-набор' })));
+    await act(async () =>
+      fireEvent.click(screen.getByRole('button', { name: 'Перезагрузить дефолтные данные' }))
+    );
+    // A clean load (no invalid rows) no longer builds by itself — it's a
+    // separate, explicit step so re-loading never has to wipe existing plans.
+    expect(buildPlanMock).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Сгенерировать план' })));
 
     await waitFor(() =>
       expect(screen.getByText(/Сервис временно недоступен, попробуйте ещё раз/)).toBeInTheDocument()

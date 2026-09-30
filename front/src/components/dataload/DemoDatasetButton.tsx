@@ -6,7 +6,7 @@ interface Props {
 export function DemoDatasetButton({ disabled, onClick }: Props) {
   return (
     <button className="btn-primary" disabled={disabled} onClick={onClick} style={{ background: 'var(--color-text-primary)' }}>
-      Использовать демо-набор
+      Перезагрузить дефолтные данные
     </button>
   );
 }

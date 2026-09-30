@@ -80,9 +80,12 @@
 Файл: `DataLoadScreen.test.tsx` (`vitest` + `@testing-library/react`, `QueryClientProvider`).
 
 > `loadDemoDataset`/`buildPlan` (`api/endpoints`) замоканы — проверяется реакция экрана на
-> отказ построения плана, который сам загрузчик данных запускает сразу после чистой
-> загрузки, а не сеть.
+> отказ построения плана, а не сеть. Загрузка данных и построение плана — два отдельных
+> действия («Перезагрузить дефолтные данные» / «Загрузить заявки» просто обновляют данные
+> региона, «Сгенерировать план» отдельно вызывает `POST /plan/build»); чистая загрузка без
+> ошибок в строках сама план больше не строит — тест это тоже проверяет, до клика по
+> «Сгенерировать план» `buildPlan` не вызван.
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `shows a full-screen retry notice on a 503 from the build that follows a clean demo load` | Демо-набор загрузился без ошибок, `buildPlan` реджектится `ApiError(503)` | `FullScreenErrorNotice` с текстом по словарю и кнопкой «Повторить» |
+| `shows a full-screen retry notice on a 503 from an explicit build after a clean demo load` | Демо-набор загрузился без ошибок (`buildPlan` не вызван до клика), нажата «Сгенерировать план», `buildPlan` реджектится `ApiError(503)` | `FullScreenErrorNotice` с текстом по словарю и кнопкой «Повторить» |

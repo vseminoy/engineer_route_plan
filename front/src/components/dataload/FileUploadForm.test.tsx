@@ -29,7 +29,7 @@ describe('FileUploadForm', () => {
     selectFile(container, new File(['x'], 'tickets.txt'));
 
     expect(screen.getByText('Поддерживаются только файлы .csv или .json.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Загрузить и построить план' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Загрузить заявки' })).toBeDisabled();
   });
 
   it('rejects an empty file under the field', () => {
@@ -45,7 +45,7 @@ describe('FileUploadForm', () => {
     const validFile = new File(['a;b\n1;2'], 'tickets.csv', { type: 'text/csv' });
     selectFile(container, validFile);
 
-    const button = screen.getByRole('button', { name: 'Загрузить и построить план' });
+    const button = screen.getByRole('button', { name: 'Загрузить заявки' });
     expect(button).toBeEnabled();
     fireEvent.click(button);
 

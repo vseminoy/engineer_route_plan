@@ -72,7 +72,6 @@ export function IdleTimeBlock({ engineers, roster }: Props) {
                   )}
                   {r && <VehicleIcon vehicleType={r.vehicleType} />}
                   {r && <SkillIcons skills={r.skills} />}
-                  <span className="diff-tag diff-tag--idle">не задействована</span>
                 </div>
               );
             })}

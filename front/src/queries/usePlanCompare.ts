@@ -37,36 +37,40 @@ export function pickBaselinePlanId(plans: PlanSummary[], mainPlanId: number): nu
 
 // `baselinePlanId` (useUiStore) is a session-only pointer, set only right
 // after `useBuildPlan` succeeds — opening a plan straight from its URL
-// (reload, direct link, a link from elsewhere) never populates it, which
-// otherwise leaves the Metrics tab stuck on "Считаем сравнение с baseline…"
-// forever, since the compare query stays disabled with no baseline id to
-// query with. This recovers it from GET /plan (list_plans) instead, once,
-// the same way it would have been set at build time.
+// (reload, direct link, a link from elsewhere), or navigating to a plan of a
+// different engineer set while a leftover pointer from an earlier build is
+// still around, both leave it either unset or stale. `needsRecovery` covers
+// both: unset (`baselinePlanId === null`) and stale (points at a plan of a
+// different engineer set than the one now open — GET /plan/{id}/compare
+// rejects that pair with "Планы построены для разных наборов бригад", so
+// using it as-is is never correct). This recovers a matching baseline from
+// GET /plan (list_plans) instead, the same way it would have been set at
+// build time.
 function useRecoveredBaselinePlanId(
   mainPlanId: number | undefined,
   region: RegionCode | undefined,
-  engineerSetId: number | undefined
+  engineerSetId: number | undefined,
+  needsRecovery: boolean
 ) {
-  const baselinePlanId = useUiStore((s) => s.baselinePlanId);
   const setBaselinePlanId = useUiStore((s) => s.setBaselinePlanId);
 
   const plansQuery = useQuery({
     queryKey: queryKeys.plans(region ?? '', engineerSetId ?? null),
     queryFn: () => getPlans(region as RegionCode, engineerSetId),
-    enabled: baselinePlanId === null && mainPlanId !== undefined && region !== undefined && engineerSetId !== undefined
+    enabled: needsRecovery && mainPlanId !== undefined && region !== undefined && engineerSetId !== undefined
   });
 
   useEffect(() => {
-    if (baselinePlanId !== null || !plansQuery.data || mainPlanId === undefined) return;
+    if (!needsRecovery || !plansQuery.data || mainPlanId === undefined) return;
     const recovered = pickBaselinePlanId(plansQuery.data, mainPlanId);
     if (recovered !== null) setBaselinePlanId(recovered);
-  }, [baselinePlanId, plansQuery.data, mainPlanId, setBaselinePlanId]);
+  }, [needsRecovery, plansQuery.data, mainPlanId, setBaselinePlanId]);
 
   // True once the plan list has settled and still found nothing to compare
   // against — as opposed to "still loading", which looks the same to the
   // caller otherwise (both have `data === undefined`).
   const baselineUnavailable =
-    baselinePlanId === null && plansQuery.isSuccess && pickBaselinePlanId(plansQuery.data, mainPlanId ?? -1) === null;
+    needsRecovery && plansQuery.isSuccess && pickBaselinePlanId(plansQuery.data, mainPlanId ?? -1) === null;
 
   return { baselineUnavailable };
 }
@@ -74,13 +78,31 @@ function useRecoveredBaselinePlanId(
 export function usePlanCompare(mainPlanId: number | undefined) {
   const baselinePlanId = useUiStore((s) => s.baselinePlanId);
   const main = usePlan(mainPlanId);
-  const { baselineUnavailable } = useRecoveredBaselinePlanId(mainPlanId, main.data?.region, main.data?.engineerSetId);
   const baseline = usePlan(baselinePlanId ?? undefined);
+
+  // A pointer left over from a previously built/viewed plan can belong to a
+  // different engineer set than the plan now open (e.g. the dispatcher built
+  // a plan for the default set, then opened one for a generated set from the
+  // plans list — nothing clears the pointer on that navigation). Comparing
+  // across sets is meaningless and the backend rejects it, so treat it the
+  // same as "no baseline yet" rather than sending the mismatched pair.
+  const baselineMismatched =
+    baselinePlanId !== null &&
+    main.data !== undefined &&
+    baseline.data !== undefined &&
+    baseline.data.engineerSetId !== main.data.engineerSetId;
+
+  const { baselineUnavailable } = useRecoveredBaselinePlanId(
+    mainPlanId,
+    main.data?.region,
+    main.data?.engineerSetId,
+    baselinePlanId === null || baselineMismatched
+  );
 
   const query = useQuery({
     queryKey: queryKeys.planCompare(mainPlanId ?? -1, baselinePlanId ?? -1),
     queryFn: () => comparePlan(mainPlanId as number, baselinePlanId as number),
-    enabled: planCompareReady(mainPlanId, baselinePlanId, main.data?.status, baseline.data?.status)
+    enabled: !baselineMismatched && planCompareReady(mainPlanId, baselinePlanId, main.data?.status, baseline.data?.status)
   });
 
   return { ...query, baselineUnavailable };

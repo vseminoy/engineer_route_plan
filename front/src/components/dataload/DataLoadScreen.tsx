@@ -83,15 +83,16 @@ export function DataLoadScreen() {
     }
   }
 
-  async function afterLoad(region: RegionCode, result: DataLoadResult) {
+  // Loading data only replaces the region's tickets/brigades — it never builds
+  // a plan itself, so a reload no longer wipes plans the dispatcher hasn't
+  // asked to rebuild yet. Building is a separate, explicit step below.
+  function afterLoad(region: RegionCode, result: DataLoadResult) {
     queryClient.invalidateQueries({ queryKey: queryKeys.tickets(region) });
     queryClient.invalidateQueries({ queryKey: queryKeys.engineers(region) });
     queryClient.invalidateQueries({ queryKey: queryKeys.engineerSets(region) });
-    if (result.invalidRows.length === 0) {
-      await runBuild();
-    } else {
+    setLoadingText(null);
+    if (result.invalidRows.length > 0) {
       setLoadResult(result);
-      setLoadingText(null);
     }
   }
 
@@ -103,7 +104,7 @@ export function DataLoadScreen() {
     setLoadingText('Загружаем демо-набор…');
     try {
       const result = await loadDemoDataset(selectedRegion);
-      await afterLoad(selectedRegion, result);
+      afterLoad(selectedRegion, result);
     } catch (err) {
       handleLoadError(err, 'POST /data/demo');
     }
@@ -122,7 +123,7 @@ export function DataLoadScreen() {
     setLoadingText('Загружаем файл…');
     try {
       const result = await uploadDataset(selectedRegion, ticketsFile);
-      await afterLoad(selectedRegion, result);
+      afterLoad(selectedRegion, result);
     } catch (err) {
       handleLoadError(err, 'POST /data/upload');
     }
@@ -158,15 +159,6 @@ export function DataLoadScreen() {
             error={fieldErrors.region}
           />
 
-          <EngineerSetSelect
-            region={selectedRegion}
-            value={selectedEngineerSetId}
-            onChange={setSelectedEngineerSetId}
-            onCreateClick={() => setCreatingSet(true)}
-            onDeleteClick={setDeletingSet}
-            disabled={loadingText !== null}
-          />
-
           <DemoDatasetButton disabled={!selectedRegion || loadingText !== null} onClick={handleDemo} />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: 'var(--color-text-muted)', fontSize: 13 }}>
@@ -181,6 +173,25 @@ export function DataLoadScreen() {
             onFileSelected={(_file, message) => setFieldError('tickets_file', message)}
             onSubmit={handleUpload}
           />
+
+          <hr style={{ border: 'none', borderTop: '1px solid var(--color-border)', width: '100%' }} />
+
+          <EngineerSetSelect
+            region={selectedRegion}
+            value={selectedEngineerSetId}
+            onChange={setSelectedEngineerSetId}
+            onCreateClick={() => setCreatingSet(true)}
+            onDeleteClick={setDeletingSet}
+            disabled={loadingText !== null}
+          />
+
+          <button
+            className="btn-primary"
+            disabled={!selectedRegion || loadingText !== null}
+            onClick={runBuild}
+          >
+            Сгенерировать план
+          </button>
         </>
       )}
 

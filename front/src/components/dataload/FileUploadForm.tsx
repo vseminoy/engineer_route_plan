@@ -68,7 +68,7 @@ export function FileUploadForm({ disabled, error, onFileSelected, onSubmit }: Pr
         disabled={disabled || !ticketsFile}
         onClick={() => ticketsFile && onSubmit(ticketsFile)}
       >
-        Загрузить и построить план
+        Загрузить заявки
       </button>
     </div>
   );
