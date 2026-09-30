@@ -23,12 +23,17 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 from ortools.constraint_solver.routing_parameters_pb2 import RoutingSearchParameters
 
 from src.clients.osrm import TravelMatrix
-from src.domain import Engineer, Ticket, VehicleType
+from src.domain import Engineer, Skill, Ticket, VehicleType
 from src.logging import get_logger
 
 logger = get_logger(__name__)
 
 _DAY_MIN = 24 * 60
+# The same allowance a ticket books its slot with before the day's actual route exists yet
+# (there is no route here either: capacity is checked before the solver decides visiting
+# order) — reused as the per-ticket travel estimate for a capacity check that has no route to
+# read a real travel time from.
+_TRAVEL_RESERVE_MIN = 20
 
 
 class SolveStatus(StrEnum):
@@ -139,6 +144,7 @@ def solve_day(
         midnight=midnight,
         time_limit=time_limit,
         started=started,
+        capacity_excess=_capacity_excess(modelled, engineers),
     )
 
 
@@ -187,6 +193,57 @@ def _model_tickets(
     return midnight, modelled, unassigned
 
 
+def _capacity_excess(modelled: list[_Modelled], engineers: Sequence[Engineer]) -> frozenset[int]:
+    """Ticket ids that no arrangement of brigades could ever all serve together — grouped by
+    (skill, window). Only a ticket's *arrival* must fall inside the window (`_build_model` only
+    bounds `CumulVar` at the ticket's own node, never its completion), so a lone ticket in a
+    window shorter than its own service always fits — what actually limits a group is brigades
+    serving several of its tickets back to back: each visit after the first only becomes
+    possible `duration_min + _TRAVEL_RESERVE_MIN` minutes (service, then the travel no route
+    exists yet to compute — the same 20-minute reserve a ticket books its slot with before the
+    day's actual route exists either) after the previous one. Simulated by greedily handing each
+    ticket, most urgent first, to whichever skill-matching brigade can arrive soonest without
+    missing its own window or shift end; a ticket no brigade can still fit is capacity excess.
+
+    Ignoring `required_vehicle` and letting every skill-matching brigade serve any ticket in the
+    group (never just the one it is actually restricted to, nor accounting for the rest of its
+    day outside this window) both make brigades look more available than they really are — so a
+    ticket only ends up here when even that generous a simulation cannot fit it, never the
+    reverse. A ticket in the returned set is not a search failure to report or push the solver
+    toward — it is provably unassignable before a route is ever built, and `_build_model` prices
+    its disjunction at 0 accordingly."""
+    groups: dict[tuple[Skill, int, int], list[_Modelled]] = {}
+    for m in modelled:
+        groups.setdefault((m.ticket.required_skill, m.opens, m.closes), []).append(m)
+
+    excess: set[int] = set()
+    for (skill, opens, closes), members in groups.items():
+        # `cursor` — this brigade's earliest possible next arrival; starts at the window's own
+        # open (arriving right as it opens costs nothing, so the window's length never limits a
+        # single ticket by itself), or later if its shift starts after the window opens.
+        state = [
+            [
+                max(opens, e.shift_start.hour * 60 + e.shift_start.minute),
+                e.shift_end.hour * 60 + e.shift_end.minute,
+            ]
+            for e in engineers
+            if skill in e.skills
+        ]
+        for m in sorted(members, key=lambda m: (m.ticket.priority, m.ticket.id)):
+            duration = m.ticket.duration_min
+            candidates = [
+                i
+                for i, (cursor, shift_end) in enumerate(state)
+                if cursor <= closes and cursor + duration <= shift_end
+            ]
+            if not candidates:
+                excess.add(m.ticket.id)
+                continue
+            best = min(candidates, key=lambda i: state[i][0])
+            state[best][0] += duration + _TRAVEL_RESERVE_MIN
+    return frozenset(excess)
+
+
 def _shift_min(e: Engineer) -> int:
     return (e.shift_end.hour * 60 + e.shift_end.minute) - (
         e.shift_start.hour * 60 + e.shift_start.minute
@@ -199,6 +256,7 @@ def _build_model(
     modelled: list[_Modelled],
     *,
     penalty_floor: int,
+    capacity_excess: frozenset[int],
 ) -> _Model:
     n_vehicles = len(engineers)
     # Model node k: k < n_vehicles — the start point of brigade k, which is also where its
@@ -262,7 +320,10 @@ def _build_model(
         # `SetAllowedVehiclesForIndex` does not accept a Python list in OR-Tools 9.15; the
         # vehicle variable restricted the same way is equivalent, -1 keeps "not performed".
         routing.VehicleVar(index).SetValues([-1, *m.allowed])
-        p = penalty_of[m.ticket.priority]
+        # A ticket beyond its (skill, window) group's physical capacity is never left
+        # unassigned by a search failure — no arrangement could ever have served it — so
+        # leaving it unassigned costs nothing instead of the usual priority-scaled penalty.
+        p = 0 if m.ticket.id in capacity_excess else penalty_of[m.ticket.priority]
         routing.AddDisjunction([index], p)
         ticket_index.append(index)
         penalty.append(p)
@@ -379,6 +440,7 @@ def _solve_lexicographic(
     midnight: datetime,
     time_limit: timedelta,
     started: float,
+    capacity_excess: frozenset[int],
 ) -> DayPlan:
     """Three solves of the same input, one objective at a time, each bound by the previous
     phase's result: maximum weighted coverage, then minimum fleet without giving up coverage,
@@ -398,7 +460,9 @@ def _solve_lexicographic(
     travel_bound = n_vehicles * _DAY_MIN
     floor = travel_bound + 1
 
-    model1 = _build_model(engineers, matrices, modelled, penalty_floor=floor)
+    model1 = _build_model(
+        engineers, matrices, modelled, penalty_floor=floor, capacity_excess=capacity_excess
+    )
     # Zero-cost arcs leave Guided Local Search nothing to penalize once the construction
     # heuristic drops a ticket, so it never tries recovering it — real (but coverage-dominated)
     # travel cost gives the search a gradient to actually climb down while hunting for coverage.
@@ -415,7 +479,9 @@ def _solve_lexicographic(
     unassigned_penalty = _unassigned_penalty(model1, solution1)
     _log_phase(1, unassigned_penalty, phase_started)
 
-    model2 = _build_model(engineers, matrices, modelled, penalty_floor=floor)
+    model2 = _build_model(
+        engineers, matrices, modelled, penalty_floor=floor, capacity_excess=capacity_excess
+    )
     _set_costs(model2, engineers, arc_cb=lambda _e: model2.zero_cb, fixed_cost=1)
     _bound_coverage(model2, unassigned_penalty)
     # The previous phase's own routes are already a feasible starting point for this bound.
@@ -429,7 +495,9 @@ def _solve_lexicographic(
     fleet = _vehicles_used(model2, solution2, n_vehicles)
     _log_phase(2, fleet, phase_started)
 
-    model3 = _build_model(engineers, matrices, modelled, penalty_floor=floor)
+    model3 = _build_model(
+        engineers, matrices, modelled, penalty_floor=floor, capacity_excess=capacity_excess
+    )
     _set_costs(model3, engineers, arc_cb=lambda e: model3.travel_cb[e.vehicle_type], fixed_cost=0)
     _bound_coverage(model3, unassigned_penalty)
     _bound_fleet(model3, fleet, n_vehicles)
@@ -460,6 +528,7 @@ def _solve_single_pass_weighted(
     midnight: datetime,
     time_limit: timedelta,
     started: float,
+    capacity_excess: frozenset[int],
 ) -> DayPlan:
     """One solve, one objective of three scale-dominated terms (coverage penalty ≫ fixed cost
     per brigade ≫ travel) — the approximation `_solve_lexicographic` replaces, kept only for
@@ -470,7 +539,9 @@ def _solve_single_pass_weighted(
     travel_bound = n_vehicles * _DAY_MIN
     brigade_cost = travel_bound + 1
     floor = n_vehicles * brigade_cost + travel_bound + 1
-    model = _build_model(engineers, matrices, modelled, penalty_floor=floor)
+    model = _build_model(
+        engineers, matrices, modelled, penalty_floor=floor, capacity_excess=capacity_excess
+    )
     _set_costs(
         model, engineers, arc_cb=lambda e: model.travel_cb[e.vehicle_type], fixed_cost=brigade_cost
     )

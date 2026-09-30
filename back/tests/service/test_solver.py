@@ -419,6 +419,73 @@ def test_shorter_order_chosen() -> None:
     assert sum(v.travel_min for v in visits) == 30
 
 
+# --- Ёмкость окна: штраф не начисляется за физически невозможное ---
+
+
+def test_capacity_excess_never_flags_a_lone_ticket() -> None:
+    """Only a ticket's arrival must land inside its window (`_build_model` never bounds a
+    ticket's own completion), so a lone ticket whose duration alone outlasts the window is
+    still not "capacity excess": one skill-matching brigade is always enough for it by
+    itself — the window's length only ever limits a *group* of tickets sharing it."""
+    from src.service.solver import _capacity_excess, _model_tickets
+
+    engineers = [engineer(1)]
+    tickets = [ticket(1, window=(at(10, 30), at(11)), duration=90)]
+    _, modelled, _ = _model_tickets(tickets, engineers, DAY)
+    assert _capacity_excess(modelled, engineers) == frozenset()
+
+
+def test_capacity_excess_flags_only_the_least_urgent_overflow() -> None:
+    """Three tickets needing the same hour-long window from the same single brigade: at 30
+    minutes of service plus the standard 20-minute travel allowance each, only two arrivals
+    fit before the window closes — the third, least urgent one (highest `priority` number)
+    is physically unassignable regardless of routing, and it alone is flagged."""
+    from src.service.solver import _capacity_excess, _model_tickets
+
+    engineers = [engineer(1)]
+    tickets = [
+        ticket(1, window=(at(10), at(11)), duration=30, priority=1),
+        ticket(2, window=(at(10), at(11)), duration=30, priority=2),
+        ticket(3, window=(at(10), at(11)), duration=30, priority=3),
+    ]
+    _, modelled, _ = _model_tickets(tickets, engineers, DAY)
+    assert _capacity_excess(modelled, engineers) == frozenset({3})
+
+
+def test_capacity_excess_empty_when_enough_brigades() -> None:
+    """The same three tickets as above, but with a second skill-matching brigade also free in
+    the window: capacity for all three now exists, so none is capacity excess."""
+    from src.service.solver import _capacity_excess, _model_tickets
+
+    engineers = [engineer(1), engineer(2)]
+    tickets = [
+        ticket(1, window=(at(10), at(11)), duration=30, priority=1),
+        ticket(2, window=(at(10), at(11)), duration=30, priority=2),
+        ticket(3, window=(at(10), at(11)), duration=30, priority=3),
+    ]
+    _, modelled, _ = _model_tickets(tickets, engineers, DAY)
+    assert _capacity_excess(modelled, engineers) == frozenset()
+
+
+def test_capacity_excess_ticket_dropped_for_free() -> None:
+    """End to end, with real (car) travel between the three addresses close to the standard
+    20-minute allowance `_capacity_excess` assumes: `solve_day` drops the same, single
+    least-urgent ticket that `_capacity_excess` flags on the window/shift/duration alone — the
+    group really is unassignable no matter what routing finds, not merely unlucky."""
+    from src.service.solver import _capacity_excess, _model_tickets
+
+    engineers = [engineer(1)]
+    tickets = [
+        ticket(1, window=(at(10), at(11)), duration=30, priority=1),
+        ticket(2, window=(at(10), at(11)), duration=30, priority=2),
+        ticket(3, window=(at(10), at(11)), duration=30, priority=3),
+    ]
+    plan = solve(tickets, engineers, line([0, 0, 20, 40]))
+    assert plan.unassigned == (3,)
+    _, modelled, _ = _model_tickets(tickets, engineers, DAY)
+    assert _capacity_excess(modelled, engineers) == frozenset({3})
+
+
 # --- Ступенчатая (лексикографическая) оптимизация ---
 
 
@@ -427,9 +494,15 @@ def _lex_vs_single_pass(
     engineers: Sequence[Engineer],
     matrices: Mapping[VehicleType, TravelMatrix],
 ) -> tuple[DayPlan, DayPlan]:
-    from src.service.solver import _model_tickets, _solve_lexicographic, _solve_single_pass_weighted
+    from src.service.solver import (
+        _capacity_excess,
+        _model_tickets,
+        _solve_lexicographic,
+        _solve_single_pass_weighted,
+    )
 
     midnight, modelled, unassigned = _model_tickets(tickets, engineers, DAY)
+    capacity_excess = _capacity_excess(modelled, engineers)
     lex = _solve_lexicographic(
         tickets,
         engineers,
@@ -439,6 +512,7 @@ def _lex_vs_single_pass(
         midnight=midnight,
         time_limit=LIMIT,
         started=perf_time.monotonic(),
+        capacity_excess=capacity_excess,
     )
     base = _solve_single_pass_weighted(
         tickets,
@@ -449,6 +523,7 @@ def _lex_vs_single_pass(
         midnight=midnight,
         time_limit=LIMIT,
         started=perf_time.monotonic(),
+        capacity_excess=capacity_excess,
     )
     assert_feasible(lex, tickets, engineers, matrices)
     if base.status is not SolveStatus.INFEASIBLE:
@@ -501,7 +576,9 @@ def test_bound_coverage_and_bound_fleet_actually_cut() -> None:
     matrices = line([0, 0, 1, 1])
     _, modelled, _ = _model_tickets(tickets, engineers, DAY)
 
-    impossible_coverage = _build_model(engineers, matrices, modelled, penalty_floor=1)
+    impossible_coverage = _build_model(
+        engineers, matrices, modelled, penalty_floor=1, capacity_excess=frozenset()
+    )
     _set_costs(
         impossible_coverage, engineers, arc_cb=lambda _e: impossible_coverage.zero_cb, fixed_cost=0
     )
@@ -511,7 +588,9 @@ def test_bound_coverage_and_bound_fleet_actually_cut() -> None:
         is None
     )
 
-    full_coverage_no_fleet = _build_model(engineers, matrices, modelled, penalty_floor=1)
+    full_coverage_no_fleet = _build_model(
+        engineers, matrices, modelled, penalty_floor=1, capacity_excess=frozenset()
+    )
     _set_costs(
         full_coverage_no_fleet,
         engineers,
