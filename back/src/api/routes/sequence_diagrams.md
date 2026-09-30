@@ -362,7 +362,7 @@ sequenceDiagram
             H-->>Client: 400 {message}
         else
             Svc->>Svc: generate_engineers(engineers, morning_share, evening_share, seed, office, удалённые города, районы заявок)
-            Svc->>Repo: BEGIN; INSERT engineer_sets (region_id, name, kind='generated', ...) RETURNING id
+            Svc->>Repo: BEGIN#59; INSERT engineer_sets (region_id, name, kind='generated', ...) RETURNING id
             alt name уже занято в регионе (в т.ч. "default")
                 DB-->>Repo: нарушение уникальности
                 Repo-->>Svc: Conflict → ROLLBACK
@@ -378,7 +378,7 @@ sequenceDiagram
                 API->>H: DatabaseFailure
                 H-->>Client: 500 без тела (набор не создан)
             else
-                Repo->>DB: INSERT engineers (engineer_set_id, ...) ×engineers; COMMIT
+                Repo->>DB: INSERT engineers (engineer_set_id, ...) ×engineers#59; COMMIT
                 Repo-->>Svc: EngineerSet
                 Svc->>Svc: лог engineer_set_created (region, engineer_set_id, engineers)
                 Svc-->>API: EngineerSet
@@ -434,7 +434,7 @@ sequenceDiagram
                 H-->>Client: 409 без тела
             else kind = generated
                 Repo-->>Svc: EngineerSet (kind=generated)
-                Svc->>Repo: BEGIN; DELETE replan_events, assignments, plans, engineers, engineer_sets WHERE engineer_set_id
+                Svc->>Repo: BEGIN#59; DELETE replan_events, assignments, plans, engineers, engineer_sets WHERE engineer_set_id
                 alt БД отклонила запрос
                     DB-->>Repo: ошибка → ROLLBACK
                     Repo-->>Svc: DatabaseFailure
@@ -1008,7 +1008,7 @@ sequenceDiagram
             H-->>Client: 409 без тела
         else status=done|failed
             PlanRepo-->>Svc: план (status=done|failed)
-            Svc->>PlanRepo: BEGIN; дерево потомков plan_id (WITH RECURSIVE по parent_plan_id); DELETE replan_events, assignments, plans WHERE id IN дерево
+            Svc->>PlanRepo: BEGIN#59; дерево потомков plan_id (WITH RECURSIVE по parent_plan_id)#59; DELETE replan_events, assignments, plans WHERE id IN дерево
             alt БД отклонила запрос
                 DB-->>PlanRepo: ошибка → ROLLBACK
                 PlanRepo-->>Svc: DatabaseFailure
