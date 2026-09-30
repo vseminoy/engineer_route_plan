@@ -6,7 +6,7 @@
  */
 
 /**
- * Обязательная метрика, участвующая в сравнении плана с baseline; idle_time не сравнивается (метрика только для отображения)
+ * Метрика, участвующая в сравнении плана с baseline: engineers_used и total_distance_km обязательны, unassigned_count — дополнительно; idle_time не сравнивается (метрика только для отображения)
  */
 export type PlanComparisonMetric = typeof PlanComparisonMetric[keyof typeof PlanComparisonMetric];
 
@@ -14,4 +14,5 @@ export type PlanComparisonMetric = typeof PlanComparisonMetric[keyof typeof Plan
 export const PlanComparisonMetric = {
   engineers_used: 'engineers_used',
   total_distance_km: 'total_distance_km',
+  unassigned_count: 'unassigned_count',
 } as const;

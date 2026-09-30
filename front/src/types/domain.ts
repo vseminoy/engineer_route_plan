@@ -158,6 +158,7 @@ export interface DonePlan {
 export interface PlanCompare {
   engineersUsed: { main: number; baseline: number; delta: number };
   totalDistanceKm: { main: number; baseline: number; delta: number };
+  unassignedCount: { main: number; baseline: number; delta: number };
 }
 
 // The three replan events the dispatcher can raise from the UI. The contract

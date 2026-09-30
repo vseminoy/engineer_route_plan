@@ -2,7 +2,7 @@ import { MetricComparisonCard } from './MetricComparisonCard';
 import { IdleTimeBlock } from './IdleTimeBlock';
 import { OptionalMetricsBlock } from './OptionalMetricsBlock';
 import { usePlanCompare } from '@/queries/usePlanCompare';
-import { formatKm, formatSignedDelta } from '@/lib/format';
+import { formatCount, formatKm, formatSignedDelta } from '@/lib/format';
 import { describeError } from '@/lib/labels';
 import type { DonePlan, EngineerRoster } from '@/types/domain';
 
@@ -25,9 +25,9 @@ export function MetricsTab({ plan, roster, engineerSetName }: Props) {
         <>
           <MetricComparisonCard
             label="Задействовано исполнителей"
-            mainValue={String(compare.engineersUsed.main)}
-            baselineValue={String(compare.engineersUsed.baseline)}
-            deltaLabel={formatSignedDelta(compare.engineersUsed.delta, (v) => String(v))}
+            mainValue={formatCount(compare.engineersUsed.main)}
+            baselineValue={formatCount(compare.engineersUsed.baseline)}
+            deltaLabel={formatSignedDelta(compare.engineersUsed.delta, formatCount)}
             good={compare.engineersUsed.delta <= 0}
           />
           <MetricComparisonCard
@@ -36,6 +36,13 @@ export function MetricsTab({ plan, roster, engineerSetName }: Props) {
             baselineValue={formatKm(compare.totalDistanceKm.baseline)}
             deltaLabel={formatSignedDelta(compare.totalDistanceKm.delta, formatKm)}
             good={compare.totalDistanceKm.delta <= 0}
+          />
+          <MetricComparisonCard
+            label="Неназначено заявок"
+            mainValue={formatCount(compare.unassignedCount.main)}
+            baselineValue={formatCount(compare.unassignedCount.baseline)}
+            deltaLabel={formatSignedDelta(compare.unassignedCount.delta, formatCount)}
+            good={compare.unassignedCount.delta <= 0}
           />
         </>
       ) : compareQuery.isError ? (

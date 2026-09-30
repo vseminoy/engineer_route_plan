@@ -4,6 +4,7 @@
 
 - [`PlanScreen` — переходы `running`/`done`/`failed`](#planscreen--переходы-runningdonefailed)
 - [`ReplanTab` — форма события перепланирования](#replantab--форма-события-перепланирования)
+- [`MetricsTab` — карточка сравнения `unassignedCount`](#metricstab--карточка-сравнения-unassignedcount)
 
 ---
 
@@ -39,3 +40,15 @@
 | `rejects submitting with no engineer selected, and does not call replan` | Событие «Недоступность бригады», бригада не выбрана | Ошибка схемы под полем выбора бригады, `replan` не вызван |
 | `submits a valid engineer_unavailable event for the selected engineer` | Выбрана бригада из `plan.engineers` | `replan(42, {eventType: 'engineer_unavailable', engineerId: 3})`, `onReplanned` вызван |
 | `shows a 404 as "not found" when the engineer does not exist` | `replan` отклоняется `ApiError(404)` | Общий текст «Не найдено» (у операции нет отдельного словаря на этот код) |
+
+## `MetricsTab` — карточка сравнения `unassignedCount`
+
+Файл: `MetricsTab.test.tsx` (`vitest` + `@testing-library/react`).
+
+> `usePlanCompare` замокан целиком (`vi.mock`) — компонент только рендерит то, что вернул
+> хук, TanStack Query и `usePlan`/`useUiStore` за ним не участвуют.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `renders a third card for unassignedCount, alongside the two mandatory metrics` | `usePlanCompare` вернул `data` с `unassignedCount: {main: 2, baseline: 6, delta: -4}` | Карточка «Неназначено заявок» с `main=2`, `baseline: 6` |
+| `marks a higher unassigned count than the baseline as a regression, not an improvement` | `unassignedCount: {main: 6, baseline: 2, delta: 4}` | У карточки «Неназначено заявок» класс `metric-delta--bad`, не `metric-delta--good` |

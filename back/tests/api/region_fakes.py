@@ -223,6 +223,7 @@ class FakePlanReader:
             ComparisonEntryRead(
                 metric="total_distance_km", main=187.3, baseline=244.9, delta=-57.6
             ),
+            ComparisonEntryRead(metric="unassigned_count", main=6, baseline=2, delta=4),
         )
         self.compare_error = compare_error
         self.delete_error = delete_error

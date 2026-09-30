@@ -40,7 +40,7 @@
  │   │   │   ├─ <UnassignedListTab>
  │   │   │   │   └─ <UnassignedTicketCard ticket reasonText onClick />
  │   │   │   ├─ <MetricsTab>
- │   │   │   │   ├─ <MetricComparisonCard main baseline label />  (x2: исполнители, пробег)
+ │   │   │   │   ├─ <MetricComparisonCard main baseline label />  (x3: исполнители, пробег, неназначено заявок)
  │   │   │   │   └─ <OptionalMetricsBlock loadBalance? planStability? />
  │   │   │   └─ <ReplanTab>
  │   │   │       ├─ <NewUrgentTicketForm />
@@ -111,7 +111,7 @@
 
 ### 3.6. `MetricsTab`
 
-- `MetricComparisonCard` ×2 (обязательные метрики, FR-11/FR-12): «Задействовано исполнителей» (основной план vs baseline), «Суммарный пробег» (основной план vs baseline), явное дельта-значение и знак улучшения (зелёный/красный индикатор).
+- `MetricComparisonCard` ×3: две обязательные (FR-11/FR-12) — «Задействовано исполнителей» (основной план vs baseline), «Суммарный пробег» (основной план vs baseline); плюс «Неназначено заявок» (основной план vs baseline, сравнение сверх FR-11/FR-12) — во всех трёх явное дельта-значение и знак улучшения (зелёный/красный индикатор).
 - `IdleTimeBlock` (обязательный, FR-23): простой по каждой бригаде (`idle_time_by_engineer_min`) — только отображение, без сравнения с baseline и без индикатора «лучше/хуже» (метрика не оптимизируется).
 - `OptionalMetricsBlock` (если backend вернул поля `load_balance`, `plan_stability`): распределение загрузки по бригадам (мини-барчарт), значение `PlanStability` после последнего перепланирования.
 

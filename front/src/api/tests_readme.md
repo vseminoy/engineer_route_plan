@@ -49,7 +49,7 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `reshapes the compare_plan entries into the fixed engineersUsed/totalDistanceKm pair` | Массив `PlanComparisonEntry` из двух записей (`engineers_used`, `total_distance_km`) | Доменный `PlanCompare` — `{main, baseline, delta}` для каждой из двух метрик |
+| `reshapes the compare_plan entries into the fixed engineersUsed/totalDistanceKm/unassignedCount triple` | Массив `PlanComparisonEntry` из трёх записей (`engineers_used`, `total_distance_km`, `unassigned_count`) | Доменный `PlanCompare` — `{main, baseline, delta}` для каждой из трёх метрик |
 | `throws if the response is missing a mandatory metric` | Массив с одной записью (`total_distance_km` отсутствует) | Функция бросает исключение — ответ backend, отступающий от контракта, не должен тихо превратиться в `undefined` |
 
 ## `src/api/mappers.ts` — `mapPlanReplanResult`

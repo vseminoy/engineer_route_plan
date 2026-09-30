@@ -11,8 +11,9 @@ first visit, and from finishing the last visit to shift end, is not idle time: t
 brigade has no ticket waiting on it there, so nothing to be idle between.
 
 `compare` (`GET /api/v1/plan/{plan_id}/compare`) reads two plans through `get` and
-diffs their mandatory metrics (`engineers_used`, `total_distance_km`) — `idle_time` is
-excluded, display-only by the same rule that keeps it out of the solver's objective.
+diffs three metrics — the mandatory `engineers_used`, `total_distance_km`, plus
+`unassigned_count` — `idle_time` is excluded, display-only by the same rule that keeps
+it out of the solver's objective.
 """
 
 from collections.abc import Awaitable, Callable, Sequence
@@ -148,7 +149,8 @@ class PlanReader:
         """Both plans go through `get`, one at a time — `plan_id` first, so a problem
         with it (not found, not `done`) never touches `baseline_plan_id` at all. Both
         must share `engineer_set_id`: comparing plans of different sets is meaningless
-        (different brigade counts)."""
+        (different brigade counts). `unassigned_count` is a plain metric diff like the
+        other two — the fewer unassigned tickets left over, the better."""
         main = await self.get(plan_id)
         _require_done(main)
         baseline = await self.get(baseline_plan_id)
@@ -177,6 +179,12 @@ class PlanReader:
                     main.metrics.total_distance_km,
                     baseline.metrics.total_distance_km,
                     round(main.metrics.total_distance_km - baseline.metrics.total_distance_km, 1),
+                ),
+                (
+                    "unassigned_count",
+                    main.metrics.unassigned_count,
+                    baseline.metrics.unassigned_count,
+                    main.metrics.unassigned_count - baseline.metrics.unassigned_count,
                 ),
             )
         )

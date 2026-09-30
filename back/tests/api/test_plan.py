@@ -525,6 +525,7 @@ def test_compare_plan_returns_entries() -> None:
             ComparisonEntryRead(
                 metric="total_distance_km", main=187.3, baseline=244.9, delta=-57.6
             ),
+            ComparisonEntryRead(metric="unassigned_count", main=6, baseline=2, delta=4),
         )
     )
 
@@ -534,6 +535,7 @@ def test_compare_plan_returns_entries() -> None:
     assert response.json() == [
         {"metric": "engineers_used", "main": 9, "baseline": 13, "delta": -4},
         {"metric": "total_distance_km", "main": 187.3, "baseline": 244.9, "delta": -57.6},
+        {"metric": "unassigned_count", "main": 6, "baseline": 2, "delta": 4},
     ]
     assert reader.compare_calls == [(1, 2)]
 

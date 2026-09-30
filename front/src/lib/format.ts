@@ -45,3 +45,8 @@ export function formatSignedDelta(value: number, unit: (v: number) => string): s
   const sign = value > 0 ? '+' : value < 0 ? '−' : '';
   return `${sign}${unit(Math.abs(value))}`;
 }
+
+// A bare count with no unit (engineers, tickets) — the identity `unit` for formatSignedDelta.
+export function formatCount(value: number): string {
+  return String(value);
+}

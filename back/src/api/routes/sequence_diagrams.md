@@ -1029,8 +1029,9 @@ sequenceDiagram
 ## `GET /api/v1/plan/{plan_id}/compare`
 
 Сравнивает `metrics` двух планов (`plan_id` из пути и `baseline_plan_id` из
-query) по каждой обязательной метрике — `engineers_used`, `total_distance_km`
-— и отвечает разницей. Оба плана читаются тем же методом, что отвечает на
+query) по трём метрикам — обязательным `engineers_used`, `total_distance_km`
+и дополнительно `unassigned_count` — и отвечает разницей. Оба плана читаются
+тем же методом, что отвечает на
 `GET /api/v1/plan/{plan_id}` (`Svc.get`), по одному за раз: сперва `plan_id`,
 и только если он готов — `baseline_plan_id`, так что проблема с главным
 планом никогда не трогает baseline вовсе. План не готов к сравнению, если у
@@ -1089,9 +1090,9 @@ sequenceDiagram
                 API->>H: InvalidInput
                 H-->>Client: 400 {message}
             else оба плана done, тот же engineer_set_id
-                Svc->>Svc: [engineers_used, total_distance_km] с delta = main − baseline
-                Svc-->>API: (PlanComparisonEntry, PlanComparisonEntry)
-                API-->>Client: 200 [PlanComparisonEntry, PlanComparisonEntry]
+                Svc->>Svc: [engineers_used, total_distance_km, unassigned_count] с delta = main − baseline
+                Svc-->>API: (PlanComparisonEntry ×3)
+                API-->>Client: 200 [PlanComparisonEntry ×3]
             end
         end
     end

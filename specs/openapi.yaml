@@ -577,11 +577,12 @@ paths:
   /api/v1/plan/{plan_id}/compare:
     get:
       operationId: compare_plan
-      summary: Сравнить обязательные метрики плана с baseline-планом
+      summary: Сравнить метрики плана с baseline-планом
       description: >-
         Сравнивает план из пути запроса (обычно `algorithm=or_tools`) с
         baseline-планом (`baseline_plan_id`, обычно `algorithm=baseline_fcfs`)
-        по обязательным метрикам (`engineers_used`, `total_distance_km`) —
+        по трём метрикам — обязательным `engineers_used`, `total_distance_km`
+        и дополнительно `unassigned_count` (число неназначенных заявок) —
         по одной записи на каждую. Оба плана должны быть в состоянии
         `status=done`: метрики строящегося или не сложившегося плана не
         определены. Оба плана должны быть одного набора бригад
@@ -607,7 +608,7 @@ paths:
             maximum: 9223372036854775807
       responses:
         "200":
-          description: Сравнение по каждой обязательной метрике, в порядке engineers_used, total_distance_km
+          description: Сравнение по каждой метрике, в порядке engineers_used, total_distance_km, unassigned_count
           headers:
             X-Request-ID:
               $ref: "./common.yaml#/components/headers/X-Request-ID"
@@ -1333,9 +1334,10 @@ components:
 
     PlanComparisonMetric:
       type: string
-      enum: [engineers_used, total_distance_km]
+      enum: [engineers_used, total_distance_km, unassigned_count]
       description: >-
-        Обязательная метрика, участвующая в сравнении плана с baseline;
+        Метрика, участвующая в сравнении плана с baseline: engineers_used и
+        total_distance_km обязательны, unassigned_count — дополнительно;
         idle_time не сравнивается (метрика только для отображения)
 
     PlanComparisonEntry:

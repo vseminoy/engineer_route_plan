@@ -5,6 +5,7 @@ import type {
   EngineerSet as ApiEngineerSet,
   Plan as GeneratedPlan,
   PlanComparisonEntry,
+  PlanComparisonMetric,
   PlanDiff as ApiPlanDiff,
   PlanMetrics as ApiPlanMetrics,
   PlanReplanResult,
@@ -151,19 +152,24 @@ export function mapPlan(api: GeneratedPlan): Plan {
   return base;
 }
 
-// GET /plan/{id}/compare returns one entry per mandatory metric
-// (engineers_used, total_distance_km); reshaped into the fixed pair the
-// Metrics tab renders instead of an array the caller has to search.
+// GET /plan/{id}/compare returns one entry per metric — the mandatory
+// engineers_used/total_distance_km, plus unassigned_count; reshaped into the
+// fixed triple the Metrics tab renders instead of an array the caller has to
+// search.
 export function mapPlanCompare(entries: PlanComparisonEntry[]): PlanCompare {
   const byMetric = new Map(entries.map((e) => [e.metric, e]));
   const engineersUsed = byMetric.get('engineers_used');
   const totalDistanceKm = byMetric.get('total_distance_km');
-  if (!engineersUsed || !totalDistanceKm) {
-    throw new Error('compare_plan response is missing a mandatory metric');
+  const unassignedCount = byMetric.get('unassigned_count');
+  if (!engineersUsed || !totalDistanceKm || !unassignedCount) {
+    const required: PlanComparisonMetric[] = ['engineers_used', 'total_distance_km', 'unassigned_count'];
+    const missing = required.filter((m) => !byMetric.get(m));
+    throw new Error(`compare_plan response is missing metric(s): ${missing.join(', ')}`);
   }
   return {
     engineersUsed: { main: engineersUsed.main, baseline: engineersUsed.baseline, delta: engineersUsed.delta },
-    totalDistanceKm: { main: totalDistanceKm.main, baseline: totalDistanceKm.baseline, delta: totalDistanceKm.delta }
+    totalDistanceKm: { main: totalDistanceKm.main, baseline: totalDistanceKm.baseline, delta: totalDistanceKm.delta },
+    unassignedCount: { main: unassignedCount.main, baseline: unassignedCount.baseline, delta: unassignedCount.delta }
   };
 }
 

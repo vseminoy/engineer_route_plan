@@ -209,20 +209,27 @@ describe('mapPlan', () => {
 });
 
 describe('mapPlanCompare', () => {
-  it('reshapes the compare_plan entries into the fixed engineersUsed/totalDistanceKm pair', () => {
+  it('reshapes the compare_plan entries into the fixed engineersUsed/totalDistanceKm/unassignedCount triple', () => {
     const entries: PlanComparisonEntry[] = [
       { metric: 'engineers_used', main: 9, baseline: 13, delta: -4 },
-      { metric: 'total_distance_km', main: 187.3, baseline: 244.9, delta: -57.6 }
+      { metric: 'total_distance_km', main: 187.3, baseline: 244.9, delta: -57.6 },
+      { metric: 'unassigned_count', main: 6, baseline: 2, delta: 4 }
     ];
 
     expect(mapPlanCompare(entries)).toEqual({
       engineersUsed: { main: 9, baseline: 13, delta: -4 },
-      totalDistanceKm: { main: 187.3, baseline: 244.9, delta: -57.6 }
+      totalDistanceKm: { main: 187.3, baseline: 244.9, delta: -57.6 },
+      unassignedCount: { main: 6, baseline: 2, delta: 4 }
     });
   });
 
   it('throws if the response is missing a mandatory metric', () => {
-    expect(() => mapPlanCompare([{ metric: 'engineers_used', main: 9, baseline: 13, delta: -4 }])).toThrow();
+    expect(() =>
+      mapPlanCompare([
+        { metric: 'engineers_used', main: 9, baseline: 13, delta: -4 },
+        { metric: 'unassigned_count', main: 6, baseline: 2, delta: 4 }
+      ])
+    ).toThrow();
   });
 });
 

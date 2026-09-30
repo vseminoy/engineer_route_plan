@@ -972,15 +972,15 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_compare_returns_engineers_used_and_total_distance_km` | план (`engineers_used=2, total_distance_km=30.0`), baseline (`engineers_used=3, total_distance_km=40.0`), оба `done` | список из 2 записей, `metric` по порядку `engineers_used`, `total_distance_km`; `main`/`baseline` — значения соответствующего плана |
-| `test_compare_delta_is_main_minus_baseline` | `total_distance_km`: main 30.0, baseline 40.0 | `delta == -10.0` у записи `total_distance_km` |
-| `test_compare_excludes_idle_time` | оба плана `done` | среди `metric` двух записей ответа нет `idle_time` |
+| `test_compare_returns_all_three_metrics` | план (`engineers_used=2, total_distance_km=30.0, unassigned_count=1`), baseline (`engineers_used=3, total_distance_km=40.0, unassigned_count=4`), оба `done` | список из 3 записей, `metric` по порядку `engineers_used`, `total_distance_km`, `unassigned_count`; `main`/`baseline` — значения соответствующего плана |
+| `test_compare_delta_is_main_minus_baseline` | `total_distance_km`: main 30.0, baseline 40.0; `unassigned_count`: main 1, baseline 4 | `delta == -10.0` у записи `total_distance_km`; `delta == -3` у записи `unassigned_count` |
+| `test_compare_excludes_idle_time` | оба плана `done` | среди `metric` трёх записей ответа нет `idle_time` |
 | `test_compare_main_not_found` | `get_plan(plan_id)` вернул `None` | `NotFound(reason="plan_not_found", params={"plan_id": ...})`; план-baseline не читается |
 | `test_compare_baseline_not_found` | план из пути `done`, `get_plan(baseline_plan_id)` вернул `None` | `NotFound(reason="plan_not_found", params={"plan_id": <baseline_plan_id>})` |
 | `test_compare_main_not_ready` (параметризован: `status="running"`, `status="failed"`) | план из пути не `done` | `InvalidInput(reason="plan_not_ready")`; план-baseline не читается |
 | `test_compare_baseline_not_ready` (параметризован: `status="running"`, `status="failed"`) | план из пути `done`, план-baseline не `done` | `InvalidInput(reason="plan_not_ready")` |
 | `test_compare_engineer_set_mismatch` | план из пути `done` с `engineer_set_id=1`, план-baseline `done` с `engineer_set_id=2` | `InvalidInput(reason="engineer_set_mismatch")`; метрики не считаются |
-| `test_compare_same_engineer_set_ok` | оба плана `done` с одним и тем же `engineer_set_id` | список из 2 записей, как в остальных сценариях `compare` |
+| `test_compare_same_engineer_set_ok` | оба плана `done` с одним и тем же `engineer_set_id` | список из 3 записей, как в остальных сценариях `compare` |
 | `test_compare_dependency_unavailable_propagates` | `get_plan` любого из двух планов поднимает `DependencyUnavailable` | ошибка поднята как есть |
 
 ## `src/service/replan.py` — перепланирование по событию (Contract Net)
@@ -1409,7 +1409,7 @@
 | `test_delete_plan_running_conflict` | `reader.delete` поднимает `Conflict(reason="plan_running")` | `409` без тела |
 | `test_delete_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `reader.delete` поднимает эту ошибку | `503` \| `500` без тела |
 | `test_delete_plan_failed_logged` | `reader.delete` поднимает `NotFound`/`Conflict` | запись `plan_delete_failed` уровня `warning` с `reason` |
-| `test_compare_plan_returns_entries` | `reader.compare` возвращает 2 записи (`engineers_used`, `total_distance_km`) | `200`, тело — массив `PlanComparisonEntry` в том же порядке, поля `metric`/`main`/`baseline`/`delta` как вернул сервис |
+| `test_compare_plan_returns_entries` | `reader.compare` возвращает 3 записи (`engineers_used`, `total_distance_km`, `unassigned_count`) | `200`, тело — массив `PlanComparisonEntry` в том же порядке, поля `metric`/`main`/`baseline`/`delta` как вернул сервис |
 | `test_compare_plan_invalid_ids` (параметризован: `plan_id=0`, `baseline_plan_id=0`) | путь или query-параметр вне 1..2^63−1 | `400` |
 | `test_compare_plan_missing_baseline_query` | запрос без `baseline_plan_id` | `400` |
 | `test_compare_plan_not_found` | `reader.compare` поднимает `NotFound` | `404` без тела |
@@ -1562,7 +1562,7 @@
 > регион поднимают `InvalidInput` — так позитивные кейсы проверяют форму успешных ответов
 > без БД. Чтение плана возвращает `metrics`, заполненный по той же схеме, что и
 > `engineers`/`unassigned`; сравнение планов (`compare`) возвращает фиксированный список из
-> двух корректных записей независимо от переданных `plan_id`/`baseline_plan_id`.
+> трёх корректных записей независимо от переданных `plan_id`/`baseline_plan_id`.
 
 | Test | Scenario | Expected result |
 |---|---|---|

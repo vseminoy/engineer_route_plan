@@ -950,6 +950,11 @@ export type deletePlanResponse204 = {
   status: 204
 }
 
+export type deletePlanResponse400 = {
+  data: ValidationError
+  status: 400
+}
+
 export type deletePlanResponse404 = {
   data: void
   status: 404
@@ -973,7 +978,7 @@ export type deletePlanResponse503 = {
 export type deletePlanResponseSuccess = (deletePlanResponse204) & {
   headers: Headers;
 };
-export type deletePlanResponseError = (deletePlanResponse404 | deletePlanResponse409 | deletePlanResponse500 | deletePlanResponse503) & {
+export type deletePlanResponseError = (deletePlanResponse400 | deletePlanResponse404 | deletePlanResponse409 | deletePlanResponse500 | deletePlanResponse503) & {
   headers: Headers;
 };
 
@@ -1062,8 +1067,8 @@ export const getComparePlanUrl = (planId: number,
 }
 
 /**
- * Сравнивает план из пути запроса (обычно `algorithm=or_tools`) с baseline-планом (`baseline_plan_id`, обычно `algorithm=baseline_fcfs`) по обязательным метрикам (`engineers_used`, `total_distance_km`) — по одной записи на каждую. Оба плана должны быть в состоянии `status=done`: метрики строящегося или не сложившегося плана не определены. Оба плана должны быть одного набора бригад (`engineer_set_id`) — иначе сравнение бессмысленно: у планов разных наборов разное число бригад. `idle_time` в сравнение не входит — она только для отображения (см. `PlanMetrics.idle_time_by_engineer_min`).
- * @summary Сравнить обязательные метрики плана с baseline-планом
+ * Сравнивает план из пути запроса (обычно `algorithm=or_tools`) с baseline-планом (`baseline_plan_id`, обычно `algorithm=baseline_fcfs`) по трём метрикам — обязательным `engineers_used`, `total_distance_km` и дополнительно `unassigned_count` (число неназначенных заявок) — по одной записи на каждую. Оба плана должны быть в состоянии `status=done`: метрики строящегося или не сложившегося плана не определены. Оба плана должны быть одного набора бригад (`engineer_set_id`) — иначе сравнение бессмысленно: у планов разных наборов разное число бригад. `idle_time` в сравнение не входит — она только для отображения (см. `PlanMetrics.idle_time_by_engineer_min`).
+ * @summary Сравнить метрики плана с baseline-планом
  */
 export const comparePlan = async (planId: number,
     params: ComparePlanParams, options?: RequestInit): Promise<comparePlanResponse> => {

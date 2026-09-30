@@ -511,6 +511,7 @@ class PlanMetrics(BaseModel):
 class PlanComparisonMetric(StrEnum):
     engineers_used = "engineers_used"
     total_distance_km = "total_distance_km"
+    unassigned_count = "unassigned_count"
 
 
 class PlanComparisonEntry(BaseModel):

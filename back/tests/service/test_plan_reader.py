@@ -524,9 +524,9 @@ def _multi_repo(
     baseline_engineer_set_id: int = 100,
 ) -> FakeRepo:
     """Both plans built for engineer set 100 (5 brigades) by default — `compare` requires
-    a shared set. Plan 1 (`main`) uses 2 of them, 30.0 km total; plan 2 (`baseline`) the
-    other 3, 40.0 km total. `plan_ids` drops one of the two plans out of `get_plan`'s
-    dict, as if it never existed."""
+    a shared set. Plan 1 (`main`) uses 2 of them, 30.0 km total, 1 unassigned ticket;
+    plan 2 (`baseline`) the other 3, 40.0 km total, 2 unassigned tickets. `plan_ids`
+    drops one of the two plans out of `get_plan`'s dict, as if it never existed."""
     plans = {
         1: PlanRow(
             id=1,
@@ -559,23 +559,27 @@ def _multi_repo(
             1: [
                 _assigned(10, 1, 1, distance_m=15000),
                 _assigned(11, 2, 1, distance_m=15000),
+                _unassigned(12),
             ],
             2: [
                 _assigned(20, 3, 1, distance_m=10000),
                 _assigned(21, 4, 1, distance_m=15000),
                 _assigned(22, 5, 1, distance_m=15000),
+                _unassigned(23),
+                _unassigned(24),
             ],
         },
     )
 
 
-async def test_compare_returns_engineers_used_and_total_distance_km() -> None:
+async def test_compare_returns_all_three_metrics() -> None:
     entries = await _reader(_multi_repo()).compare(1, 2)
 
-    assert [e.metric for e in entries] == ["engineers_used", "total_distance_km"]
-    engineers_used, total_distance_km = entries
+    assert [e.metric for e in entries] == ["engineers_used", "total_distance_km", "unassigned_count"]
+    engineers_used, total_distance_km, unassigned_count = entries
     assert (engineers_used.main, engineers_used.baseline) == (2, 3)
     assert (total_distance_km.main, total_distance_km.baseline) == (30.0, 40.0)
+    assert (unassigned_count.main, unassigned_count.baseline) == (1, 2)
 
 
 async def test_compare_delta_is_main_minus_baseline() -> None:
@@ -584,6 +588,7 @@ async def test_compare_delta_is_main_minus_baseline() -> None:
     by_metric = {e.metric: e for e in entries}
     assert by_metric["total_distance_km"].delta == -10.0
     assert by_metric["engineers_used"].delta == -1
+    assert by_metric["unassigned_count"].delta == -1
 
 
 async def test_compare_excludes_idle_time() -> None:
@@ -603,7 +608,7 @@ async def test_compare_engineer_set_mismatch() -> None:
 
 async def test_compare_same_engineer_set_ok() -> None:
     entries = await _reader(_multi_repo(baseline_engineer_set_id=100)).compare(1, 2)
-    assert [e.metric for e in entries] == ["engineers_used", "total_distance_km"]
+    assert [e.metric for e in entries] == ["engineers_used", "total_distance_km", "unassigned_count"]
 
 
 async def test_compare_main_not_found() -> None:

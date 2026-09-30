@@ -659,8 +659,8 @@ export const DeletePlanResponse = zod.void()
 
 
 /**
- * Сравнивает план из пути запроса (обычно `algorithm=or_tools`) с baseline-планом (`baseline_plan_id`, обычно `algorithm=baseline_fcfs`) по обязательным метрикам (`engineers_used`, `total_distance_km`) — по одной записи на каждую. Оба плана должны быть в состоянии `status=done`: метрики строящегося или не сложившегося плана не определены. Оба плана должны быть одного набора бригад (`engineer_set_id`) — иначе сравнение бессмысленно: у планов разных наборов разное число бригад. `idle_time` в сравнение не входит — она только для отображения (см. `PlanMetrics.idle_time_by_engineer_min`).
- * @summary Сравнить обязательные метрики плана с baseline-планом
+ * Сравнивает план из пути запроса (обычно `algorithm=or_tools`) с baseline-планом (`baseline_plan_id`, обычно `algorithm=baseline_fcfs`) по трём метрикам — обязательным `engineers_used`, `total_distance_km` и дополнительно `unassigned_count` (число неназначенных заявок) — по одной записи на каждую. Оба плана должны быть в состоянии `status=done`: метрики строящегося или не сложившегося плана не определены. Оба плана должны быть одного набора бригад (`engineer_set_id`) — иначе сравнение бессмысленно: у планов разных наборов разное число бригад. `idle_time` в сравнение не входит — она только для отображения (см. `PlanMetrics.idle_time_by_engineer_min`).
+ * @summary Сравнить метрики плана с baseline-планом
  */
 export const comparePlanPathPlanIdMax = 9223372036854776000;
 
@@ -679,7 +679,7 @@ export const ComparePlanQueryParams = zod.strictObject({
 })
 
 export const ComparePlanResponseItem = zod.strictObject({
-  "metric": zod.enum(['engineers_used', 'total_distance_km']).describe('Обязательная метрика, участвующая в сравнении плана с baseline; idle_time не сравнивается (метрика только для отображения)'),
+  "metric": zod.enum(['engineers_used', 'total_distance_km', 'unassigned_count']).describe('Метрика, участвующая в сравнении плана с baseline: engineers_used и total_distance_km обязательны, unassigned_count — дополнительно; idle_time не сравнивается (метрика только для отображения)'),
   "main": zod.number().describe('Значение метрики у плана из пути запроса'),
   "baseline": zod.number().describe('Значение той же метрики у baseline-плана'),
   "delta": zod.number().describe('main минус baseline; отрицательное значение — план лучше baseline')
