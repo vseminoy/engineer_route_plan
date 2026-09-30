@@ -1,7 +1,7 @@
 import { SkillIcons } from './SkillIcons';
 import { VehicleIcon } from './VehicleIcon';
 import { EngineerTimeline } from './EngineerTimeline';
-import { formatKm, formatMinutes, minutesToTimeLabel, timeOnly } from '@/lib/format';
+import { formatKm, formatMinutes, minutesSinceMidnight, minutesToTimeLabel, timeOnly } from '@/lib/format';
 import type { EngineerRoster, EngineerRoute, TicketSummary } from '@/types/domain';
 
 export type DiffTag = 'new' | 'changed';
@@ -70,6 +70,8 @@ export function EngineerCard({ engineer, roster, color, ticketById, diffTags, se
               {ticket && (
                 <div className="stop-row__window">
                   окно {minutesToTimeLabel(ticket.windowStartMin)}–{minutesToTimeLabel(ticket.windowEndMin)}
+                  {' · '}в пути {stop.travelTimeMin} мин · на объекте {ticket.durationMin} мин · выезд{' '}
+                  {minutesToTimeLabel(minutesSinceMidnight(stop.plannedArrival) + ticket.durationMin)}
                 </div>
               )}
             </div>

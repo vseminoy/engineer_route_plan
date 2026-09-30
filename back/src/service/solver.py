@@ -193,55 +193,95 @@ def _model_tickets(
     return midnight, modelled, unassigned
 
 
-def _capacity_excess(modelled: list[_Modelled], engineers: Sequence[Engineer]) -> frozenset[int]:
-    """Ticket ids that no arrangement of brigades could ever all serve together — grouped by
-    (skill, window). Only a ticket's *arrival* must fall inside the window (`_build_model` only
-    bounds `CumulVar` at the ticket's own node, never its completion), so a lone ticket in a
-    window shorter than its own service always fits — what actually limits a group is brigades
-    serving several of its tickets back to back: each visit after the first only becomes
-    possible `duration_min + _TRAVEL_RESERVE_MIN` minutes (service, then the travel no route
-    exists yet to compute — the same 20-minute reserve a ticket books its slot with before the
-    day's actual route exists either) after the previous one. Simulated by greedily handing each
-    ticket, most urgent first, to whichever skill-matching brigade can arrive soonest without
-    missing its own window or shift end; a ticket no brigade can still fit is capacity excess.
+def _fit_within_group(
+    members: list[_Modelled], engineers: Sequence[Engineer], skill: Skill, opens: int, closes: int
+) -> frozenset[int]:
+    """Ticket ids among `members` (all the same skill and window) that no brigade could still
+    fit — greedily handing each ticket, most urgent first, to whichever skill-matching brigade
+    can arrive soonest without missing its own window or shift end. Only a ticket's *arrival*
+    must fall inside the window (`_build_model` only bounds `CumulVar` at the ticket's own node,
+    never its completion), so a lone ticket in a window shorter than its own service always fits
+    — what actually limits a group is brigades serving several of its tickets back to back: each
+    visit after the first only becomes possible `duration_min + _TRAVEL_RESERVE_MIN` minutes
+    (service, then the travel no route exists yet to compute — the same 20-minute reserve a
+    ticket books its slot with before the day's actual route exists either) after the previous
+    one.
 
     Ignoring `required_vehicle` and letting every skill-matching brigade serve any ticket in the
     group (never just the one it is actually restricted to, nor accounting for the rest of its
     day outside this window) both make brigades look more available than they really are — so a
     ticket only ends up here when even that generous a simulation cannot fit it, never the
-    reverse. A ticket in the returned set is not a search failure to report or push the solver
-    toward — it is provably unassignable before a route is ever built, and `_build_model` prices
-    its disjunction at 0 accordingly."""
+    reverse."""
+    # `cursor` — this brigade's earliest possible next arrival; starts at the window's own open
+    # (arriving right as it opens costs nothing, so the window's length never limits a single
+    # ticket by itself), or later if its shift starts after the window opens.
+    state = [
+        [
+            max(opens, e.shift_start.hour * 60 + e.shift_start.minute),
+            e.shift_end.hour * 60 + e.shift_end.minute,
+        ]
+        for e in engineers
+        if skill in e.skills
+    ]
+    excess: set[int] = set()
+    for m in sorted(members, key=lambda m: (m.ticket.priority, m.ticket.id)):
+        duration = m.ticket.duration_min
+        candidates = [
+            i
+            for i, (cursor, shift_end) in enumerate(state)
+            if cursor <= closes and cursor + duration <= shift_end
+        ]
+        if not candidates:
+            excess.add(m.ticket.id)
+            continue
+        best = min(candidates, key=lambda i: state[i][0])
+        state[best][0] += duration + _TRAVEL_RESERVE_MIN
+    return frozenset(excess)
+
+
+def _skill_windows(modelled: list[_Modelled]) -> dict[tuple[Skill, int, int], list[_Modelled]]:
     groups: dict[tuple[Skill, int, int], list[_Modelled]] = {}
     for m in modelled:
         groups.setdefault((m.ticket.required_skill, m.opens, m.closes), []).append(m)
+    return groups
 
+
+def _capacity_excess(modelled: list[_Modelled], engineers: Sequence[Engineer]) -> frozenset[int]:
+    """Ticket ids that no arrangement of brigades could ever all serve together (`_fit_within_group`,
+    grouped by skill and window). A ticket in the returned set is not a search failure to report
+    or push the solver toward — it is provably unassignable before a route is ever built, and
+    `_build_model` prices its disjunction at 0 accordingly."""
     excess: set[int] = set()
-    for (skill, opens, closes), members in groups.items():
-        # `cursor` — this brigade's earliest possible next arrival; starts at the window's own
-        # open (arriving right as it opens costs nothing, so the window's length never limits a
-        # single ticket by itself), or later if its shift starts after the window opens.
-        state = [
-            [
-                max(opens, e.shift_start.hour * 60 + e.shift_start.minute),
-                e.shift_end.hour * 60 + e.shift_end.minute,
-            ]
-            for e in engineers
-            if skill in e.skills
-        ]
-        for m in sorted(members, key=lambda m: (m.ticket.priority, m.ticket.id)):
-            duration = m.ticket.duration_min
-            candidates = [
-                i
-                for i, (cursor, shift_end) in enumerate(state)
-                if cursor <= closes and cursor + duration <= shift_end
-            ]
-            if not candidates:
-                excess.add(m.ticket.id)
-                continue
-            best = min(candidates, key=lambda i: state[i][0])
-            state[best][0] += duration + _TRAVEL_RESERVE_MIN
+    for (skill, opens, closes), members in _skill_windows(modelled).items():
+        excess |= _fit_within_group(members, engineers, skill, opens, closes)
     return frozenset(excess)
+
+
+def _window_contention(
+    modelled: list[_Modelled], engineers: Sequence[Engineer]
+) -> dict[tuple[int, int], tuple[float, int]]:
+    """A raw window's contention: `(ratio, demand)`, ticket count over how many of them its own
+    skill-matching brigades could ever fit (`_fit_within_group`, summed across the several
+    skills that can share a window — a window is not split by skill for this ranking, only for
+    the capacity simulation itself, same as `_capacity_excess`), then the raw ticket count as a
+    tie-break. Above 1 means more tickets want the window than brigades can serve even in the
+    best case; a window with brigades to spare for every one of its tickets scores exactly 1,
+    the lowest this ever goes — real inputs can have every window score exactly 1 (no skill's
+    demand ever exceeds its own theoretical capacity, the hard part being the day's routing, not
+    any one window's headcount), and the demand tie-break keeps that case from opening windows
+    in an arbitrary order. `_solve_phase1_by_window` opens windows in descending order of this
+    pair, so the most genuinely contested one — not merely the one with the most tickets sharing
+    it, unless contention does not actually distinguish them — gets first claim on the budget."""
+    demand: dict[tuple[int, int], int] = {}
+    fits: dict[tuple[int, int], int] = {}
+    for (skill, opens, closes), members in _skill_windows(modelled).items():
+        window = (opens, closes)
+        excess = _fit_within_group(members, engineers, skill, opens, closes)
+        demand[window] = demand.get(window, 0) + len(members)
+        fits[window] = fits.get(window, 0) + (len(members) - len(excess))
+    return {
+        w: (n / fits[w] if fits[w] > 0 else float("inf"), n) for w, n in demand.items()
+    }
 
 
 def _shift_min(e: Engineer) -> int:
@@ -430,6 +470,67 @@ def _vehicles_used(model: _Model, solution: pywrapcp.Assignment, n_vehicles: int
     )
 
 
+def _solve_phase1_by_window(
+    engineers: Sequence[Engineer],
+    matrices: Mapping[VehicleType, TravelMatrix],
+    modelled: list[_Modelled],
+    *,
+    floor: int,
+    capacity_excess: frozenset[int],
+    budget: timedelta,
+) -> tuple[_Model | None, pywrapcp.Assignment | None]:
+    """Phase 1, one window at a time, most contested first (`_window_contention`: tickets over
+    how many of them brigades could ever fit — not merely the one with the most tickets sharing
+    it, which a very flexible, near-all-day window could top on a raw count without actually
+    competing for anything): a ticket whose window has not "opened" yet this way costs nothing
+    to leave unassigned this round — the same zero-disjunction-cost trick `capacity_excess` uses
+    per ticket, reused here per window — so each step's share of the budget goes to the window
+    genuinely hardest to cover before an easier one gets its turn. Warm-started forward from
+    step to step (`ReadAssignmentFromRoutes`, no `_bound_coverage`): a later window's solve may
+    still revise an earlier window's own assignment if that fits its own ticket in for a cheaper
+    route overall, rather than being locked into whatever the first step happened to find."""
+    contention = _window_contention(modelled, engineers)
+    windows = sorted(contention, key=lambda w: contention[w], reverse=True)
+    per_window = budget / len(windows)
+
+    opened: set[tuple[int, int]] = set()
+    routes: list[list[int]] | None = None
+    model: _Model | None = None
+    solution: pywrapcp.Assignment | None = None
+    for window in windows:
+        opened.add(window)
+        not_yet_open = frozenset(
+            m.ticket.id for m in modelled if (m.opens, m.closes) not in opened
+        )
+        built = _build_model(
+            engineers,
+            matrices,
+            modelled,
+            penalty_floor=floor,
+            capacity_excess=capacity_excess | not_yet_open,
+        )
+        model = built
+
+        def travel_cost(e: Engineer, _model: _Model = built) -> int:
+            return _model.travel_cb[e.vehicle_type]
+
+        _set_costs(model, engineers, arc_cb=travel_cost, fixed_cost=0)
+        params = _search_params(per_window)
+        solution = (
+            model.routing.SolveWithParameters(params)
+            if routes is None
+            else model.routing.SolveFromAssignmentWithParameters(
+                model.routing.ReadAssignmentFromRoutes(routes, ignore_inactive_indices=True),
+                params,
+            )
+        )
+        if solution is None:
+            return model, None
+        routes = _routes_of(model, solution, len(engineers))
+
+    return model, solution
+
+
 def _solve_lexicographic(
     tickets: Sequence[Ticket],
     engineers: Sequence[Engineer],
@@ -460,16 +561,11 @@ def _solve_lexicographic(
     travel_bound = n_vehicles * _DAY_MIN
     floor = travel_bound + 1
 
-    model1 = _build_model(
-        engineers, matrices, modelled, penalty_floor=floor, capacity_excess=capacity_excess
-    )
-    # Zero-cost arcs leave Guided Local Search nothing to penalize once the construction
-    # heuristic drops a ticket, so it never tries recovering it — real (but coverage-dominated)
-    # travel cost gives the search a gradient to actually climb down while hunting for coverage.
-    _set_costs(model1, engineers, arc_cb=lambda e: model1.travel_cb[e.vehicle_type], fixed_cost=0)
     phase_started = time.monotonic()
-    solution1 = model1.routing.SolveWithParameters(_search_params(third))
-    if solution1 is None:
+    model1, solution1 = _solve_phase1_by_window(
+        engineers, matrices, modelled, floor=floor, capacity_excess=capacity_excess, budget=third
+    )
+    if solution1 is None or model1 is None:
         return _finished(
             started,
             DayPlan(status=SolveStatus.INFEASIBLE, routes=(), unassigned=()),
