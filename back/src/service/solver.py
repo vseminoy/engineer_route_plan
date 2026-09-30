@@ -385,12 +385,24 @@ def _solve_lexicographic(
     then minimum travel without giving up either. A single weighted solve only encourages this
     order through scale; a fresh model per phase and a hard bound guarantee it. OR-Tools locks a
     RoutingModel's cost structure in on its first solve, so each phase gets its own model,
-    warm-started from the previous phase's own routes (already feasible for the new bound)."""
+    warm-started from the previous phase's own routes (already feasible for the new bound).
+
+    All three phases share one `penalty_floor` (`_bound_coverage` compares a raw penalty sum
+    computed in one model against a bound read off another — meaningless unless every model's
+    disjunction penalty for the same priority rank is numerically identical, not just
+    proportional). It must dominate `travel_bound`, the most any phase's own arc costs can ever
+    sum to over a feasible day: phase 1 otherwise leaves a ticket unassigned whenever routing it
+    costs even one more minute somewhere, since coverage and travel would sit on the same scale."""
     n_vehicles = len(engineers)
     third = time_limit / 3
+    travel_bound = n_vehicles * _DAY_MIN
+    floor = travel_bound + 1
 
-    model1 = _build_model(engineers, matrices, modelled, penalty_floor=1)
-    _set_costs(model1, engineers, arc_cb=lambda _e: model1.zero_cb, fixed_cost=0)
+    model1 = _build_model(engineers, matrices, modelled, penalty_floor=floor)
+    # Zero-cost arcs leave Guided Local Search nothing to penalize once the construction
+    # heuristic drops a ticket, so it never tries recovering it — real (but coverage-dominated)
+    # travel cost gives the search a gradient to actually climb down while hunting for coverage.
+    _set_costs(model1, engineers, arc_cb=lambda e: model1.travel_cb[e.vehicle_type], fixed_cost=0)
     phase_started = time.monotonic()
     solution1 = model1.routing.SolveWithParameters(_search_params(third))
     if solution1 is None:
@@ -403,7 +415,7 @@ def _solve_lexicographic(
     unassigned_penalty = _unassigned_penalty(model1, solution1)
     _log_phase(1, unassigned_penalty, phase_started)
 
-    model2 = _build_model(engineers, matrices, modelled, penalty_floor=1)
+    model2 = _build_model(engineers, matrices, modelled, penalty_floor=floor)
     _set_costs(model2, engineers, arc_cb=lambda _e: model2.zero_cb, fixed_cost=1)
     _bound_coverage(model2, unassigned_penalty)
     # The previous phase's own routes are already a feasible starting point for this bound.
@@ -417,7 +429,7 @@ def _solve_lexicographic(
     fleet = _vehicles_used(model2, solution2, n_vehicles)
     _log_phase(2, fleet, phase_started)
 
-    model3 = _build_model(engineers, matrices, modelled, penalty_floor=1)
+    model3 = _build_model(engineers, matrices, modelled, penalty_floor=floor)
     _set_costs(model3, engineers, arc_cb=lambda e: model3.travel_cb[e.vehicle_type], fixed_cost=0)
     _bound_coverage(model3, unassigned_penalty)
     _bound_fleet(model3, fleet, n_vehicles)
