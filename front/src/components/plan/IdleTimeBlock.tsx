@@ -31,13 +31,13 @@ export function IdleTimeBlock({ engineers, roster }: Props) {
               <div className="bar-row__header">
                 <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
                 <span className="bar-row__label">{e.name}</span>
+                {r && <VehicleIcon vehicleType={r.vehicleType} />}
+                {r && <SkillIcons skills={r.skills} />}
                 {r && (
                   <span className="bar-row__shift">
                     {minutesToTimeLabel(r.shiftStartMin)}–{minutesToTimeLabel(r.shiftEndMin)}
                   </span>
                 )}
-                {r && <VehicleIcon vehicleType={r.vehicleType} />}
-                {r && <SkillIcons skills={r.skills} />}
               </div>
               <div className="bar-row__body">
                 <span className="bar-row__track">
@@ -65,13 +65,13 @@ export function IdleTimeBlock({ engineers, roster }: Props) {
                 <div key={e.engineerId} className="bar-row bar-row--idle">
                   <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-border)', flexShrink: 0 }} />
                   <span className="bar-row__label">{e.name}</span>
+                  {r && <VehicleIcon vehicleType={r.vehicleType} />}
+                  {r && <SkillIcons skills={r.skills} />}
                   {r && (
                     <span className="bar-row__shift">
                       {minutesToTimeLabel(r.shiftStartMin)}–{minutesToTimeLabel(r.shiftEndMin)}
                     </span>
                   )}
-                  {r && <VehicleIcon vehicleType={r.vehicleType} />}
-                  {r && <SkillIcons skills={r.skills} />}
                 </div>
               );
             })}
