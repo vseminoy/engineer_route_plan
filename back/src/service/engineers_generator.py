@@ -28,23 +28,26 @@ def generate_engineers(
     type, so every skill and every vehicle type is on duty all day whatever shifts the
     others got (not every pair of them). Each brigade has 1 to 3 skills. For each
     remote town among the ticket districts one full-day brigade starts at the town's
-    point; the rest start at the office.
+    point, named after it; the rest start at the office.
     """
     rng = random.Random(seed)
     shifts = regions.shifts
     morning, evening, full_day = shifts.split(engineers, morning_share, evening_share)
     kinds = [shifts.full_day] * full_day + [shifts.morning] * morning + [shifts.evening] * evening
-    towns = [regions.remote_towns[t] for t in sorted(districts & regions.remote_towns.keys())]
+    town_names = sorted(districts & regions.remote_towns.keys())
+    towns = [regions.remote_towns[t] for t in town_names]
 
     drafts = []
     for i, shift in enumerate(kinds):
         base = _SKILLS[i % len(_SKILLS)]
         extra = rng.sample([s for s in _SKILLS if s != base], rng.randint(0, 2))
         skills = tuple(s for s in _SKILLS if s == base or s in extra)
-        start = towns[i] if i < min(len(towns), full_day) else office
+        from_town = i < min(len(towns), full_day)
+        start = towns[i] if from_town else office
+        name = f"Бригада {i + 1} ({town_names[i]})" if from_town else f"Бригада {i + 1}"
         drafts.append(
             EngineerDraft(
-                name=f"Бригада {i + 1}",
+                name=name,
                 start=start,
                 shift_start=shift.start,
                 shift_end=shift.end,

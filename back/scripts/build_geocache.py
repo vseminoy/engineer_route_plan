@@ -1,11 +1,12 @@
 """Builds `data/geocache.csv` from the addresses of the source ticket files.
 
 Run from `back/`: `python -m scripts.build_geocache` (or `make geocache` from the root).
-Addresses already in the cache are not requested again; addresses in a remote town of
-the Moscow region are not stored at all, they take the town's point from
-`data/regions.toml`. Addresses Nominatim does not
-find are listed and not written: their points are set by hand. The exit code is not 0
-while any address of the sources is missing from the cache.
+Addresses already in the cache are not requested again. An address in a remote town of
+the Moscow region (`data/regions.toml`) is looked up scoped to that town instead of
+Moscow; the town's configured point there is only a brigade's start point, not this
+address's. Addresses Nominatim does not find are listed and not written: their points
+are set by hand. The exit code is not 0 while any address of the sources is missing
+from the cache.
 """
 
 import argparse
@@ -69,17 +70,15 @@ async def build(
     not_found = []
     refused = False
     for key, (address, district) in source_addresses(sources).items():
-        if remote_town(address, district, towns):
-            entries.pop(key, None)
-            continue
         if key in entries:
             continue
         if refused:
             not_found.append(address)
             continue
+        city = remote_town(address, district, towns) or "Москва"
         point = None
         try:
-            for query in nominatim_queries(address):
+            for query in nominatim_queries(address, city):
                 if query not in by_query:
                     by_query[query] = await client.search(query)
                 point = by_query[query]

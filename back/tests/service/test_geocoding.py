@@ -5,14 +5,14 @@ import pytest
 
 from src.domain import Point
 from src.errors import DependencyUnavailable
-from src.service.geocoding import GeoCache, Geocoder, nominatim_queries
+from src.service.geocoding import GeoCache, Geocoder, cache_key, nominatim_queries
 from src.service.regions import Regions
 from src.service.ticket_file import COL_ADDRESS, COL_DISTRICT, read_rows
 from tests.log_records import events, json_logs
 
 BACK_DIR = Path(__file__).resolve().parents[2]
 DOCS_DIR = BACK_DIR.parent / "docs"
-TOWNS = {"Домодедово": Point(lat=55.4363, lon=37.7662)}
+TOWNS = {"Домодедово"}
 P1, P2, P3 = Point(lat=55.1, lon=37.1), Point(lat=55.2, lon=37.2), Point(lat=55.3, lon=37.3)
 
 
@@ -33,16 +33,21 @@ def _geocoder(cache: dict[str, Point], client: FakeNominatim | None) -> Geocoder
     return Geocoder(GeoCache(cache), client, TOWNS, max_lookups=50)
 
 
-async def test_remote_town_from_config(capsys: pytest.CaptureFixture[str]) -> None:
+async def test_remote_town_scopes_query(capsys: pytest.CaptureFixture[str]) -> None:
+    """A ticket in a remote town gets its own geocoded point, not the town's configured
+    one (that is only a brigade's start point); the Nominatim query is scoped to the
+    town instead of Moscow, whether it is matched by district or by name in the text."""
     json_logs()
-    client = FakeNominatim()
-    found = await _geocoder({}, client).locate(
-        [("Домодедово, ул.Корнеева, д. 40", "Домодедово"), ("МО, г. Домодедово ул. д. 1", None)]
-    )
-    assert set(found.values()) == {TOWNS["Домодедово"]}
-    assert len(found) == 2
-    assert client.queries == []
-    assert events(capsys, "geocode_cache_miss") == []
+    by_district = "Домодедово, ул.Корнеева, д. 40, кв. 186"
+    by_text = "МО, г. Домодедово ул. Заречная д. 1"
+    q1, q2 = nominatim_queries(by_district, "Домодедово")[0], nominatim_queries(by_text, "Домодедово")[0]
+    client = FakeNominatim({q1: P1, q2: P2})
+    found = await _geocoder({}, client).locate([(by_district, "Домодедово"), (by_text, None)])
+    assert found == {cache_key(by_district): P1, cache_key(by_text): P2}
+    assert client.queries == [q1, q2]
+    assert all(q.endswith(", Домодедово") for q in client.queries)
+    (miss,) = events(capsys, "geocode_cache_miss")
+    assert (miss["misses"], miss["lookups_skipped"]) == (2, 0)
 
 
 def test_query_from_address() -> None:

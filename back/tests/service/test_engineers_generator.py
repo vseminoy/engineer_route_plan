@@ -114,6 +114,8 @@ def test_remote_town_start() -> None:
     assert len(from_towns) == 2
     assert all((e.shift_start, e.shift_end) == FULL_DAY for e in from_towns)
     assert all(e.start == OFFICE for e in engineers if e not in from_towns)
+    assert {e.name for e in from_towns} == {"Бригада 1 (Домодедово)", "Бригада 2 (Ступино)"}
+    assert all(e.name.startswith("Бригада ") and "(" not in e.name for e in engineers if e not in from_towns)
 
 
 @pytest.mark.parametrize("code", CODES)

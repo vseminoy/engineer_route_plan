@@ -37,7 +37,8 @@ start = "10:00"
 end = "23:30"
 
 # Remote towns of the Moscow region: a brigade that serves tickets there starts the day
-# at the town's point, [lat, lon], instead of the office.
+# at the town's point, [lat, lon], instead of the office. Tickets there still get their
+# own geocoded address, never this point.
 [remote_towns]
 "Домодедово" = [55.4363, 37.7662]
 "Кашира" = [54.8337, 38.1510]

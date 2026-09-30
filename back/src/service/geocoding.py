@@ -3,6 +3,7 @@
 import csv
 import re
 from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
@@ -32,8 +33,21 @@ _APARTMENT = re.compile(
 )
 # "д. 128 к 5", "д 83с 4", "д. 24/30 стр. 1", "д. 6к1": everything after "д" up to a comma.
 _HOUSE = re.compile(r"(?:^|[\s,])д\.?\s?(\d[^,]*)")
-_MOSCOW = re.compile(r"^(?:г\.\s?)?(?:Город\s)?Москва\b[\s,]*", re.IGNORECASE)
 _STREET_PREFIX = re.compile(r"([а-яё-]+)(?:\.\s?|\s)", re.IGNORECASE)
+
+
+# "МО, ", "обл.Московская область, ": the region, ahead of the city, in source addresses
+# of a remote town outside Moscow.
+_REGION = r"(?:(?:обл\.\s?)?Московская\s+область|МО)[\s,]*"
+
+
+@lru_cache
+def _city_prefix(city: str) -> re.Pattern[str]:
+    """A leading "МО, г. <city>"/"Город <city>"/"<city>" (plus the comma or space after
+    it); the region marker only ever comes before the city, never after."""
+    return re.compile(
+        rf"^(?:{_REGION})?(?:г\.\s?)?(?:Город\s)?{re.escape(city)}\b[\s,]*", re.IGNORECASE
+    )
 
 
 def cache_key(address: str) -> str:
@@ -60,11 +74,13 @@ def _street(text: str) -> tuple[str, str]:
     return text, ""
 
 
-def nominatim_queries(address: str) -> list[str]:
+def nominatim_queries(address: str, city: str = "Москва") -> list[str]:
     """Free-form Nominatim queries to try in order: the apartment dropped, street types
     spelled out, the house written as OpenStreetMap does ("128к5", "24/30с1"); then the
     street type before the name, and between an ordinal and the name ("2-я улица
-    Синичкина"); then the house without its block or building number.
+    Синичкина"); then the house without its block or building number. Each query is
+    scoped to `city` ("Москва" by default, or a remote town's own name), and a leading
+    mention of that city in the address is dropped so it is not repeated.
 
     Whitespace is collapsed first and no pattern backtracks over a run of it, so the
     time stays linear in the length of the address."""
@@ -73,7 +89,7 @@ def nominatim_queries(address: str) -> list[str]:
     if apartment:
         text = text[: apartment.start()]
     text = re.sub(r"^г\.\s?(?=Город)", "", text)
-    text = _MOSCOW.sub("", text).strip(" ,")
+    text = _city_prefix(city).sub("", text).strip(" ,")
     house = ""
     m = _HOUSE.search(text)
     if m:
@@ -88,7 +104,7 @@ def nominatim_queries(address: str) -> list[str]:
     if ordinal:
         queries.append(f"{ordinal.group(1)} {kind} {ordinal.group(2)} {house}")
     queries += [f"{kind} {name} {h}" for h in houses[1:]]
-    return list(dict.fromkeys(" ".join(q.split()) + ", Москва" for q in queries))
+    return list(dict.fromkeys(" ".join(q.split()) + f", {city}" for q in queries))
 
 
 class PlaceSearch(Protocol):
@@ -116,8 +132,11 @@ class GeoCache:
 
 
 class Geocoder:
-    """Addresses in a remote town of the Moscow region get the town's configured point,
-    not a street-level one: those towns are served as one place.
+    """Every address, ticket or office, gets its own point from the cache or Nominatim.
+    A remote town of the Moscow region only narrows the Nominatim query to that town
+    instead of Moscow (`towns` lists their names); the town's configured point
+    (`regions.toml`) is a brigade's start point, set separately by the caller, not an
+    address lookup.
 
     At most `max_lookups` cache misses of one `locate` call go to Nominatim; each may
     take several queries at one per second, and the public service forbids bulk
@@ -127,12 +146,12 @@ class Geocoder:
         self,
         cache: GeoCache,
         client: PlaceSearch | None,
-        towns: dict[str, Point],
+        towns: Iterable[str],
         max_lookups: int,
     ) -> None:
         self._cache = cache
         self._client = client
-        self._towns = towns
+        self._towns = list(towns)
         self._max_lookups = max_lookups
 
     async def locate(self, addresses: Iterable[tuple[str, str | None]]) -> dict[str, Point]:
@@ -142,8 +161,7 @@ class Geocoder:
         misses: dict[str, tuple[str, str | None]] = {}
         for address, district in addresses:
             key = cache_key(address)
-            town = remote_town(address, district, self._towns)
-            point = self._towns[town] if town else self._cache.get(address)
+            point = self._cache.get(address)
             if point is not None:
                 found[key] = point
             else:
@@ -156,8 +174,9 @@ class Geocoder:
         )
         if self._client is None:
             return found
-        for key, (address, _district) in list(misses.items())[:looked_up]:
-            for query in nominatim_queries(address):
+        for key, (address, district) in list(misses.items())[:looked_up]:
+            city = remote_town(address, district, self._towns) or "Москва"
+            for query in nominatim_queries(address, city):
                 point = await self._client.search(query)
                 if point is not None:
                     found[key] = point

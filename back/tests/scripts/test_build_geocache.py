@@ -47,14 +47,19 @@ A1 = "Город Москва, ул.Первая, д. 1"
 A2 = "Город Москва, ул.Вторая, д. 2"
 
 
-async def test_remote_town_not_stored(tmp_path: Path) -> None:
-    town = "Домодедово, ул.Корнеева, д. 40, кв. 186"
+async def test_remote_town_queried_with_own_city(tmp_path: Path) -> None:
+    """An address in a remote town is geocoded like any other, just scoped to that town
+    instead of Moscow: the cache gets its own point, not the town's configured one."""
+    town_address = "Домодедово, ул.Корнеева, д. 40, кв. 186"
     cache = tmp_path / "geocache.csv"
-    cache.write_text(f"{town};55.4;37.9\n", encoding="utf-8")
     client, queries = _client(lambda _: httpx.Response(200, json=FOUND))
-    await build([_sources(tmp_path, [("Домодедово", town), ("Выхино", A1)])], cache, client, TOWNS)
-    assert all("Корнеева" not in q for q in queries)
-    assert [address for address, _, _ in read_cache(cache).values()] == [A1]
+    not_found = await build(
+        [_sources(tmp_path, [("Домодедово", town_address), ("Выхино", A1)])], cache, client, TOWNS
+    )
+    assert not_found == []
+    assert any("Корнеева" in q and q.endswith(", Домодедово") for q in queries)
+    assert all("Москва" not in q for q in queries if "Корнеева" in q)
+    assert {address for address, _, _ in read_cache(cache).values()} == {town_address, A1}
 
 
 async def test_next_variant_on_not_found(tmp_path: Path) -> None:
