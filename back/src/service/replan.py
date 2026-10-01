@@ -524,7 +524,7 @@ class Replanner:
             writes = _writes_from_free_slot(best, _unavailable_assigned_text)
             touched[best.engineer.id] = writes
             live_rows[best.engineer.id] = [
-                _row_from_write(w, tickets_by_id[w.ticket_id].duration_min) for w in writes
+                _row_from_write(w, tickets_by_id[w.ticket_id]) for w in writes
             ]
             reassigned.append(ticket.id)
 
@@ -869,7 +869,7 @@ def _visit_end(row: AssignmentRow, tickets_by_id: Mapping[int, Ticket]) -> datet
     return start + timedelta(minutes=row.duration_min)
 
 
-def _row_from_write(write: AssignmentWrite, duration_min: int) -> AssignmentRow:
+def _row_from_write(write: AssignmentWrite, ticket: Ticket) -> AssignmentRow:
     """An `AssignmentWrite` just produced within this same `engineer_unavailable` event,
     reinterpreted as the `AssignmentRow` its recipient's route now stands at — so the next
     dropped ticket's free-interval search sees this insertion rather than the parent plan."""
@@ -882,7 +882,8 @@ def _row_from_write(write: AssignmentWrite, duration_min: int) -> AssignmentRow:
         travel_distance_m=write.travel_distance_m,
         unassigned_reason=write.unassigned_reason,
         explanation=write.explanation,
-        duration_min=duration_min,
+        duration_min=ticket.duration_min,
+        window_start=ticket.window_start,
     )
 
 

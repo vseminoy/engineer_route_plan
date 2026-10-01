@@ -25,10 +25,13 @@ export function EngineerTimeline({ shiftStartMin, shiftEndMin, route, ticketById
       const ticket = ticketById.get(stop.ticketId);
       const arrivalMin = minutesSinceMidnight(stop.plannedArrival);
       const travelStart = arrivalMin - stop.travelTimeMin;
-      const busyEnd = arrivalMin + (ticket?.durationMin ?? 0);
+      // plannedArrival may precede the window (the brigade waits for it to open) — the
+      // on-site "busy" bar must start no earlier than the window, not at raw arrival.
+      const busyStart = ticket ? Math.max(arrivalMin, ticket.windowStartMin) : arrivalMin;
+      const busyEnd = busyStart + (ticket?.durationMin ?? 0);
       return [
         { key: `${stop.ticketId}-travel`, start: travelStart, end: arrivalMin, color: `${color}4D` },
-        { key: `${stop.ticketId}-busy`, start: arrivalMin, end: busyEnd, color }
+        { key: `${stop.ticketId}-busy`, start: busyStart, end: busyEnd, color }
       ];
     });
 

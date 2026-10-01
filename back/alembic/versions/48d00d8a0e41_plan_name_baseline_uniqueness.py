@@ -13,6 +13,12 @@ Adds a partial unique index enforcing at most one active (`running` or `done`)
 `baseline_fcfs` plan per `(engineer_set_id, plan_date)`: `POST /plan/build` relies on
 it (`ON CONFLICT ... DO NOTHING`) so that two concurrent requests for the same
 combination cannot both queue a build.
+
+Rows from before this constraint existed can already violate it (several active
+baseline_fcfs plans built for the same combination over time); the index cannot be
+created until those are resolved, so the losers of each group — every plan but the
+most recently created one — and anything replanned from them are deleted first, the
+same way `DELETE /plan/{id}` deletes a plan's tree.
 """
 
 from collections.abc import Sequence
@@ -41,6 +47,32 @@ def upgrade() -> None:
         "у baseline_fcfs — с именем набора бригад) и может быть изменено "
         "PATCH /plan/{plan_id}'"
     )
+    losers = (
+        "losers AS ("
+        "    SELECT id FROM ("
+        "        SELECT id, row_number() OVER ("
+        "            PARTITION BY engineer_set_id, plan_date ORDER BY id DESC"
+        "        ) AS rn"
+        "        FROM plans"
+        "        WHERE algorithm = 'baseline_fcfs' AND status IN ('running', 'done')"
+        "    ) ranked WHERE rn > 1"
+        "), "
+        "tree AS ("
+        "    SELECT id FROM losers"
+        "    UNION ALL"
+        "    SELECT p.id FROM plans p JOIN tree t ON p.parent_plan_id = t.id"
+        ")"
+    )
+    op.execute(
+        f"WITH RECURSIVE {losers} "
+        "DELETE FROM replan_events "
+        "WHERE plan_id IN (SELECT id FROM tree) OR result_plan_id IN (SELECT id FROM tree)"
+    )
+    op.execute(
+        f"WITH RECURSIVE {losers} "
+        "DELETE FROM assignments WHERE plan_id IN (SELECT id FROM tree)"
+    )
+    op.execute(f"WITH RECURSIVE {losers} DELETE FROM plans WHERE id IN (SELECT id FROM tree)")
     op.execute(
         "CREATE UNIQUE INDEX ux_plans__active_baseline_per_set_date ON plans "
         "(engineer_set_id, plan_date) "

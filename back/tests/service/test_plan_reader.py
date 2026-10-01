@@ -34,7 +34,10 @@ def _assigned(
     duration: int = 30,
     distance_m: int = 1500,
     planned_arrival: datetime = datetime(2026, 9, 1, 10, 0),
+    window_start: datetime | None = None,
 ) -> AssignmentRow:
+    """`window_start` defaults to `planned_arrival` — the window is already open on
+    arrival — so existing callers that only care about travel/duration are unaffected."""
     return AssignmentRow(
         ticket_id=ticket_id,
         engineer_id=engineer_id,
@@ -45,6 +48,7 @@ def _assigned(
         unassigned_reason=None,
         explanation="назначено",
         duration_min=duration,
+        window_start=window_start if window_start is not None else planned_arrival,
     )
 
 
@@ -59,6 +63,7 @@ def _unassigned(ticket_id: int, reason: str = "no_skill") -> AssignmentRow:
         unassigned_reason=reason,
         explanation="не назначено",
         duration_min=30,
+        window_start=datetime(2026, 9, 1, 0, 0),
     )
 
 
@@ -274,10 +279,9 @@ async def test_idle_time_is_gap_between_visits() -> None:
         status="done",
         failed_reason=None,
     )
-    engineer = _engineer(1, shift_start=time(10, 0), shift_end=time(12, 0))
     repo = FakeRepo(
         plan,
-        engineers=[engineer],
+        engineers=[_engineer(1)],
         assignments=[
             _assigned(10, 1, 1, travel_min=15, duration=30, planned_arrival=datetime(2026, 9, 1, 10, 0)),
             _assigned(11, 1, 2, travel_min=5, duration=20, planned_arrival=datetime(2026, 9, 1, 11, 0)),
@@ -286,6 +290,62 @@ async def test_idle_time_is_gap_between_visits() -> None:
     (route,) = _engineers(await _reader(repo).get(1))
     assert route.total_travel_time_min == 20
     assert route.idle_time_min == 25
+
+
+async def test_idle_time_counts_a_window_wait_at_the_last_visit() -> None:
+    """Visit 1 finishes at 10:30 and a 5-min travel leg would put visit 2 at 10:35, but
+    visit 2's window only opens at 13:00 — the brigade waits there. That wait has no next
+    visit to be measured against the way an earlier one would (by the next row's own
+    arrival), so it must come from clamping the last visit's own finish to its window,
+    not from its raw arrival."""
+    plan = PlanRow(
+        id=1,
+        region_id=9,
+        region_code="east",
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
+    )
+    repo = FakeRepo(
+        plan,
+        engineers=[_engineer(1)],
+        assignments=[
+            _assigned(10, 1, 1, travel_min=10, duration=30, planned_arrival=datetime(2026, 9, 1, 10, 0)),
+            _assigned(
+                11,
+                1,
+                2,
+                travel_min=5,
+                duration=20,
+                planned_arrival=datetime(2026, 9, 1, 10, 35),
+                window_start=datetime(2026, 9, 1, 13, 0),
+            ),
+        ],
+    )
+    (route,) = _engineers(await _reader(repo).get(1))
+    assert route.idle_time_min == 145
+
+
+async def test_visits_sorted_by_sequence_no() -> None:
+    plan = PlanRow(
+        id=1,
+        region_id=9,
+        region_code="east",
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
+    )
+    repo = FakeRepo(
+        plan,
+        engineers=[_engineer(1)],
+        assignments=[_assigned(20, 1, 2), _assigned(10, 1, 1)],
+    )
+    (route,) = _engineers(await _reader(repo).get(1))
+    assert [v.ticket_id for v in route.route] == [10, 20]
 
 
 async def test_idle_time_is_zero_when_next_visit_follows_immediately() -> None:
@@ -312,26 +372,6 @@ async def test_idle_time_is_zero_when_next_visit_follows_immediately() -> None:
     assert route.idle_time_min == 0
 
 
-async def test_visits_sorted_by_sequence_no() -> None:
-    plan = PlanRow(
-        id=1,
-        region_id=9,
-        region_code="east",
-        engineer_set_id=70,
-        plan_date=DAY,
-        algorithm="or_tools",
-        status="done",
-        failed_reason=None,
-    )
-    repo = FakeRepo(
-        plan,
-        engineers=[_engineer(1)],
-        assignments=[_assigned(20, 1, 2), _assigned(10, 1, 1)],
-    )
-    (route,) = _engineers(await _reader(repo).get(1))
-    assert [v.ticket_id for v in route.route] == [10, 20]
-
-
 async def test_engineer_without_assignments_has_no_idle_time() -> None:
     """No visits means no gap between visits to sum — idle time is 0, not the shift
     length: there is no ticket for the brigade to be idle between."""
@@ -354,7 +394,7 @@ async def test_engineer_without_assignments_has_no_idle_time() -> None:
 
 
 async def test_engineer_with_single_visit_has_no_idle_time() -> None:
-    """A single visit has no "between visits" to be idle in either."""
+    """A single visit, arriving inside its own window, has no wait to count either."""
     plan = PlanRow(
         id=1,
         region_id=9,

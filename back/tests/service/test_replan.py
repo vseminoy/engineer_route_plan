@@ -87,6 +87,7 @@ def _row(
     duration_min: int = 30,
     planned_arrival: datetime | None = datetime(2026, 9, 1, 9, 0),
     unassigned_reason: str | None = None,
+    window_start: datetime = datetime(2026, 9, 1, 8, 0),
 ) -> AssignmentRow:
     assigned = engineer_id is not None
     return AssignmentRow(
@@ -99,6 +100,7 @@ def _row(
         unassigned_reason=unassigned_reason,
         explanation="назначено" if assigned else "не назначено",
         duration_min=duration_min,
+        window_start=window_start,
     )
 
 

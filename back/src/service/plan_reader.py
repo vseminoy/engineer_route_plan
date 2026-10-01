@@ -3,12 +3,11 @@
 `running` and `failed` plans have no routes yet (or ever); a `done` plan's assignment
 rows are grouped by brigade, sorted back into visit order, and merged with every brigade
 of the plan's region — including one with no visits, absent from the stored rows
-entirely — so the response always lists all of them. A brigade's idle time is the
-waiting time between its visits only — the gap between finishing one visit and leaving
-for the next — recomputed here rather than stored: `duration_min` (on-site time) comes
-along with each row through its ticket join. Time from shift start to departure for the
-first visit, and from finishing the last visit to shift end, is not idle time: the
-brigade has no ticket waiting on it there, so nothing to be idle between.
+entirely — so the response always lists all of them. A brigade's idle time is the gap
+between departing for its first visit and finishing its last — not shift start or end,
+which have no ticket waiting on the brigade either side of them — recomputed here rather
+than stored: `duration_min` (on-site time) comes along with each row through its ticket
+join.
 
 `compare` (`GET /api/v1/plan/{plan_id}/compare`) reads two plans through `get` and
 diffs three metrics — the mandatory `engineers_used`, `total_distance_km`, plus
@@ -19,7 +18,6 @@ it out of the solver's objective.
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from itertools import pairwise
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -261,6 +259,7 @@ def _engineer_routes(
         visits = [_visit(a) for a in rows]
         travel_total = sum(v.travel_time_min for v in visits)
         distance_total = sum(v.travel_distance_km for v in visits)
+        duration_total = sum(a.duration_min for a in rows)
         routes.append(
             EngineerRouteRead(
                 engineer_id=e.id,
@@ -268,27 +267,34 @@ def _engineer_routes(
                 route=tuple(visits),
                 total_distance_km=round(distance_total, 1),
                 total_travel_time_min=travel_total,
-                idle_time_min=_idle_between_visits(rows),
+                idle_time_min=_idle_between_visits(rows, visits, travel_total, duration_total),
             )
         )
     return routes
 
 
-def _idle_between_visits(rows: Sequence[AssignmentRow]) -> int:
-    """Sum of the gaps between consecutive visits: the time from finishing one visit
-    (`planned_arrival + duration_min`) to leaving for the next (`planned_arrival -
-    travel_time_min` of the next row). A route of 0 or 1 visits has no such gap."""
-    total = timedelta()
-    for prev, curr in pairwise(rows):
-        assert prev.planned_arrival is not None
-        assert curr.planned_arrival is not None
-        assert curr.travel_time_min is not None
-        finish = prev.planned_arrival + timedelta(minutes=prev.duration_min)
-        departure = curr.planned_arrival - timedelta(minutes=curr.travel_time_min)
-        gap = departure - finish
-        if gap > timedelta():
-            total += gap
-    return round(total.total_seconds() / 60)
+def _idle_between_visits(
+    rows: Sequence[AssignmentRow],
+    visits: Sequence[VisitRead],
+    travel_total: int,
+    duration_total: int,
+) -> int:
+    """The route's whole span, from leaving for the first visit to finishing the last,
+    minus the travel and on-site time actually spent in it — whatever is left is a wait
+    for a window to open, wherever in the route it falls. The last visit's own such wait
+    would otherwise go uncounted (there is no next visit to measure it against the way
+    every other one is, by the next row's own arrival), so its finish is clamped to its
+    window like every other visit's, not left at the raw, possibly-too-early arrival. A
+    route of 0 visits has no span and no idle time; `rows`/`visits` are the same route in
+    the same order, `rows` for `window_start`/`duration_min`, absent from `visits`."""
+    if not rows:
+        return 0
+    departure = visits[0].planned_arrival - timedelta(minutes=visits[0].travel_time_min)
+    finish = max(visits[-1].planned_arrival, rows[-1].window_start) + timedelta(
+        minutes=rows[-1].duration_min
+    )
+    idle = (finish - departure) - timedelta(minutes=travel_total + duration_total)
+    return round(idle.total_seconds() / 60)
 
 
 def _unassigned(assignments: Sequence[AssignmentRow]) -> list[UnassignedRead]:

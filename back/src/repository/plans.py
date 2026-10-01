@@ -53,8 +53,11 @@ class LatestBaselinePlan:
 @dataclass(frozen=True)
 class AssignmentRow:
     """One row of a `done` plan: assigned (`engineer_id` and the rest of the route
-    fields) or not (`unassigned_reason`), never both. `duration_min` is the ticket's
-    on-site time, needed to compute its brigade's idle time."""
+    fields) or not (`unassigned_reason`), never both. `duration_min` and `window_start`
+    are the ticket's, needed to compute its brigade's idle time: the route's last visit
+    may still be waiting for its own window at `planned_arrival` (the raw arrival, which
+    can precede it), and that wait must be measured from `max(planned_arrival,
+    window_start)`, not from `planned_arrival` itself."""
 
     ticket_id: int
     engineer_id: int | None
@@ -65,6 +68,7 @@ class AssignmentRow:
     unassigned_reason: str | None
     explanation: str
     duration_min: int
+    window_start: datetime
 
 
 @dataclass(frozen=True)
@@ -345,6 +349,7 @@ async def list_plan_assignments(conn: AsyncConnection[Any], plan_id: int) -> lis
             unassigned_reason=unassigned_reason,
             explanation=explanation,
             duration_min=duration_min,
+            window_start=window_start,
         )
         for (
             ticket_id,
@@ -356,5 +361,6 @@ async def list_plan_assignments(conn: AsyncConnection[Any], plan_id: int) -> lis
             unassigned_reason,
             explanation,
             duration_min,
+            window_start,
         ) in rows
     ]

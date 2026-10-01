@@ -172,11 +172,13 @@ VALUES (:region_id, :engineer_set_id, :plan_date, :algorithm, 'done',
 RETURNING id;
 
 -- name: list_plan_assignments(plan_id)
--- Rows of a `done` plan, in ticket id order, with the ticket's duration: idle time of a
--- brigade is its shift minus the summed travel and on-site time of its visits, and the
--- row itself does not carry on-site time.
+-- Rows of a `done` plan, in ticket id order, with the ticket's duration and window start:
+-- idle time of a brigade is the gap between departing for its first visit and finishing
+-- its last, minus the summed travel and on-site time in between — the row itself does
+-- not carry on-site time or the window (needed to clamp the last visit's arrival if it
+-- is still waiting for its own window to open).
 SELECT a.ticket_id, a.engineer_id, a.sequence_no, a.planned_arrival, a.travel_time_min,
-       a.travel_distance_m, a.unassigned_reason, a.explanation, t.duration_min
+       a.travel_distance_m, a.unassigned_reason, a.explanation, t.duration_min, t.window_start
 FROM assignments a
 JOIN tickets t ON t.id = a.ticket_id
 WHERE a.plan_id = :plan_id

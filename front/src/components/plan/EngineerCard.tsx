@@ -63,9 +63,12 @@ export function EngineerCard({ engineer, roster, color, ticketById, diffTags, se
               <div className="stop-row__main">
                 <span className="stop-row__eta">
                   {ticket
-                    ? `${timeOnly(stop.plannedArrival)}–${minutesToTimeLabel(
-                        minutesSinceMidnight(stop.plannedArrival) + ticket.durationMin
-                      )}`
+                    ? (() => {
+                        // plannedArrival may precede the window (the brigade waits for
+                        // it to open) — service starts no earlier than windowStartMin.
+                        const startMin = Math.max(minutesSinceMidnight(stop.plannedArrival), ticket.windowStartMin);
+                        return `${minutesToTimeLabel(startMin)}–${minutesToTimeLabel(startMin + ticket.durationMin)}`;
+                      })()
                     : timeOnly(stop.plannedArrival)}
                 </span>
                 {ticket && <SkillIcons skills={[ticket.requiredSkill]} />}
