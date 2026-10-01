@@ -79,6 +79,7 @@ ENGINEER_SET = EngineerSet(
 )
 PLAN_SUMMARY = PlanSummaryRow(
     id=1,
+    name="План №1",
     region_code="east",
     engineer_set_id=70,
     plan_date=date(2026, 8, 17),
@@ -162,6 +163,7 @@ class FakePlanBuilder:
     def __init__(self, queued: "QueuedPlan | None" = None, error: Exception | None = None) -> None:
         self.queued = queued or QueuedPlan(
             plan_id=1,
+            name="План №1",
             algorithm="or_tools",
             engineer_set_id=70,
             tickets=[TICKET],
@@ -198,9 +200,12 @@ class FakePlanReader:
         compare_result: "tuple[ComparisonEntryRead, ...] | None" = None,
         compare_error: Exception | None = None,
         delete_error: Exception | None = None,
+        rename_result: "PlanSummaryRow | None" = None,
+        rename_error: Exception | None = None,
     ) -> None:
         self.plan = plan or PlanRead(
             plan_id=1,
+            name="План №1",
             algorithm="or_tools",
             region_code="east",
             engineer_set_id=70,
@@ -227,9 +232,12 @@ class FakePlanReader:
         )
         self.compare_error = compare_error
         self.delete_error = delete_error
+        self.rename_result = rename_result or PLAN_SUMMARY
+        self.rename_error = rename_error
         self.calls: list[int] = []
         self.compare_calls: list[tuple[int, int]] = []
         self.delete_calls: list[int] = []
+        self.rename_calls: list[tuple[int, str]] = []
 
     async def get(self, plan_id: int) -> PlanRead:
         self.calls.append(plan_id)
@@ -247,6 +255,12 @@ class FakePlanReader:
         self.delete_calls.append(plan_id)
         if self.delete_error:
             raise self.delete_error
+
+    async def rename(self, plan_id: int, name: str) -> "PlanSummaryRow":
+        self.rename_calls.append((plan_id, name))
+        if self.rename_error:
+            raise self.rename_error
+        return self.rename_result
 
 
 class FakeReplanner:

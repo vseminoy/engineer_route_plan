@@ -65,11 +65,36 @@ WITH RECURSIVE tree AS (
 DELETE FROM plans WHERE id IN (SELECT id FROM tree)
 RETURNING id;
 
--- name: insert_running_plan(region_id, engineer_set_id, plan_date, algorithm, created_at)$
--- Queues a build: a plan row with no routes yet. Returns its id.
-INSERT INTO plans (region_id, engineer_set_id, plan_date, algorithm, status, created_at)
-VALUES (:region_id, :engineer_set_id, :plan_date, :algorithm, 'running', :created_at)
+-- name: insert_running_plan(region_id, engineer_set_id, plan_date, algorithm, created_at)^
+-- Queues a build: a plan row with no routes yet, status=running, name='' — set to its
+-- final value right after by update_plan_name, once this row's id is known (see
+-- repository.plans.insert_running_plan; the name embeds the id, which Postgres only
+-- assigns at insert time). None instead of a row if a concurrent build already holds
+-- the active baseline slot for this (engineer_set_id, plan_date) — see
+-- ux_plans__active_baseline_per_set_date.
+INSERT INTO plans (region_id, engineer_set_id, plan_date, algorithm, status, created_at, name)
+VALUES (:region_id, :engineer_set_id, :plan_date, :algorithm, 'running', :created_at, '')
+ON CONFLICT (engineer_set_id, plan_date)
+    WHERE algorithm = 'baseline_fcfs' AND status IN ('running', 'done')
+    DO NOTHING
 RETURNING id;
+
+-- name: get_latest_baseline_plan(engineer_set_id, plan_date)^
+-- The most recent baseline_fcfs plan for this (engineer_set_id, plan_date), any status —
+-- at most one in status running or done can exist at a time
+-- (ux_plans__active_baseline_per_set_date); a failed one may coexist only until
+-- POST /plan/build next deletes it and builds fresh. None if there is no such plan yet.
+SELECT id, status
+FROM plans
+WHERE engineer_set_id = :engineer_set_id AND plan_date = :plan_date
+      AND algorithm = 'baseline_fcfs'
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: update_plan_name(plan_id, name)!
+-- Overwrites a plan's name, whatever it was set to before (automatic or a previous
+-- rename) and whatever the plan's status — build state is untouched.
+UPDATE plans SET name = :name WHERE id = :plan_id;
 
 -- name: mark_plan_done(plan_id)!
 -- The build finished; assignment rows are inserted in the same transaction.
@@ -98,7 +123,7 @@ VALUES (:plan_id, :ticket_id, :engineer_id, :sequence_no, :planned_arrival,
 
 -- name: list_plans_by_region(region_id)
 -- Все планы региона (любой статус), по убыванию created_at — сначала новые.
-SELECT p.id, r.code AS region_code, p.engineer_set_id, p.plan_date, p.algorithm,
+SELECT p.id, p.name, r.code AS region_code, p.engineer_set_id, p.plan_date, p.algorithm,
        p.status, p.failed_reason, p.parent_plan_id, p.created_at
 FROM plans p
 JOIN regions r ON r.id = p.region_id
@@ -108,7 +133,7 @@ ORDER BY p.created_at DESC;
 -- name: list_plans_by_engineer_set(engineer_set_id)
 -- Планы одного набора бригад (любой статус), по убыванию created_at — та же форма
 -- строки, что list_plans_by_region, для набора вместо целого региона.
-SELECT p.id, r.code AS region_code, p.engineer_set_id, p.plan_date, p.algorithm,
+SELECT p.id, p.name, r.code AS region_code, p.engineer_set_id, p.plan_date, p.algorithm,
        p.status, p.failed_reason, p.parent_plan_id, p.created_at
 FROM plans p
 JOIN regions r ON r.id = p.region_id
@@ -117,8 +142,18 @@ ORDER BY p.created_at DESC;
 
 -- name: get_plan(plan_id)^
 -- The plan row by id, with its region's code; None if there is no such plan.
-SELECT p.id, p.region_id, r.code AS region_code, p.engineer_set_id, p.plan_date, p.algorithm,
-       p.status, p.failed_reason
+SELECT p.id, p.name, p.region_id, r.code AS region_code, p.engineer_set_id, p.plan_date,
+       p.algorithm, p.status, p.failed_reason
+FROM plans p
+JOIN regions r ON r.id = p.region_id
+WHERE p.id = :plan_id;
+
+-- name: get_plan_summary(plan_id)^
+-- A plan in the same row shape as list_plans_by_region/list_plans_by_engineer_set, by id
+-- instead of by region/set — used by PATCH /plan/{plan_id} to answer with the plan's
+-- current summary right after renaming it. None if there is no such plan.
+SELECT p.id, p.name, r.code AS region_code, p.engineer_set_id, p.plan_date, p.algorithm,
+       p.status, p.failed_reason, p.parent_plan_id, p.created_at
 FROM plans p
 JOIN regions r ON r.id = p.region_id
 WHERE p.id = :plan_id;
@@ -127,9 +162,13 @@ WHERE p.id = :plan_id;
 -- A plan produced by one replan event: done from the moment it exists, with its
 -- assignment rows inserted in the same transaction — replan is synchronous, unlike
 -- POST /plan/build, so there is no running state to pass through. engineer_set_id is
--- always the parent plan's own — replan never changes a plan's set.
-INSERT INTO plans (region_id, engineer_set_id, plan_date, algorithm, status, parent_plan_id, created_at)
-VALUES (:region_id, :engineer_set_id, :plan_date, :algorithm, 'done', :parent_plan_id, :created_at)
+-- always the parent plan's own — replan never changes a plan's set. name='' here — set
+-- to "План №{id}" right after by update_plan_name, once this row's id is known (see
+-- repository.plans.insert_replanned_plan).
+INSERT INTO plans (region_id, engineer_set_id, plan_date, algorithm, status,
+                    parent_plan_id, created_at, name)
+VALUES (:region_id, :engineer_set_id, :plan_date, :algorithm, 'done',
+        :parent_plan_id, :created_at, '')
 RETURNING id;
 
 -- name: list_plan_assignments(plan_id)

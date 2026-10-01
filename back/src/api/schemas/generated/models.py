@@ -532,6 +532,12 @@ class Plan(BaseModel):
         extra="forbid",
     )
     plan_id: Annotated[int, Field(description="Идентификатор плана на сервере")]
+    name: Annotated[
+        str,
+        Field(
+            description='Название плана; выставляется автоматически при построении ("План №{plan_id}", у baseline-плана — с именем его набора бригад) и может быть изменено PATCH /plan/{plan_id}'
+        ),
+    ]
     algorithm: PlanAlgorithm
     status: PlanStatus
     region: Annotated[
@@ -572,6 +578,12 @@ class PlanSummary(BaseModel):
         extra="forbid",
     )
     plan_id: Annotated[int, Field(description="Идентификатор плана на сервере")]
+    name: Annotated[
+        str,
+        Field(
+            description="Название плана; выставляется автоматически при построении и может быть изменено PATCH /plan/{plan_id}"
+        ),
+    ]
     region: RegionCode
     engineer_set_id: Annotated[int, Field(description="Набор бригад, для которого построен план")]
     plan_date: Annotated[LocalDate, Field(description="Дата плана")]
@@ -588,6 +600,20 @@ class PlanSummary(BaseModel):
     ]
     failed_reason: Annotated[
         PlanFailedReason | None, Field(description="Причина отказа; null, если status не failed")
+    ]
+
+
+class PlanRenameRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    name: Annotated[
+        str,
+        Field(
+            description="Новое название плана; ведущие и замыкающие пробелы обрезаются, пустая после обрезки строка отклоняется",
+            max_length=100,
+            min_length=1,
+        ),
     ]
 
 

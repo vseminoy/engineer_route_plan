@@ -20,7 +20,7 @@ from src.domain import (
     VehicleType,
 )
 from src.errors import DatabaseFailure, DependencyUnavailable, InvalidInput
-from src.repository.plans import AssignmentWrite
+from src.repository.plans import AssignmentWrite, LatestBaselinePlan
 from src.service.plan_builder import PlanBuilder, QueuedPlan, sweep_running_plans
 from src.service.regions import Regions
 from tests.log_records import events, json_logs
@@ -178,6 +178,9 @@ class FakeRepo:
         mark_failed_error: Exception | None = None,
         default_set_id: int | None = DEFAULT_SET_ID,
         engineer_set_region: dict[int, int] | None = None,
+        latest_baseline: LatestBaselinePlan | None = None,
+        latest_baseline_after_conflict: LatestBaselinePlan | None = None,
+        insert_conflicts_times: int = 0,
     ) -> None:
         self.region_id = region_id
         self.tickets = [_ticket()] if tickets is None else tickets
@@ -190,9 +193,16 @@ class FakeRepo:
         self.engineer_set_region = engineer_set_region or (
             {DEFAULT_SET_ID: region_id} if region_id is not None else {}
         )
+        self.latest_baseline = latest_baseline
+        self.latest_baseline_after_conflict = latest_baseline_after_conflict
+        self.insert_conflicts_times = insert_conflicts_times
         self.done_calls: list[tuple[int, list[AssignmentWrite]]] = []
         self.failed_calls: list[tuple[int, str]] = []
-        self.insert_running_plan_calls: list[tuple[int, int]] = []
+        self.insert_running_plan_calls: list[tuple[int, int, str]] = []
+        self.delete_plan_calls: list[int] = []
+        self.get_latest_baseline_plan_calls = 0
+        self.list_open_tickets_calls = 0
+        self.list_engineers_calls = 0
 
     async def get_region_id(self, _conn: Any, _code: str) -> int | None:
         return self.region_id
@@ -217,10 +227,23 @@ class FakeRepo:
             seed="east",
         )
 
+    async def get_latest_baseline_plan(
+        self, _conn: Any, _engineer_set_id: int, _plan_date: date
+    ) -> LatestBaselinePlan | None:
+        self.get_latest_baseline_plan_calls += 1
+        if self.get_latest_baseline_plan_calls == 1:
+            return self.latest_baseline
+        return self.latest_baseline_after_conflict
+
+    async def delete_plan(self, _conn: Any, plan_id: int) -> None:
+        self.delete_plan_calls.append(plan_id)
+
     async def list_open_tickets(self, _conn: Any, _region_id: int) -> list[Ticket]:
+        self.list_open_tickets_calls += 1
         return self.tickets
 
     async def list_engineers(self, _conn: Any, _engineer_set_id: int) -> list[Engineer]:
+        self.list_engineers_calls += 1
         return self.engineers
 
     async def insert_running_plan(
@@ -231,11 +254,14 @@ class FakeRepo:
         _plan_date: date,
         _algorithm: str,
         _created_at: datetime,
-    ) -> int:
-        self.insert_running_plan_calls.append((region_id, engineer_set_id))
+        name_suffix: str = "",
+    ) -> tuple[int, str] | None:
+        self.insert_running_plan_calls.append((region_id, engineer_set_id, name_suffix))
         if self.insert_error:
             raise self.insert_error
-        return self.plan_id
+        if len(self.insert_running_plan_calls) <= self.insert_conflicts_times:
+            return None
+        return (self.plan_id, f"План №{self.plan_id}{name_suffix}")
 
     async def mark_plan_done(
         self, _conn: Any, plan_id: int, assignments: list[AssignmentWrite]
@@ -271,6 +297,8 @@ def _builder(
         insert_running_plan=repo.insert_running_plan,
         mark_plan_done=repo.mark_plan_done,
         mark_plan_failed=repo.mark_plan_failed,
+        get_latest_baseline_plan=repo.get_latest_baseline_plan,
+        delete_plan=repo.delete_plan,
         osrm=osrm or FakeOsrm({VehicleType.CAR: _matrix(2)}),
         pool=pool or FakeSolverPool(SyncPool()),
         max_table_size=max_table_size,
@@ -288,19 +316,20 @@ async def test_enqueue_queues_a_running_plan() -> None:
 
     assert queued == QueuedPlan(
         plan_id=42,
+        name="План №42",
         algorithm="or_tools",
         engineer_set_id=DEFAULT_SET_ID,
         tickets=repo.tickets,
         engineers=repo.engineers,
     )
-    assert repo.insert_running_plan_calls == [(1, DEFAULT_SET_ID)]
+    assert repo.insert_running_plan_calls == [(1, DEFAULT_SET_ID, "")]
 
 
 async def test_enqueue_given_engineer_set() -> None:
     repo = FakeRepo(engineer_set_region={9: 1})
     queued = await _builder(repo).enqueue("east", DAY, "or_tools", 9)
     assert queued.engineer_set_id == 9
-    assert repo.insert_running_plan_calls == [(1, 9)]
+    assert repo.insert_running_plan_calls == [(1, 9, "")]
 
 
 async def test_enqueue_engineer_set_not_in_region() -> None:
@@ -348,6 +377,110 @@ async def test_enqueue_insert_failure_propagates() -> None:
     repo = FakeRepo(insert_error=DependencyUnavailable(reason="db_unavailable"))
     with pytest.raises(DependencyUnavailable):
         await _builder(repo).enqueue("east", DAY, "or_tools", None)
+
+
+async def test_enqueue_or_tools_name_suffix_is_empty() -> None:
+    repo = FakeRepo()
+    await _builder(repo).enqueue("east", DAY, "or_tools", None)
+    assert repo.insert_running_plan_calls == [(1, DEFAULT_SET_ID, "")]
+
+
+async def test_enqueue_baseline_resolves_full_engineer_set_for_name() -> None:
+    repo = FakeRepo()
+    queued = await _builder(repo).enqueue("east", DAY, "baseline_fcfs", None)
+    assert repo.insert_running_plan_calls == [(1, DEFAULT_SET_ID, " · Вариант Б")]
+    assert queued.name == f"План №{repo.plan_id} · Вариант Б"
+
+
+async def test_enqueue_or_tools_ignores_existing_baseline_for_key() -> None:
+    repo = FakeRepo(latest_baseline=LatestBaselinePlan(id=99, status="running"))
+    queued = await _builder(repo).enqueue("east", DAY, "or_tools", None)
+    assert repo.get_latest_baseline_plan_calls == 0
+    assert queued.reused is False
+    assert repo.insert_running_plan_calls == [(1, DEFAULT_SET_ID, "")]
+
+
+async def test_enqueue_baseline_reuses_running_plan() -> None:
+    repo = FakeRepo(latest_baseline=LatestBaselinePlan(id=7, status="running"))
+    queued = await _builder(repo).enqueue("east", DAY, "baseline_fcfs", None)
+
+    assert queued.reused is True
+    assert queued.plan_id == 7
+    assert repo.insert_running_plan_calls == []
+    assert repo.list_open_tickets_calls == 0
+    assert repo.list_engineers_calls == 0
+    assert repo.delete_plan_calls == []
+
+
+async def test_enqueue_baseline_reuses_done_plan() -> None:
+    repo = FakeRepo(latest_baseline=LatestBaselinePlan(id=7, status="done"))
+    queued = await _builder(repo).enqueue("east", DAY, "baseline_fcfs", None)
+
+    assert queued.reused is True
+    assert queued.plan_id == 7
+    assert repo.insert_running_plan_calls == []
+
+
+async def test_enqueue_baseline_deletes_failed_then_builds() -> None:
+    repo = FakeRepo(latest_baseline=LatestBaselinePlan(id=5, status="failed"), plan_id=42)
+    queued = await _builder(repo).enqueue("east", DAY, "baseline_fcfs", None)
+
+    assert repo.delete_plan_calls == [5]
+    assert queued.reused is False
+    assert queued.plan_id == 42
+
+
+async def test_enqueue_baseline_builds_when_no_existing_plan() -> None:
+    repo = FakeRepo(latest_baseline=None)
+    queued = await _builder(repo).enqueue("east", DAY, "baseline_fcfs", None)
+
+    assert repo.delete_plan_calls == []
+    assert queued.reused is False
+    assert len(repo.insert_running_plan_calls) == 1
+
+
+async def test_enqueue_baseline_race_lost_returns_winner() -> None:
+    repo = FakeRepo(
+        latest_baseline=None,
+        insert_conflicts_times=1,
+        latest_baseline_after_conflict=LatestBaselinePlan(id=13, status="running"),
+    )
+    queued = await _builder(repo).enqueue("east", DAY, "baseline_fcfs", None)
+
+    assert queued.reused is True
+    assert queued.plan_id == 13
+    assert repo.get_latest_baseline_plan_calls == 2
+    assert len(repo.insert_running_plan_calls) == 1
+
+
+async def test_enqueue_baseline_race_lost_winner_also_failed_retries() -> None:
+    """The competitor that won the race is re-read, not assumed running/done: if it has
+    itself since failed, the loop deletes it and tries again instead of handing the
+    client a failed plan under the label `reused` (regression — the first version of
+    this branch trusted the pre-conflict snapshot and skipped this check)."""
+    repo = FakeRepo(
+        plan_id=42,
+        latest_baseline=None,
+        insert_conflicts_times=1,
+        latest_baseline_after_conflict=LatestBaselinePlan(id=13, status="failed"),
+    )
+    queued = await _builder(repo).enqueue("east", DAY, "baseline_fcfs", None)
+
+    assert repo.delete_plan_calls == [13]
+    assert queued.reused is False
+    assert queued.plan_id == 42
+    assert len(repo.insert_running_plan_calls) == 2
+
+
+async def test_enqueue_baseline_gives_up_after_max_attempts() -> None:
+    repo = FakeRepo(
+        latest_baseline=None,
+        insert_conflicts_times=1000,
+        latest_baseline_after_conflict=LatestBaselinePlan(id=13, status="failed"),
+    )
+    with pytest.raises(DependencyUnavailable) as e:
+        await _builder(repo).enqueue("east", DAY, "baseline_fcfs", None)
+    assert e.value.reason == "baseline_build_contended"
 
 
 # --- build --------------------------------------------------------------------------

@@ -364,6 +364,11 @@ textarea {
   flex-shrink: 0;
 }
 
+.stop-row__address {
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
 .stop-row__window {
   font-size: 11px;
   color: var(--color-text-muted);

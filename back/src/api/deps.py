@@ -18,13 +18,16 @@ from src.repository.engineer_sets import (
 )
 from src.repository.plans import (
     delete_plan,
+    get_latest_baseline_plan,
     get_plan,
+    get_plan_summary,
     insert_replanned_plan,
     insert_running_plan,
     list_plan_assignments,
     list_plans,
     mark_plan_done,
     mark_plan_failed,
+    update_plan_name,
 )
 from src.repository.region_data import replace_region_data
 from src.repository.region_lists import (
@@ -128,6 +131,8 @@ def create_plan_services(
         insert_running_plan=insert_running_plan,
         mark_plan_done=mark_plan_done,
         mark_plan_failed=mark_plan_failed,
+        get_latest_baseline_plan=get_latest_baseline_plan,
+        delete_plan=delete_plan,
         osrm=osrm,
         pool=pool,
         max_table_size=settings.osrm_max_table_size,
@@ -140,6 +145,8 @@ def create_plan_services(
         list_engineers=list_engineers,
         list_plan_assignments=list_plan_assignments,
         delete_plan=delete_plan,
+        update_plan_name=update_plan_name,
+        get_plan_summary=get_plan_summary,
     )
     replanner = Replanner(
         connect=db_pool.connection,

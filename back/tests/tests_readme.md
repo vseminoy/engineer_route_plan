@@ -347,7 +347,9 @@
 > Мока нет: `@pytest.mark.integration`, контейнер PostGIS и ревизия, как в разделе схемы БД;
 > `sweep_running_plans` вызывает `queries.sweep_running_plans` из `queries/plans.sql` через
 > aiosql под ролью `app_rw`. Планы заводятся напрямую `insert_running_plan`/`mark_plan_done`,
-> без реального построения.
+> без реального построения. `insert_running_plan` принимает `name_suffix` и возвращает
+> `(id, name)` или `None` при конфликте по `ux_plans__active_baseline_per_set_date`;
+> `insert_replanned_plan` возвращает `(id, name)`.
 
 | Test | Scenario | Expected result |
 |---|---|---|
@@ -359,10 +361,22 @@
 | `test_list_plans_empty_region` | регион без единого плана | пустой список |
 | `test_list_plans_by_engineer_set` | регион с планами двух наборов бригад | список набора содержит только его планы |
 | `test_list_plans_row_shape` | план — результат `insert_replanned_plan` (есть `parent_plan_id`) с последующим `mark_plan_failed` | `PlanSummaryRow.parent_plan_id`, `.failed_reason`, `.plan_date`, `.algorithm`, `.region_code`, `.created_at` — те же значения, что записаны |
+| `test_list_plans_includes_name` | план создан с известным именем (`insert_running_plan`, затем `update_plan_name`) | `PlanSummaryRow.name` — то же имя, в `list_plans_by_region` и в `list_plans_by_engineer_set` |
 | `test_delete_plan_removes_plan_and_assignments` | `done`-план с двумя строками `assignments` | `get_plan` после удаления — `None`, `list_plan_assignments` — `[]` |
 | `test_delete_plan_cascades_replan_chain` | план → `insert_replanned_plan` (потомок) → ещё один `insert_replanned_plan` от потомка (внук), плюс строка `replan_events` (`plan_id`=план, `result_plan_id`=потомок) | `delete_plan(план)` удаляет все три плана и строку `replan_events`; `get_plan` каждого — `None` |
 | `test_delete_plan_nonexistent_is_noop` | `delete_plan(999)`, такого плана нет | не поднимает исключение, ни одна строка `plans` не тронута |
 | `test_delete_plan_db_unavailable` | соединение закрыто до вызова | `DependencyUnavailable(reason="db_unavailable")`; запись `db_query_failed` |
+| `test_insert_running_plan_names_or_tools` | `insert_running_plan(..., algorithm="or_tools", name_suffix="")` | возвращает `(id, f"План №{id}")` |
+| `test_insert_running_plan_names_baseline_with_suffix` | `algorithm="baseline_fcfs", name_suffix=" · Alpha"` | возвращает `(id, f"План №{id} · Alpha")` |
+| `test_insert_running_plan_conflict_returns_none` | в БД уже есть `baseline_fcfs`-план `status='running'` для `(engineer_set_id, plan_date)`; повторный `insert_running_plan` с теми же `engineer_set_id`/`plan_date`/`algorithm='baseline_fcfs'` | возвращает `None`; в `plans` по-прежнему одна строка этой комбинации |
+| `test_insert_running_plan_conflict_ignores_failed` | тот же случай, но существующая строка — `status='failed'` | вставка проходит обычным образом, возвращает `(id, name)`; теперь две строки этой комбинации |
+| `test_insert_running_plan_or_tools_never_conflicts` | два `insert_running_plan` подряд, одинаковые `engineer_set_id`/`plan_date`, `algorithm="or_tools"` | обе вставки успешны — частичный индекс не действует на `or_tools` |
+| `test_get_latest_baseline_plan_returns_most_recent` | для одной комбинации — старый `failed`-план и новый `done`-план (разный `created_at`, вставлены напрямую без удаления старого) | возвращён `done`-план |
+| `test_get_latest_baseline_plan_none_when_absent` | для комбинации нет ни одного `baseline_fcfs`-плана | `None` |
+| `test_get_latest_baseline_plan_ignores_or_tools` | есть `or_tools`-план той же комбинации, `baseline_fcfs` — нет | `None` |
+| `test_update_plan_name_persists` | `update_plan_name(plan_id, "Новое имя")`, затем `get_plan` | `.name == "Новое имя"` |
+| `test_insert_replanned_plan_names_from_id` | `insert_replanned_plan(...)` | возвращает `(id, f"План №{id}")` |
+| `test_get_plan_includes_name` | план создан с известным именем | `PlanRow.name` — то же имя |
 
 ## `src/service/ticket_file.py` — чтение файла заявок
 
@@ -856,7 +870,7 @@
 
 > Замена стабами: `connect`/`get_region_id`/`get_default_engineer_set_id`/`get_engineer_set`/
 > `list_open_tickets`/`list_engineers`/`insert_running_plan`/`mark_plan_done`/
-> `mark_plan_failed`/`mark_running_plans_failed` —
+> `mark_plan_failed`/`mark_running_plans_failed`/`get_latest_baseline_plan`/`delete_plan` —
 > асинхронные функции без реальной БД; OSRM — фейк с `table()`, возвращающий заданные
 > матрицы или ошибку; пул солвера — `FakeSolverPool` (реализует протокол `SolverPool` из
 > `solver_pool.py`): `.executor` — `SyncPool` (выполняет переданную функцию синхронно в
@@ -881,6 +895,16 @@
 | `test_enqueue_plan_date_mismatch` | у заявки окно не на дату плана | `InvalidInput(reason="plan_date_mismatch")` |
 | `test_enqueue_too_many_points` | бригад + заявок больше `max_table_size` | `InvalidInput(reason="too_many_points")` |
 | `test_enqueue_insert_failure_propagates` | `insert_running_plan` поднимает `DependencyUnavailable` | ошибка поднята как есть |
+| `test_enqueue_or_tools_name_suffix_is_empty` | `algorithm="or_tools"` | `insert_running_plan` вызван с `name_suffix=""` |
+| `test_enqueue_baseline_resolves_full_engineer_set_for_name` | `algorithm="baseline_fcfs"`, набор `default` (не передан явно) | `insert_running_plan` вызван с `name_suffix=f" · {engineer_set.name}"` — сервис прочитал набор целиком, не только id |
+| `test_enqueue_or_tools_ignores_existing_baseline_for_key` | `algorithm="or_tools"`, для той же комбинации уже есть `baseline_fcfs`-план | `get_latest_baseline_plan` не вызывается; `enqueue` строит как обычно (правило не распространяется на `or_tools`) |
+| `test_enqueue_baseline_reuses_running_plan` | `get_latest_baseline_plan` вернул план `status="running"` для этой комбинации | `QueuedPlan(reused=True, plan_id=<этот id>)`; `insert_running_plan`, `list_open_tickets`, `list_engineers` не вызваны |
+| `test_enqueue_baseline_reuses_done_plan` | то же, `status="done"` | то же, `reused=True` |
+| `test_enqueue_baseline_deletes_failed_then_builds` | `get_latest_baseline_plan` вернул план `status="failed"` | `delete_plan` вызван с его `plan_id` до `insert_running_plan`; возвращён `QueuedPlan(reused=False, ...)` с новым `plan_id` |
+| `test_enqueue_baseline_builds_when_no_existing_plan` | `get_latest_baseline_plan` вернул `None` | `delete_plan` не вызван; `insert_running_plan` вызван как обычно |
+| `test_enqueue_baseline_race_lost_returns_winner` | `insert_running_plan` вернул `None` (конфликт уникального индекса); второй вызов `get_latest_baseline_plan` возвращает план конкурента в статусе `running` | `QueuedPlan(reused=True, plan_id=<план конкурента>)`; исключения нет; повторной вставки не было |
+| `test_enqueue_baseline_race_lost_winner_also_failed_retries` | то же, но план конкурента, прочитанный заново, — `status=failed` (успел провалиться между проигрышем гонки и перечитыванием) | старый план конкурента удалён (`delete_plan`), вставка повторена и на этот раз успешна — `QueuedPlan(reused=False, ...)` с новым `plan_id`; статус конкурента не считается навечно «тем же», каким был в момент конфликта |
+| `test_enqueue_baseline_gives_up_after_max_attempts` | `insert_running_plan` конфликтует на каждой попытке, конкурент каждый раз оказывается `failed` (бесконечно пересоздаётся) | после исчерпания предела попыток — `DependencyUnavailable(reason="baseline_build_contended")`, а не зависание в цикле |
 
 ### `build`
 
@@ -982,6 +1006,21 @@
 | `test_compare_engineer_set_mismatch` | план из пути `done` с `engineer_set_id=1`, план-baseline `done` с `engineer_set_id=2` | `InvalidInput(reason="engineer_set_mismatch")`; метрики не считаются |
 | `test_compare_same_engineer_set_ok` | оба плана `done` с одним и тем же `engineer_set_id` | список из 3 записей, как в остальных сценариях `compare` |
 | `test_compare_dependency_unavailable_propagates` | `get_plan` любого из двух планов поднимает `DependencyUnavailable` | ошибка поднята как есть |
+
+### `rename`
+
+> Замена стабами: те же `get_plan`/`update_plan_name`, что у `get`/`delete`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `test_rename_success` | `get_plan` вернул план, `update_plan_name` не поднимает исключение | `update_plan_name` вызван с `(plan_id, "Новое")`; возвращена `PlanSummary`-форма с этим именем и остальными полями из `get_plan` |
+| `test_rename_trims_whitespace` | имя `"  Новое  "` | сохранённое и возвращённое имя — `"Новое"` |
+| `test_rename_empty_after_trim_rejected` | имя `"   "` (после обрезки пусто) | `InvalidInput(fields=[("name", ...)])`; `update_plan_name` не вызван |
+| `test_rename_not_found` | `get_plan` вернул `None` | `NotFound(reason="plan_not_found")`; `update_plan_name` не вызван |
+| `test_rename_deleted_concurrently_returns_not_found` | `get_plan` нашёл план, но `get_plan_summary` после `update_plan_name` вернул `None` (план удалён параллельным `DELETE /plan/{id}` в этом окне) | `NotFound(reason="plan_not_found")`, а не необработанное исключение; `update_plan_name` всё же был вызван |
+| `test_rename_any_status_allowed` (параметризован: `running`, `done`, `failed`) | `get_plan` вернул план с этим `status` | `update_plan_name` вызван — в отличие от `delete`, запрета по статусу нет |
+| `test_rename_get_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `get_plan` поднимает эту ошибку | ошибка поднята как есть; `update_plan_name` не вызван |
+| `test_rename_update_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | план найден, `update_plan_name` поднимает эту ошибку | ошибка поднята как есть |
 
 ## `src/service/replan.py` — перепланирование по событию (Contract Net)
 
@@ -1367,20 +1406,20 @@
 | `test_change_ticket_status_too_large` | тело больше предела 1024 байта | `413` без тела; сервис не вызван |
 | `test_ticket_status_get_not_implemented` | `GET /api/v1/tickets/87/status` | `501` без тела (метода нет у операции); сервис не вызван |
 
-## `api` — GET /api/v1/plan, POST /api/v1/plan/build, GET /api/v1/plan/{plan_id}, DELETE /api/v1/plan/{plan_id}, GET /api/v1/plan/{plan_id}/compare
+## `api` — GET /api/v1/plan, POST /api/v1/plan/build, GET /api/v1/plan/{plan_id}, PATCH /api/v1/plan/{plan_id}, DELETE /api/v1/plan/{plan_id}, GET /api/v1/plan/{plan_id}/compare
 
 Файл: `tests/api/test_plan.py`.
 
 > Замена стабами: `RegionLists`/`PlanBuilder`/`PlanReader` — фейки через
 > `app.dependency_overrides` (`FakeLists`/`FakePlanBuilder`/`FakePlanReader` в
-> `tests/api/region_fakes.py`), которые запоминают вызовы (включая `compare` и `delete`) и
-> возвращают заданный результат или поднимают заданное исключение; БД, OSRM и солвер не
-> участвуют. `background_tasks.add_task` в `TestClient` выполняется до возврата ответа
-> клиенту, так что `build_calls` фейка проверяется сразу после запроса.
+> `tests/api/region_fakes.py`), которые запоминают вызовы (включая `compare`, `delete` и
+> `rename`) и возвращают заданный результат или поднимают заданное исключение; БД, OSRM и
+> солвер не участвуют. `background_tasks.add_task` в `TestClient` выполняется до возврата
+> ответа клиенту, так что `build_calls` фейка проверяется сразу после запроса.
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `test_list_plans` | `?region=east`; `FakeLists.plans` вернул одну сводку (`plan_id`, `region`, `engineer_set_id`, `plan_date`, `algorithm`, `status`, `created_at`, `parent_plan_id`, `failed_reason` заполнены) | `200`, тело — массив `PlanSummary` с теми же полями; сервис вызван с `(east, None)` |
+| `test_list_plans` | `?region=east`; `FakeLists.plans` вернул одну сводку (`plan_id`, `name`, `region`, `engineer_set_id`, `plan_date`, `algorithm`, `status`, `created_at`, `parent_plan_id`, `failed_reason` заполнены) | `200`, тело — массив `PlanSummary` с теми же полями; сервис вызван с `(east, None)` |
 | `test_list_plans_given_set` | `?region=east&engineer_set_id=9` | сервис вызван с `(east, 9)` |
 | `test_list_plans_empty` | сервис вернул `[]` | `200`, `[]` |
 | `test_list_plans_region_invalid` (параметризован: нет параметра, `East!`, 51 символ) | запрос с таким `region` | `400`, `{"fields": [{"name": "region", ...}]}`; сервис не вызван |
@@ -1389,14 +1428,16 @@
 | `test_list_plans_set_not_in_region` | сервис поднимает `InvalidInput(fields=[("engineer_set_id", ...)])` | `400`, `{"fields": [{"name": "engineer_set_id", ...}]}` |
 | `test_list_plans_db_unavailable` | сервис поднимает `DependencyUnavailable(reason="db_unavailable")` | `503` без тела; запись `list_plans_failed` уровня `error` |
 | `test_list_plans_db_failure` | сервис поднимает `DatabaseFailure` | `500` без тела |
-| `test_build_plan_returns_202_running` | валидный запрос без `engineer_set_id` | `202`, тело `Plan` со `status=running`, `engineer_set_id` (набор `default`, как вернул `enqueue`) и без `engineers`/`unassigned`; `enqueue` вызван с `(region, plan_date, algorithm, None)`; фоновая задача `build` поставлена с `plan_id`, теми же `tickets`/`engineers`, что вернул `enqueue`, `plan_date` и `algorithm` |
+| `test_build_plan_returns_202_running` | валидный запрос без `engineer_set_id` | `202`, тело `Plan` со `status=running`, `name` и `engineer_set_id` (набор `default`, как вернул `enqueue`) и без `engineers`/`unassigned`; `enqueue` вызван с `(region, plan_date, algorithm, None)`; фоновая задача `build` поставлена с `plan_id`, теми же `tickets`/`engineers`, что вернул `enqueue`, `plan_date` и `algorithm` |
+| `test_build_plan_baseline_reused_skips_background_task` | `enqueue` вернул `QueuedPlan(reused=True, plan_id=7)`; `reader.get(7)` вернул `PlanRead(status="done", name="План №7 · Alpha", ...)` | `202`, тело — результат `reader.get(7)` целиком (включая `engineers`/`metrics`, если `done`); фоновая задача `build` НЕ поставлена |
+| `test_build_plan_baseline_reused_running_status` | то же, `reader.get(7)` вернул `status="running"` | `202`, тело `Plan(status=running)` из `reader.get`, без `engineers`/`unassigned` |
 | `test_build_plan_given_engineer_set` | тело с `engineer_set_id=9` | `enqueue` вызван с `engineer_set_id=9`; `202`, `Plan.engineer_set_id == 9` |
 | `test_build_plan_invalid_date` | `plan_date="2026-02-30"` (несуществующая дата, форму регулярное выражение спеки принимает) | `400`, `{"fields": [{"name": "plan_date", "message": "Несуществующая дата"}]}` |
 | `test_build_plan_rejects_malformed_body` (параметризован: пустое тело, без `algorithm`, `algorithm` вне перечня, `engineer_set_id=0`, лишнее поле) | запрос с таким телом | `400` |
 | `test_build_plan_unknown_region` | `enqueue` поднимает `InvalidInput(reason="unknown_region", fields=...)` | `400`, `{"fields": [{"name": "region", ...}]}`; фоновая задача не ставится |
 | `test_build_plan_engineer_set_not_in_region` | `enqueue` поднимает `InvalidInput(fields=[("engineer_set_id", ...)])` | `400`, `{"fields": [{"name": "engineer_set_id", ...}]}`; фоновая задача не ставится |
 | `test_build_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `enqueue` поднимает эту ошибку | `503` \| `500` без тела |
-| `test_get_running_plan` | `PlanRead(status="running", engineer_set_id=..., ...)` | `200`, `engineer_set_id` в теле независимо от статуса; `engineers`/`unassigned`/`failed_reason` — `null` |
+| `test_get_running_plan` | `PlanRead(status="running", name="План №5", engineer_set_id=..., ...)` | `200`, `name`/`engineer_set_id` в теле независимо от статуса; `engineers`/`unassigned`/`failed_reason` — `null` |
 | `test_get_failed_plan` | `PlanRead(status="failed", failed_reason=...)` | `200`, тот же `failed_reason`; `engineers`/`unassigned` — `null` |
 | `test_get_done_plan` | `PlanRead(status="done", ...)` с одной бригадой и одним визитом, одной неназначенной заявкой, заполненным `metrics` | `200`, тело `Plan` с `engineers`/`unassigned`/`metrics`, все поля контракта (`Visit`, `EngineerRoute`, `UnassignedTicket`, `PlanMetrics`) заполнены как в `PlanRead` |
 | `test_get_plan_not_found` | `reader.get` поднимает `NotFound` | `404` без тела |
@@ -1409,6 +1450,13 @@
 | `test_delete_plan_running_conflict` | `reader.delete` поднимает `Conflict(reason="plan_running")` | `409` без тела |
 | `test_delete_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `reader.delete` поднимает эту ошибку | `503` \| `500` без тела |
 | `test_delete_plan_failed_logged` | `reader.delete` поднимает `NotFound`/`Conflict` | запись `plan_delete_failed` уровня `warning` с `reason` |
+| `test_rename_plan_returns_200` | тело `{"name": "Новое имя"}`, `reader.rename` вернул `PlanSummary`-форму с этим именем | `200`, тело `PlanSummary` с новым `name`; `reader.rename` вызван с `(plan_id, "Новое имя")` |
+| `test_rename_plan_invalid_id` (параметризован: `0`, `-1`, `abc`) | `plan_id` с таким значением в пути | `400`, `{"fields": [{"name": "plan_id", ...}]}`; `reader.rename` не вызван |
+| `test_rename_plan_rejects_malformed_body` (параметризован: пустое тело, `name` отсутствует, `name=""`, `name` длиннее 100 символов, лишнее поле) | запрос с таким телом | `400`; `reader.rename` не вызван |
+| `test_rename_plan_empty_after_trim` | `name="   "` | `reader.rename` поднимает `InvalidInput(fields=[("name", ...)])`; `400`, `{"fields": [{"name": "name", ...}]}` |
+| `test_rename_plan_not_found` | `reader.rename` поднимает `NotFound` | `404` без тела |
+| `test_rename_plan_dependency_failure` (параметризован: `DependencyUnavailable`, `DatabaseFailure`) | `reader.rename` поднимает эту ошибку | `503` \| `500` без тела |
+| `test_rename_plan_failed_logged` | `reader.rename` поднимает `NotFound`/`InvalidInput` | запись `plan_rename_failed` уровня `warning` с `reason` |
 | `test_compare_plan_returns_entries` | `reader.compare` возвращает 3 записи (`engineers_used`, `total_distance_km`, `unassigned_count`) | `200`, тело — массив `PlanComparisonEntry` в том же порядке, поля `metric`/`main`/`baseline`/`delta` как вернул сервис |
 | `test_compare_plan_invalid_ids` (параметризован: `plan_id=0`, `baseline_plan_id=0`) | путь или query-параметр вне 1..2^63−1 | `400` |
 | `test_compare_plan_missing_baseline_query` | запрос без `baseline_plan_id` | `400` |
@@ -1560,9 +1608,12 @@
 > бригадой, заявкой и `engineer_set_id`; чтение плана — план `done` без маршрутов и
 > неназначенных, с тем же `engineer_set_id`), а на неизвестный
 > регион поднимают `InvalidInput` — так позитивные кейсы проверяют форму успешных ответов
-> без БД. Чтение плана возвращает `metrics`, заполненный по той же схеме, что и
-> `engineers`/`unassigned`; сравнение планов (`compare`) возвращает фиксированный список из
-> трёх корректных записей независимо от переданных `plan_id`/`baseline_plan_id`.
+> без БД. Чтение и построение плана возвращают `name`, заполненное наравне с остальными
+> обязательными полями; чтение плана возвращает `metrics`, заполненный по той же схеме, что
+> и `engineers`/`unassigned`; переименование (`rename`) возвращает ту же форму, что чтение
+> списка планов (`PlanSummary`), с переданным именем; сравнение планов (`compare`)
+> возвращает фиксированный список из трёх корректных записей независимо от переданных
+> `plan_id`/`baseline_plan_id`.
 
 | Test | Scenario | Expected result |
 |---|---|---|

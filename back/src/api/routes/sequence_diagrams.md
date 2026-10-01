@@ -753,10 +753,17 @@ sequenceDiagram
 возвращает её клиенту — чтение открытых заявок и бригад региона, обращение к OSRM, выбранный
 алгоритм (`or_tools` — трёхфазная лексикографическая оптимизация в отдельном процессе,
 `baseline_fcfs` — в фоновой задаче того же процесса: не блокирует GIL дольше нескольких мс на
-максимальном входе), атрибуция причин отказа и запись результата идут в фоновой задаче уже
-после ответа. Клиент узнаёт результат, опрашивая `GET /api/v1/plan/{plan_id}`, пока `status`
-не станет `done` или `failed`. Каждый вызов создаёт новый план — раньше построенные планы
-региона не трогает.
+максимальном входе), атрибуция причин отказа и запись результата идут в фоне после ответа.
+Клиент узнаёт результат, опрашивая `GET /api/v1/plan/{plan_id}`, пока `status` не станет
+`done` или `failed`. Для `or_tools` каждый вызов создаёт новый план — раньше построенные
+планы региона не трогает. Для `baseline_fcfs` построение не дублируется: на комбинацию
+(регион, `plan_date`, `engineer_set_id`) существует не более одного плана в состоянии
+`running` или `done` — повторный вызов возвращает его, не ставя новое построение в очередь;
+план в состоянии `failed` при повторном вызове удаляется и строится заново.
+
+Имя плана выставляется автоматически при постановке в очередь: «План №{plan_id}», у
+`baseline_fcfs` — с именем набора бригад («План №{plan_id} · {имя набора}»); id неизвестен
+до вставки строки, поэтому имя дописывается тем же запросом сразу после неё, не в фоне.
 
 Бизнес-проверки до постановки в очередь: код региона есть в конфигурации и у региона есть
 загруженные данные (иначе строить план не по чему); окно каждой открытой заявки региона
@@ -764,7 +771,9 @@ sequenceDiagram
 заявок, и план не имеет смысла); число точек будущей матрицы (бригады + заявки) не
 больше предела OSRM-сервера. Эти проверки — единственное, что может вернуть `400`: сама
 постановка в очередь предполагает, что план будет считаться, и вернуться `202` может либо
-она, либо отказ БД при вставке строки плана.
+она, либо отказ БД при вставке строки плана. Для `baseline_fcfs` плана, уже существующего в
+состоянии `running`/`done`, эти проверки не выполняются вовсе — ответ собирается из уже
+сохранённого плана тем же чтением, что и `GET /plan/{plan_id}`.
 
 Общего дедлайна на всё построение больше нет: раз ответ клиенту уже отправлен, обращение к
 OSRM ограничено собственным таймаутом HTTP-клиента, а солвер — своим `time_limit`. Основной
@@ -816,41 +825,68 @@ sequenceDiagram
                 H-->>Client: 400 {message}
             else engineer_set_id передан и не принадлежит региону
                 Repo-->>Svc: region_id
-                Svc->>Repo: region_id набора engineer_set_id
-                Repo-->>Svc: region_id набора ≠ region_id региона, либо набора нет
+                Svc->>Repo: набор engineer_set_id целиком
+                Repo-->>Svc: набора нет, либо его region_id ≠ region_id региона
                 Svc-->>API: InvalidInput(fields: engineer_set_id)
                 API->>H: InvalidInput
                 H-->>Client: 400 {fields: [engineer_set_id]}
             else
                 Repo-->>Svc: region_id
-                alt engineer_set_id не передан
+                alt engineer_set_id передан
+                    Svc->>Repo: набор engineer_set_id целиком (id, name, region_id)
+                    Repo-->>Svc: engineer_set
+                else engineer_set_id не передан
                     Svc->>Repo: id набора default региона
-                    Repo-->>Svc: engineer_set_id
+                    Repo-->>Svc: default_id
+                    Svc->>Repo: набор default_id целиком
+                    Repo-->>Svc: engineer_set
                 end
-                Svc->>Repo: открытые заявки региона и бригады набора engineer_set_id
-                Repo-->>Svc: tickets, engineers
-                alt окно хотя бы одной заявки не на plan_date
-                    Svc-->>API: InvalidInput(plan_date_mismatch)
-                    API->>H: InvalidInput
-                    H-->>Client: 400 {message}
-                else число точек (бригады + заявки) больше предела OSRM
-                    Svc-->>API: InvalidInput(too_many_points)
-                    API->>H: InvalidInput
-                    H-->>Client: 400 {message}
+                alt algorithm = baseline_fcfs И для (engineer_set.id, plan_date) уже есть план в status running|done
+                    Svc->>PlanRepo: последний план (engineer_set.id, plan_date, algorithm=baseline_fcfs)
+                    PlanRepo-->>Svc: existing (status running|done)
+                    Svc-->>API: QueuedPlan(reused=true, plan_id=existing.id)
+                    API->>Svc: get(existing.id) (как GET /plan/{id})
+                    Svc-->>API: Plan (status running|done, name, ...)
+                    API-->>Client: 202 Plan
                 else
-                    Svc->>PlanRepo: INSERT plans (region_id, engineer_set_id, plan_date, algorithm, status=running, created_at) RETURNING id
-                    alt БД отклонила запрос или недоступна
-                        PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
-                        Svc-->>API: DependencyUnavailable | DatabaseFailure
-                        API->>API: лог plan_build_failed (error) → H
-                        H-->>Client: 503 | 500 без тела (план не создан)
+                    opt algorithm = baseline_fcfs И для (engineer_set.id, plan_date) есть план в status failed
+                        Svc->>PlanRepo: последний план (engineer_set.id, plan_date, algorithm=baseline_fcfs)
+                        PlanRepo-->>Svc: existing (status failed)
+                        Svc->>PlanRepo: удалить existing.id (дерево перепланирований, как DELETE /plan/{id})
+                        PlanRepo-->>Svc: OK
+                    end
+                    Svc->>Repo: открытые заявки региона и бригады набора engineer_set.id
+                    Repo-->>Svc: tickets, engineers
+                    alt окно хотя бы одной заявки не на plan_date
+                        Svc-->>API: InvalidInput(plan_date_mismatch)
+                        API->>H: InvalidInput
+                        H-->>Client: 400 {message}
+                    else число точек (бригады + заявки) больше предела OSRM
+                        Svc-->>API: InvalidInput(too_many_points)
+                        API->>H: InvalidInput
+                        H-->>Client: 400 {message}
                     else
-                        PlanRepo-->>Svc: plan_id
-                        Svc->>Svc: лог plan_enqueued (plan_id, region, engineer_set_id, algorithm)
-                        Svc-->>API: QueuedPlan (plan_id, algorithm, engineer_set_id, tickets, engineers)
-                        API->>BG: build(plan_id, tickets, engineers, plan_date, algorithm)
-                        API-->>Client: 202 Plan (plan_id, engineer_set_id, status=running)
-                        par на каждый тип транспорта бригад региона
+                        Svc->>PlanRepo: INSERT plans (..., status=running, created_at) ON CONFLICT (engineer_set_id, plan_date) WHERE algorithm='baseline_fcfs' AND status IN ('running','done') DO NOTHING RETURNING id#59; UPDATE SET name='План №'||id[|| ' · '||engineer_set.name] RETURNING id, name
+                        alt БД отклонила запрос или недоступна
+                            PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
+                            Svc-->>API: DependencyUnavailable | DatabaseFailure
+                            API->>API: лог plan_build_failed (error) → H
+                            H-->>Client: 503 | 500 без тела (план не создан)
+                        else конкурентный вызов уже вставил активный baseline-план той же комбинации (гонка на уникальном индексе)
+                            PlanRepo-->>Svc: None
+                            Svc->>PlanRepo: последний план (engineer_set.id, plan_date, algorithm=baseline_fcfs)
+                            PlanRepo-->>Svc: план конкурента (status running|done)
+                            Svc-->>API: QueuedPlan(reused=true, plan_id=план конкурента.id)
+                            API->>Svc: get(план конкурента.id)
+                            Svc-->>API: Plan
+                            API-->>Client: 202 Plan
+                        else
+                            PlanRepo-->>Svc: plan_id, name
+                            Svc->>Svc: лог plan_enqueued (plan_id, region, engineer_set_id, algorithm)
+                            Svc-->>API: QueuedPlan(reused=false, plan_id, name, algorithm, engineer_set_id, tickets, engineers)
+                            API->>BG: build(plan_id, tickets, engineers, plan_date, algorithm)
+                            API-->>Client: 202 Plan (plan_id, name, engineer_set_id, status=running)
+                            par на каждый тип транспорта бригад региона
                             BG->>OSRM: table(vehicle, старты бригад + точки заявок)
                         end
                         alt OSRM недоступен
@@ -882,7 +918,69 @@ sequenceDiagram
                                 end
                             end
                         end
+                        end
                     end
+                end
+            end
+        end
+    end
+```
+
+## `PATCH /api/v1/plan/{plan_id}`
+
+Меняет `plans.name`, каким бы ни был `status` плана — построение не трогает. `name`
+обрезается по пробелам на границе; пустая после обрезки строка отклоняется так же, как
+`minLength`-нарушение (`400`). Ответ — `200 PlanSummary` с уже новым названием, чтобы
+список планов мог обновить карточку без повторного `GET /api/v1/plan`.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as api (маршрут plan)
+    participant H as api (единый обработчик ошибок)
+    participant Svc as service (чтение и изменение плана)
+    participant PlanRepo as queries (планы)
+    participant DB as PostgreSQL
+
+    Client->>API: PATCH /api/v1/plan/42 {name}
+    alt plan_id не целое или вне 1..2^63−1, name нет, короче 1 или длиннее 100 символов, лишнее поле
+        API->>H: RequestValidationError
+        H-->>Client: 400 {fields: [...]}
+    else
+        API->>Svc: rename(plan_id, name)
+        Svc->>Svc: обрезать name по пробелам
+        alt name после обрезки пустая строка
+            Svc-->>API: InvalidInput(fields: name)
+            API->>H: InvalidInput
+            H-->>Client: 400 {fields: [name]}
+        else
+            Svc->>PlanRepo: план plan_id (существование)
+            alt нет свободного соединения в пуле или БД недоступна
+                PlanRepo->>PlanRepo: лог db_query_failed
+                PlanRepo-->>Svc: DependencyUnavailable
+                Svc->>Svc: лог plan_rename_failed (error)
+                Svc-->>API: DependencyUnavailable
+                API->>H: DependencyUnavailable
+                H-->>Client: 503 без тела (план не переименован)
+            else плана с таким id нет
+                PlanRepo-->>Svc: None
+                Svc->>Svc: лог plan_rename_failed (warning, reason=plan_not_found)
+                Svc-->>API: NotFound
+                API->>H: NotFound
+                H-->>Client: 404 без тела
+            else
+                PlanRepo-->>Svc: план найден
+                Svc->>PlanRepo: UPDATE plans SET name=:name WHERE id=:plan_id
+                alt БД отклонила запрос или недоступна
+                    PlanRepo-->>Svc: DependencyUnavailable | DatabaseFailure
+                    Svc->>Svc: лог plan_rename_failed (error)
+                    Svc-->>API: DependencyUnavailable | DatabaseFailure
+                    API->>H: DependencyUnavailable | DatabaseFailure
+                    H-->>Client: 503 | 500 без тела (план не переименован)
+                else
+                    PlanRepo-->>Svc: OK
+                    Svc-->>API: PlanSummary (с новым name)
+                    API-->>Client: 200 PlanSummary
                 end
             end
         end

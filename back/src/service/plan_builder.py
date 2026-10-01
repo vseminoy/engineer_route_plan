@@ -25,7 +25,7 @@ from src.domain import Engineer, EngineerSetWithRegion, Point, Ticket, VehicleTy
 from src.errors import AppError, DependencyUnavailable, InvalidInput
 from src.logging import get_logger
 from src.repository.db import database_errors
-from src.repository.plans import AssignmentWrite
+from src.repository.plans import AssignmentWrite, LatestBaselinePlan
 from src.service import baseline
 from src.service.explain import ExplainedPlan, explain
 from src.service.loader import Connect
@@ -35,15 +35,27 @@ from src.service.solver_pool import SolverPool
 
 logger = get_logger(__name__)
 
+_MAX_BASELINE_BUILD_ATTEMPTS = 3
+"""Bounds the retry loop in `enqueue` for `baseline_fcfs`'s `ux_plans__active_baseline_per_set_date`
+race: each lost race means a concurrent caller is itself mutating the same row, so one retry
+resolves all but a pathological back-to-back sequence of them — a bound here turns that into a
+clear `DependencyUnavailable` instead of an unbounded loop."""
+
 GetRegionId = Callable[[AsyncConnection[Any], str], Awaitable[int | None]]
 GetDefaultEngineerSetId = Callable[[AsyncConnection[Any], int], Awaitable[int | None]]
 GetEngineerSet = Callable[[AsyncConnection[Any], int], Awaitable[EngineerSetWithRegion | None]]
 ListTickets = Callable[[AsyncConnection[Any], int], Awaitable[list[Ticket]]]
 ListEngineers = Callable[[AsyncConnection[Any], int], Awaitable[list[Engineer]]]
-InsertRunningPlan = Callable[[AsyncConnection[Any], int, int, date, str, datetime], Awaitable[int]]
+InsertRunningPlan = Callable[
+    [AsyncConnection[Any], int, int, date, str, datetime, str], Awaitable[tuple[int, str] | None]
+]
 MarkPlanDone = Callable[[AsyncConnection[Any], int, list[AssignmentWrite]], Awaitable[None]]
 MarkPlanFailed = Callable[[AsyncConnection[Any], int, str], Awaitable[None]]
 MarkRunningPlansFailed = Callable[[AsyncConnection[Any], str], Awaitable[list[int]]]
+GetLatestBaselinePlan = Callable[
+    [AsyncConnection[Any], int, date], Awaitable[LatestBaselinePlan | None]
+]
+DeletePlan = Callable[[AsyncConnection[Any], int], Awaitable[None]]
 
 
 class _SolverTimedOut(Exception):
@@ -61,13 +73,20 @@ class TableClient(Protocol):
 @dataclass(frozen=True)
 class QueuedPlan:
     """What `enqueue` both stores and hands `build`: reading the tickets and brigades
-    back from the database a second time could disagree with what was just validated."""
+    back from the database a second time could disagree with what was just validated.
+
+    `reused=True` means `enqueue` found (or lost a race for) an already-active
+    `baseline_fcfs` plan of the same `(engineer_set_id, plan_date)` and is handing back
+    that plan's id instead of a newly queued one — `tickets`/`engineers` are empty and
+    the caller must not schedule a background `build` for it."""
 
     plan_id: int
+    name: str
     algorithm: str
     engineer_set_id: int
-    tickets: list[Ticket]
-    engineers: list[Engineer]
+    reused: bool = False
+    tickets: list[Ticket] = field(default_factory=list)
+    engineers: list[Engineer] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -82,6 +101,8 @@ class PlanBuilder:
     insert_running_plan: InsertRunningPlan
     mark_plan_done: MarkPlanDone
     mark_plan_failed: MarkPlanFailed
+    get_latest_baseline_plan: GetLatestBaselinePlan
+    delete_plan: DeletePlan
     osrm: TableClient
     pool: SolverPool
     """A `ProcessSolverPool` in the running app; tests stand in a fake implementing the
@@ -110,7 +131,13 @@ class PlanBuilder:
     ) -> QueuedPlan:
         """Validates and queues a build. Raises `InvalidInput` before touching OSRM or the
         solver; the plan row is inserted only once every check has passed. Without
-        `engineer_set_id` — the region's `default` set."""
+        `engineer_set_id` — the region's `default` set.
+
+        For `algorithm="baseline_fcfs"`, at most one plan is ever `running`/`done` for a
+        given `(engineer_set_id, plan_date)` — `ux_plans__active_baseline_per_set_date`
+        enforces it. An existing one in either status is returned as-is (`reused=True`,
+        nothing queued, caller must not schedule `build`); a `failed` one is deleted first,
+        then a fresh build is queued as usual. `or_tools` is unaffected — always a new plan."""
         region = self.regions.get(region_code)
         async with database_errors("plan_enqueue"), self.connect() as conn:
             region_id = await self.get_region_id(conn, region.code)
@@ -124,35 +151,71 @@ class PlanBuilder:
                 # A loaded region always has a `default` set — created by its first load
                 # (`replace_region_data`) and never removable — so this is never `None`
                 # here; `region_id is None` above is what actually covers "not loaded".
-                resolved_set_id = await self.get_default_engineer_set_id(conn, region_id)
-                assert resolved_set_id is not None
+                default_id = await self.get_default_engineer_set_id(conn, region_id)
+                assert default_id is not None
+                engineer_set = await self.get_engineer_set(conn, default_id)
+                assert engineer_set is not None
             else:
-                owner = await self.get_engineer_set(conn, engineer_set_id)
-                if owner is None or owner.region_id != region_id:
+                engineer_set = await self.get_engineer_set(conn, engineer_set_id)
+                if engineer_set is None or engineer_set.region_id != region_id:
                     raise InvalidInput(
                         "engineer_set_not_in_region",
                         fields=[("engineer_set_id", "Набор не принадлежит региону")],
                         params={"engineer_set_id": engineer_set_id, "region": region.code},
                     )
-                resolved_set_id = engineer_set_id
-            tickets = await self.list_open_tickets(conn, region_id)
-            engineers = await self.list_engineers(conn, resolved_set_id)
-            _validate_window(tickets, plan_date)
-            _validate_size(engineers, tickets, self.max_table_size)
-            plan_id = await self.insert_running_plan(
-                conn, region_id, resolved_set_id, plan_date, algorithm, self.clock()
-            )
+
+            for _attempt in range(_MAX_BASELINE_BUILD_ATTEMPTS):
+                if algorithm == "baseline_fcfs":
+                    existing = await self.get_latest_baseline_plan(conn, engineer_set.id, plan_date)
+                    if existing is not None:
+                        if existing.status != "failed":
+                            return QueuedPlan(
+                                plan_id=existing.id,
+                                name="",
+                                algorithm=algorithm,
+                                engineer_set_id=engineer_set.id,
+                                reused=True,
+                            )
+                        await self.delete_plan(conn, existing.id)
+
+                tickets = await self.list_open_tickets(conn, region_id)
+                engineers = await self.list_engineers(conn, engineer_set.id)
+                _validate_window(tickets, plan_date)
+                _validate_size(engineers, tickets, self.max_table_size)
+                name_suffix = f" · {engineer_set.name}" if algorithm == "baseline_fcfs" else ""
+                inserted = await self.insert_running_plan(
+                    conn,
+                    region_id,
+                    engineer_set.id,
+                    plan_date,
+                    algorithm,
+                    self.clock(),
+                    name_suffix,
+                )
+                if inserted is not None:
+                    plan_id, name = inserted
+                    break
+                # Only reachable for baseline_fcfs — the partial index has no effect on
+                # or_tools rows, so this insert never returns None for those. Lost the
+                # race for ux_plans__active_baseline_per_set_date: a concurrent call
+                # queued the active baseline for this key between the check above and
+                # this insert. Loop back to read the competitor's own current state
+                # (it may itself have failed by now and need deleting) instead of
+                # assuming it is still running/done.
+            else:
+                raise DependencyUnavailable(reason="baseline_build_contended")
         logger.info(
             "plan_enqueued",
             plan_id=plan_id,
             region=region.code,
-            engineer_set_id=resolved_set_id,
+            engineer_set_id=engineer_set.id,
             algorithm=algorithm,
         )
         return QueuedPlan(
             plan_id=plan_id,
+            name=name,
             algorithm=algorithm,
-            engineer_set_id=resolved_set_id,
+            engineer_set_id=engineer_set.id,
             tickets=tickets,
             engineers=engineers,
         )

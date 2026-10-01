@@ -100,6 +100,7 @@ class _EngineerSets(FakeEngineerSets):
 
 _DONE_PLAN = PlanRead(
     plan_id=1,
+    name="План №1",
     algorithm="or_tools",
     region_code="east",
     engineer_set_id=70,
@@ -131,7 +132,12 @@ _app = create_app(
 _lists, _loader, _statuses = _Lists(), _Loader(), FakeStatuses()
 _plan_builder = _PlanBuilder(
     queued=QueuedPlan(
-        plan_id=1, algorithm="or_tools", engineer_set_id=70, tickets=[TICKET], engineers=[ENGINEER]
+        plan_id=1,
+        name="План №1",
+        algorithm="or_tools",
+        engineer_set_id=70,
+        tickets=[TICKET],
+        engineers=[ENGINEER],
     )
 )
 _plan_reader = FakePlanReader(_DONE_PLAN)

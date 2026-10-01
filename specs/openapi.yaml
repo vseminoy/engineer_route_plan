@@ -430,9 +430,19 @@ paths:
         трёхфазная лексикографическая оптимизация) или независимым baseline
         (FCFS, для сравнения) — и атрибуция причин отказа идут в фоне после
         ответа. Клиент получает plan_id сразу и узнаёт результат, опрашивая
-        `GET /plan/{plan_id}`, пока status не станет done или failed. Каждый
-        вызов — новый план (новый plan_id); построение не заменяет и не
-        удаляет более ранние планы того же региона и даты.
+        `GET /plan/{plan_id}`, пока status не станет done или failed.
+
+
+        `algorithm=or_tools` — каждый вызов новый план (новый plan_id);
+        построение не заменяет и не удаляет более ранние планы того же
+        региона и даты. `algorithm=baseline_fcfs` строится не более одного
+        раза на комбинацию (регион, plan_date, engineer_set_id): если для неё
+        уже есть план в состоянии running или done, возвращается он сам,
+        новое построение не ставится в очередь; если есть план в состоянии
+        failed, он удаляется и строится заново (новый plan_id); иначе
+        строится новый план, как для or_tools. Ответ в обоих случаях —
+        202 Plan, независимо от того, было ли фактически поставлено новое
+        построение.
 
 
         Регион должен иметь загруженные данные (`POST /data/upload` или
@@ -573,6 +583,51 @@ paths:
         "503":
           $ref: "./common.yaml#/components/responses/ServiceUnavailable"
           description: Недоступна база данных. План не удалён.
+    patch:
+      operationId: rename_plan
+      summary: Переименовать план
+      description: >-
+        Меняет название плана, каким бы ни был его status — построение или
+        принадлежность к региону/набору бригад не затрагиваются. Название,
+        выставленное автоматически при построении, заменяется полностью.
+      parameters:
+        - name: plan_id
+          in: path
+          required: true
+          description: Идентификатор плана на сервере
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 9223372036854775807
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanRenameRequest"
+      responses:
+        "200":
+          description: План переименован
+          headers:
+            X-Request-ID:
+              $ref: "./common.yaml#/components/headers/X-Request-ID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanSummary"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+          description: >-
+            plan_id вне допустимого диапазона, либо name пустое, длиннее 100
+            символов или состоит только из пробелов (`fields`).
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+          description: Плана с таким plan_id нет.
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+        "503":
+          $ref: "./common.yaml#/components/responses/ServiceUnavailable"
+          description: Недоступна база данных. План не переименован.
 
   /api/v1/plan/{plan_id}/compare:
     get:
@@ -1360,11 +1415,17 @@ components:
     Plan:
       type: object
       additionalProperties: false
-      required: [plan_id, algorithm, status, region, engineer_set_id]
+      required: [plan_id, name, algorithm, status, region, engineer_set_id]
       properties:
         plan_id:
           type: integer
           description: Идентификатор плана на сервере
+        name:
+          type: string
+          description: >-
+            Название плана; выставляется автоматически при построении
+            ("План №{plan_id}", у baseline-плана — с именем его набора бригад)
+            и может быть изменено PATCH /plan/{plan_id}
         algorithm:
           $ref: "#/components/schemas/PlanAlgorithm"
         status:
@@ -1413,6 +1474,7 @@ components:
       additionalProperties: false
       required:
         - plan_id
+        - name
         - region
         - engineer_set_id
         - plan_date
@@ -1425,6 +1487,11 @@ components:
         plan_id:
           type: integer
           description: Идентификатор плана на сервере
+        name:
+          type: string
+          description: >-
+            Название плана; выставляется автоматически при построении и может
+            быть изменено PATCH /plan/{plan_id}
         region:
           $ref: "#/components/schemas/RegionCode"
         engineer_set_id:
@@ -1452,6 +1519,19 @@ components:
             - $ref: "#/components/schemas/PlanFailedReason"
             - type: "null"
           description: Причина отказа; null, если status не failed
+
+    PlanRenameRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            Новое название плана; ведущие и замыкающие пробелы обрезаются,
+            пустая после обрезки строка отклоняется
 
     IncidentTicketInput:
       type: object

@@ -180,7 +180,7 @@ class FakeRepo:
         parent_plan_id: int,
         created_at: datetime,
         assignments: list[AssignmentWrite],
-    ) -> int:
+    ) -> tuple[int, str]:
         self.inserted_plans.append(
             (
                 region_id,
@@ -194,7 +194,7 @@ class FakeRepo:
         )
         plan_id = self.next_plan_id
         self.next_plan_id += 1
-        return plan_id
+        return plan_id, f"План №{plan_id}"
 
 
 def _replanner(repo: FakeRepo, osrm: FakeOsrm) -> Replanner:

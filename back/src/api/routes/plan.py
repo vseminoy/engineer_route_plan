@@ -132,6 +132,7 @@ def _comparison_entry(e: ComparisonEntryRead) -> api.PlanComparisonEntry:
 def _plan(p: PlanRead) -> api.Plan:
     return api.Plan(
         plan_id=p.plan_id,
+        name=p.name,
         algorithm=api.PlanAlgorithm(p.algorithm),
         status=api.PlanStatus(p.status),
         region=api.RegionCode(p.region_code),
@@ -146,6 +147,7 @@ def _plan(p: PlanRead) -> api.Plan:
 def _plan_summary(p: PlanSummaryRow) -> api.PlanSummary:
     return api.PlanSummary(
         plan_id=p.id,
+        name=p.name,
         region=api.RegionCode(p.region_code),
         engineer_set_id=p.engineer_set_id,
         plan_date=api.LocalDate(p.plan_date.isoformat()),
@@ -171,13 +173,18 @@ async def list_plans(
 
 @router.post("/plan/build", response_model=api.Plan, status_code=202, operation_id="build_plan")
 async def build_plan(
-    body: api.PlanBuildRequest, background_tasks: BackgroundTasks, builder: Builder
+    body: api.PlanBuildRequest, background_tasks: BackgroundTasks, builder: Builder, reader: Reader
 ) -> api.Plan:
     plan_date = _plan_date(body.plan_date)
     region = body.region.root
     algorithm = body.algorithm.value
     try:
         queued = await builder.enqueue(region, plan_date, algorithm, body.engineer_set_id)
+        if queued.reused:
+            # algorithm == "baseline_fcfs": an already-active plan for this
+            # (engineer_set_id, plan_date) was returned instead of queuing a new build —
+            # answer with its real, current state (running or done), the same as GET.
+            return _plan(await reader.get(queued.plan_id))
     except AppError as e:
         _log_failed("plan_build_failed", e, region=region, plan_date=str(plan_date))
         raise
@@ -186,6 +193,7 @@ async def build_plan(
     )
     return api.Plan(
         plan_id=queued.plan_id,
+        name=queued.name,
         algorithm=api.PlanAlgorithm(queued.algorithm),
         status=api.PlanStatus.running,
         region=body.region,
@@ -210,6 +218,18 @@ async def delete_plan(plan_id: PlanId, reader: Reader) -> None:
     except AppError as e:
         _log_failed("plan_delete_failed", e, plan_id=plan_id)
         raise
+
+
+@router.patch("/plan/{plan_id}", response_model=api.PlanSummary, operation_id="rename_plan")
+async def rename_plan(
+    plan_id: PlanId, body: api.PlanRenameRequest, reader: Reader
+) -> api.PlanSummary:
+    try:
+        summary = await reader.rename(plan_id, body.name)
+    except AppError as e:
+        _log_failed("plan_rename_failed", e, plan_id=plan_id)
+        raise
+    return _plan_summary(summary)
 
 
 @router.get(

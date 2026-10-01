@@ -61,17 +61,23 @@ export function EngineerCard({ engineer, roster, color, ticketById, diffTags, se
               }}
             >
               <div className="stop-row__main">
-                <span className="stop-row__eta">{timeOnly(stop.plannedArrival)}</span>
-                <span>{ticket?.address ?? `Заявка №${stop.ticketId}`}</span>
+                <span className="stop-row__eta">
+                  {ticket
+                    ? `${timeOnly(stop.plannedArrival)}–${minutesToTimeLabel(
+                        minutesSinceMidnight(stop.plannedArrival) + ticket.durationMin
+                      )}`
+                    : timeOnly(stop.plannedArrival)}
+                </span>
+                {ticket && <SkillIcons skills={[ticket.requiredSkill]} />}
                 {tag && (
                   <span className={`diff-tag diff-tag--${tag}`}>{tag === 'new' ? 'новое' : 'время изменилось'}</span>
                 )}
               </div>
+              <div className="stop-row__address">{ticket?.address ?? `Заявка №${stop.ticketId}`}</div>
               {ticket && (
                 <div className="stop-row__window">
                   окно {minutesToTimeLabel(ticket.windowStartMin)}–{minutesToTimeLabel(ticket.windowEndMin)}
-                  {' · '}в пути {stop.travelTimeMin} мин · на объекте {ticket.durationMin} мин · выезд{' '}
-                  {minutesToTimeLabel(minutesSinceMidnight(stop.plannedArrival) + ticket.durationMin)}
+                  {' · '}в пути {stop.travelTimeMin} мин · на объекте {ticket.durationMin} мин
                 </div>
               )}
             </div>

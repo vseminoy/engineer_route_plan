@@ -11,9 +11,10 @@ from src.repository.db import database_errors, fetch_all, run_query
 from src.repository.region_data import queries
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class PlanRow:
     id: int
+    name: str = ""
     region_id: int
     region_code: str
     engineer_set_id: int
@@ -23,11 +24,12 @@ class PlanRow:
     failed_reason: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class PlanSummaryRow:
     """One row of `GET /api/v1/plan` — no routes, no metrics, just the plan itself."""
 
     id: int
+    name: str = ""
     region_code: str
     engineer_set_id: int
     plan_date: date
@@ -36,6 +38,16 @@ class PlanSummaryRow:
     failed_reason: str | None
     parent_plan_id: int | None
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class LatestBaselinePlan:
+    """What `PlanBuilder.enqueue` needs of an existing `baseline_fcfs` plan for a
+    `(engineer_set_id, plan_date)` key: whether to return it as-is (`running`/`done`) or
+    delete it and build fresh (`failed`)."""
+
+    id: int
+    status: str
 
 
 @dataclass(frozen=True)
@@ -78,19 +90,34 @@ async def insert_running_plan(
     plan_date: date,
     algorithm: str,
     created_at: datetime,
-) -> int:
-    plan_id: int = await run_query(
-        "insert_running_plan",
-        lambda: queries.insert_running_plan(
-            conn,
-            region_id=region_id,
-            engineer_set_id=engineer_set_id,
-            plan_date=plan_date,
-            algorithm=algorithm,
-            created_at=created_at,
-        ),
-    )
-    return plan_id
+    name_suffix: str = "",
+) -> tuple[int, str] | None:
+    """Returns the new plan's `(id, name)`, or `None` if a concurrent build already holds
+    the active baseline slot for this `(engineer_set_id, plan_date)`
+    (`ux_plans__active_baseline_per_set_date`) — the caller re-reads the winner instead
+    of treating this as a failure.
+
+    The name embeds the id, which Postgres only assigns at insert time, so it is set in
+    a second statement right after — both inside one transaction, since a plan row with
+    no name should never be observable even transiently."""
+    async with conn.transaction():
+        row = await run_query(
+            "insert_running_plan",
+            lambda: queries.insert_running_plan(
+                conn,
+                region_id=region_id,
+                engineer_set_id=engineer_set_id,
+                plan_date=plan_date,
+                algorithm=algorithm,
+                created_at=created_at,
+            ),
+        )
+        if row is None:
+            return None
+        plan_id: int = row[0]
+        name = f"План №{plan_id}{name_suffix}"
+        await update_plan_name(conn, plan_id, name)
+    return plan_id, name
 
 
 async def _insert_assignments(
@@ -168,9 +195,20 @@ async def get_plan(conn: AsyncConnection[Any], plan_id: int) -> PlanRow | None:
     row = await run_query("get_plan", lambda: queries.get_plan(conn, plan_id=plan_id))
     if row is None:
         return None
-    id_, region_id, region_code, engineer_set_id, plan_date, algorithm, status, failed_reason = row
+    (
+        id_,
+        name,
+        region_id,
+        region_code,
+        engineer_set_id,
+        plan_date,
+        algorithm,
+        status,
+        failed_reason,
+    ) = row
     return PlanRow(
         id=id_,
+        name=name,
         region_id=region_id,
         region_code=region_code,
         engineer_set_id=engineer_set_id,
@@ -181,10 +219,52 @@ async def get_plan(conn: AsyncConnection[Any], plan_id: int) -> PlanRow | None:
     )
 
 
+async def get_plan_summary(conn: AsyncConnection[Any], plan_id: int) -> PlanSummaryRow | None:
+    """A plan as a list-row shape, by id — used after `PATCH /plan/{plan_id}` to answer
+    with the plan's current summary without re-deriving it from `get_plan`'s richer,
+    routes-oriented shape."""
+    row = await run_query(
+        "get_plan_summary", lambda: queries.get_plan_summary(conn, plan_id=plan_id)
+    )
+    return _plan_summary_row(row) if row is not None else None
+
+
+async def get_latest_baseline_plan(
+    conn: AsyncConnection[Any], engineer_set_id: int, plan_date: date
+) -> LatestBaselinePlan | None:
+    """The most recent `baseline_fcfs` plan for this key, any status — `None` if there is
+    none yet."""
+    row = await run_query(
+        "get_latest_baseline_plan",
+        lambda: queries.get_latest_baseline_plan(
+            conn, engineer_set_id=engineer_set_id, plan_date=plan_date
+        ),
+    )
+    return LatestBaselinePlan(id=row[0], status=row[1]) if row is not None else None
+
+
+async def update_plan_name(conn: AsyncConnection[Any], plan_id: int, name: str) -> None:
+    await run_query(
+        "update_plan_name", lambda: queries.update_plan_name(conn, plan_id=plan_id, name=name)
+    )
+
+
 def _plan_summary_row(row: tuple[Any, ...]) -> PlanSummaryRow:
-    id_, region_code, engineer_set_id, plan_date, algorithm, status, failed_reason, parent_plan_id, created_at = row
+    (
+        id_,
+        name,
+        region_code,
+        engineer_set_id,
+        plan_date,
+        algorithm,
+        status,
+        failed_reason,
+        parent_plan_id,
+        created_at,
+    ) = row
     return PlanSummaryRow(
         id=id_,
+        name=name,
         region_code=region_code,
         engineer_set_id=engineer_set_id,
         plan_date=plan_date,
@@ -225,9 +305,11 @@ async def insert_replanned_plan(
     parent_plan_id: int,
     created_at: datetime,
     assignments: list[AssignmentWrite],
-) -> int:
+) -> tuple[int, str]:
     """A synchronous, already-`done` plan: `replan` never leaves `running`.
-    `engineer_set_id` is always the parent plan's own. Returns the new plan's id."""
+    `engineer_set_id` is always the parent plan's own. Returns the new plan's `(id, name)`
+    — name is "План №{id}", set once the id is known (see `insert_running_plan`'s same
+    two-step reasoning; replan never produces a `baseline_fcfs` plan, so no suffix)."""
     async with conn.transaction():
         plan_id: int = await run_query(
             "insert_replanned_plan",
@@ -241,8 +323,10 @@ async def insert_replanned_plan(
                 created_at=created_at,
             ),
         )
+        name = f"План №{plan_id}"
+        await update_plan_name(conn, plan_id, name)
         await _insert_assignments(conn, plan_id, assignments)
-    return plan_id
+    return plan_id, name
 
 
 async def list_plan_assignments(conn: AsyncConnection[Any], plan_id: int) -> list[AssignmentRow]:

@@ -27,13 +27,15 @@ from psycopg import AsyncConnection
 from src.domain import Engineer
 from src.errors import Conflict, InvalidInput, NotFound
 from src.repository.db import database_errors
-from src.repository.plans import AssignmentRow, PlanRow
+from src.repository.plans import AssignmentRow, PlanRow, PlanSummaryRow
 from src.service.loader import Connect
 
 GetPlan = Callable[[AsyncConnection[Any], int], Awaitable[PlanRow | None]]
 ListEngineers = Callable[[AsyncConnection[Any], int], Awaitable[list[Engineer]]]
 ListPlanAssignments = Callable[[AsyncConnection[Any], int], Awaitable[list[AssignmentRow]]]
 DeletePlan = Callable[[AsyncConnection[Any], int], Awaitable[None]]
+UpdatePlanName = Callable[[AsyncConnection[Any], int, str], Awaitable[None]]
+GetPlanSummary = Callable[[AsyncConnection[Any], int], Awaitable[PlanSummaryRow | None]]
 
 
 @dataclass(frozen=True)
@@ -87,13 +89,14 @@ class ComparisonEntryRead:
     delta: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class PlanRead:
     """`engineers`/`unassigned`/`metrics` are `None` unless `status == "done"`;
     `engineer_set_id`/`region_code` are always set — they are part of the plan row, not
     of the outcome."""
 
     plan_id: int
+    name: str = ""
     algorithm: str
     region_code: str
     engineer_set_id: int
@@ -111,6 +114,8 @@ class PlanReader:
     list_engineers: ListEngineers
     list_plan_assignments: ListPlanAssignments
     delete_plan: DeletePlan
+    update_plan_name: UpdatePlanName
+    get_plan_summary: GetPlanSummary
 
     async def get(self, plan_id: int) -> PlanRead:
         async with database_errors("plan_get"), self.connect() as conn:
@@ -120,6 +125,7 @@ class PlanReader:
             if row.status != "done":
                 return PlanRead(
                     plan_id=row.id,
+                    name=row.name,
                     algorithm=row.algorithm,
                     region_code=row.region_code,
                     engineer_set_id=row.engineer_set_id,
@@ -135,6 +141,7 @@ class PlanReader:
         unassigned = tuple(_unassigned(assignments))
         return PlanRead(
             plan_id=row.id,
+            name=row.name,
             algorithm=row.algorithm,
             region_code=row.region_code,
             engineer_set_id=row.engineer_set_id,
@@ -200,6 +207,28 @@ class PlanReader:
             if row.status == "running":
                 raise Conflict("plan_running", params={"plan_id": plan_id})
             await self.delete_plan(conn, plan_id)
+
+    async def rename(self, plan_id: int, name: str) -> PlanSummaryRow:
+        """Overwrites the plan's name, whatever its status — build state is untouched.
+        `name` is trimmed at the edge; empty after trimming is rejected the same way a
+        `minLength` violation would be."""
+        trimmed = name.strip()
+        if not trimmed:
+            raise InvalidInput("empty_name", fields=[("name", "Название не может быть пустым")])
+        async with database_errors("plan_rename"), self.connect() as conn, conn.transaction():
+            row = await self.get_plan(conn, plan_id)
+            if row is None:
+                raise NotFound("plan_not_found", params={"plan_id": plan_id})
+            await self.update_plan_name(conn, plan_id, trimmed)
+            summary = await self.get_plan_summary(conn, plan_id)
+            if summary is None:
+                # The plan existed above but is gone now — deleted by a concurrent
+                # DELETE /plan/{plan_id} in the window between the two reads. The
+                # transaction still commits the rename of a row that no longer exists by
+                # the time the caller sees this, which is harmless; answering 404 here
+                # describes the outcome the caller actually gets.
+                raise NotFound("plan_not_found", params={"plan_id": plan_id})
+        return summary
 
 
 def _visit(a: AssignmentRow) -> VisitRead:

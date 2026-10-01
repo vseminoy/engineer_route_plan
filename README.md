@@ -132,6 +132,13 @@ curl --noproxy '*' -X POST -H 'Content-Type: application/json' \
 curl --noproxy '*' http://localhost:8080/api/v1/plan/1
 ```
 
+У плана есть `name` — выставляется автоматически («План №{id}») и переименовывается:
+
+```bash
+curl --noproxy '*' -X PATCH -H 'Content-Type: application/json' \
+  -d '{"name": "Вечерняя смена"}' http://localhost:8080/api/v1/plan/1
+```
+
 Перепланирование пересчитывает готовый план от текущего состояния бригад с минимальным
 изменением уже выданных назначений (`diff.plan_stability` в ответе), а не строит план заново
 — например, при недоступности бригады:
@@ -144,7 +151,10 @@ curl --noproxy '*' -X POST -H 'Content-Type: application/json' \
 
 Другие события — `new_urgent_ticket` (авария, срок реакции `reaction_min`), `new_ticket`,
 `ticket_cancelled`. `algorithm: baseline_fcfs` строит независимый план без оптимизации
-порядка — для сравнения с `or_tools` тем же `GET .../compare`:
+порядка — для сравнения с `or_tools` тем же `GET .../compare`. На одну комбинацию
+региона, даты и набора бригад `baseline_fcfs`-план не дублируется: повторный `POST .../build`
+возвращает уже существующий (или строит заново, если тот был `failed`), `or_tools` всегда
+строит новый план.
 
 ```bash
 curl --noproxy '*' 'http://localhost:8080/api/v1/plan/2/compare?baseline_plan_id=1'

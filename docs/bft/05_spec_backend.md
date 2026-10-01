@@ -99,6 +99,7 @@ CREATE TABLE tickets (
 
 CREATE TABLE plans (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name            TEXT NOT NULL,           -- "План №{id}", у baseline_fcfs — с именем набора бригад; переименовывается PATCH /plan/{id}
     region_id       BIGINT NOT NULL REFERENCES regions(id),
     engineer_set_id BIGINT NOT NULL REFERENCES engineer_sets(id), -- набор, для которого построен план
     plan_date       DATE NOT NULL,
@@ -107,6 +108,8 @@ CREATE TABLE plans (
     status          TEXT NOT NULL,           -- 'running' | 'done' | 'failed'
     failed_reason   TEXT,                    -- заполнено только при status = 'failed'
     created_at      TIMESTAMP NOT NULL
+    -- частичный уникальный индекс (engineer_set_id, plan_date) WHERE algorithm='baseline_fcfs'
+    -- AND status IN ('running','done') — не более одного активного baseline-плана на комбинацию
 );
 
 CREATE TABLE assignments (
@@ -235,6 +238,17 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 которому план построен; `GET /plan/{plan_id}/compare` сравнивает только планы одного набора,
 иначе — `400`.
 
+У каждого плана есть `name` — выставляется автоматически при построении («План №{id}», у
+`baseline_fcfs` — с добавлением имени набора бригад) и может быть изменено
+`PATCH /plan/{plan_id}` (`{"name": "..."}`, 1–100 символов, пробелы по краям обрезаются,
+пустая после обрезки строка — `400`); ответ — `200` с планом в сводном формате (как в списке
+`GET /plan`). `algorithm=baseline_fcfs` при этом не дублируется: на комбинацию
+(регион, `plan_date`, `engineer_set_id`) одновременно существует не более одного baseline-плана
+в состоянии `running`/`done` — повторный `POST /plan/build` с тем же набором параметров
+возвращает уже существующий план вместо постановки нового построения в очередь; план в
+состоянии `failed` при повторном вызове удаляется и строится заново. `algorithm=or_tools`
+это не касается — каждый вызов создаёт новый план, как и раньше.
+
 ### 4.2. Планирование
 
 Построение плана — асинхронное: `POST /plan/build` ставит расчёт в очередь и сразу отвечает,
@@ -257,6 +271,7 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 ```json
 {
   "plan_id": 42,
+  "name": "План №42",
   "algorithm": "or_tools",
   "status": "running",
   "engineer_set_id": 7
@@ -270,6 +285,7 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
 ```json
 {
   "plan_id": 42,
+  "name": "План №42",
   "algorithm": "or_tools",
   "status": "done",
   "engineer_set_id": 7,
@@ -313,7 +329,7 @@ queries.set_ticket_status(conn, ticket_id=101, status="completed")
   недоступны, `build_error` — непредусмотренная ошибка, `timeout` — солвер не уложился в
   бюджет времени и был прерван вотчдогом, `shutdown` — план остался `running` при остановке
   сервера и закрыт стартовой чисткой:
-  `{"plan_id": 42, "algorithm": "or_tools", "status": "failed", "engineer_set_id": 7, "failed_reason": "osrm_unavailable"}`.
+  `{"plan_id": 42, "name": "План №42", "algorithm": "or_tools", "status": "failed", "engineer_set_id": 7, "failed_reason": "osrm_unavailable"}`.
 
 `idle_time_min` / `idle_time_by_engineer_min` (FR-23, M) — простой бригады = длина смены минус (суммарное время визитов + суммарное время в пути); поле **обязательно** к возврату API, но участвует только в отображении — не влияет на целевую функцию солвера (раздел 5) и не входит в сравнение с baseline в `/plan/{plan_id}/compare`.
 

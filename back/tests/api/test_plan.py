@@ -49,6 +49,7 @@ def test_list_plans() -> None:
     assert response.json() == [
         {
             "plan_id": 1,
+            "name": "План №1",
             "region": "east",
             "engineer_set_id": 70,
             "plan_date": "2026-08-17",
@@ -149,6 +150,7 @@ def test_build_plan_returns_202_running() -> None:
     builder = FakePlanBuilder(
         queued=QueuedPlan(
             plan_id=42,
+            name="План №42",
             algorithm="or_tools",
             engineer_set_id=70,
             tickets=[TICKET],
@@ -162,6 +164,7 @@ def test_build_plan_returns_202_running() -> None:
     assert response.status_code == 202
     assert response.json() == {
         "plan_id": 42,
+        "name": "План №42",
         "algorithm": "or_tools",
         "status": "running",
         "region": "east",
@@ -175,10 +178,74 @@ def test_build_plan_returns_202_running() -> None:
     assert builder.build_calls == [(42, [TICKET], [ENGINEER], date(2026, 9, 1), "or_tools")]
 
 
+def test_build_plan_baseline_reused_skips_background_task() -> None:
+    builder = FakePlanBuilder(
+        queued=QueuedPlan(plan_id=7, name="", algorithm="baseline_fcfs", engineer_set_id=70, reused=True)
+    )
+    done_plan = PlanRead(
+        plan_id=7,
+        name="План №7 · default",
+        algorithm="baseline_fcfs",
+        region_code="east",
+        engineer_set_id=70,
+        status="done",
+        failed_reason=None,
+        engineers=(),
+        unassigned=(),
+        metrics=MetricsRead(
+            engineers_used=0,
+            total_distance_km=0,
+            distance_by_engineer={},
+            assigned_count=0,
+            unassigned_count=0,
+            idle_time_by_engineer_min={},
+        ),
+    )
+    response = client(plan_builder=builder, plan_reader=FakePlanReader(done_plan)).post(
+        BUILD_URL, json={"region": "east", "plan_date": "2026-09-01", "algorithm": "baseline_fcfs"}
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["plan_id"] == 7
+    assert body["name"] == "План №7 · default"
+    assert body["status"] == "done"
+    assert builder.build_calls == []
+
+
+def test_build_plan_baseline_reused_running_status() -> None:
+    builder = FakePlanBuilder(
+        queued=QueuedPlan(plan_id=7, name="", algorithm="baseline_fcfs", engineer_set_id=70, reused=True)
+    )
+    running_plan = PlanRead(
+        plan_id=7,
+        name="План №7 · default",
+        algorithm="baseline_fcfs",
+        region_code="east",
+        engineer_set_id=70,
+        status="running",
+        failed_reason=None,
+        engineers=None,
+        unassigned=None,
+        metrics=None,
+    )
+    response = client(plan_builder=builder, plan_reader=FakePlanReader(running_plan)).post(
+        BUILD_URL, json={"region": "east", "plan_date": "2026-09-01", "algorithm": "baseline_fcfs"}
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["engineers"] is None
+    assert body["unassigned"] is None
+    assert builder.build_calls == []
+
+
 def test_build_plan_given_engineer_set() -> None:
     builder = FakePlanBuilder(
         queued=QueuedPlan(
             plan_id=42,
+            name="План №42",
             algorithm="or_tools",
             engineer_set_id=9,
             tickets=[TICKET],
@@ -276,6 +343,7 @@ def test_get_running_plan() -> None:
     reader = FakePlanReader(
         PlanRead(
             plan_id=1,
+            name="План №5",
             algorithm="or_tools",
             region_code="east",
             engineer_set_id=70,
@@ -291,6 +359,7 @@ def test_get_running_plan() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "plan_id": 1,
+        "name": "План №5",
         "algorithm": "or_tools",
         "status": "running",
         "region": "east",
@@ -321,6 +390,7 @@ def test_get_failed_plan() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "plan_id": 1,
+        "name": "",
         "algorithm": "baseline_fcfs",
         "status": "failed",
         "region": "east",
@@ -376,6 +446,7 @@ def test_get_done_plan() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "plan_id": 1,
+        "name": "",
         "algorithm": "or_tools",
         "status": "done",
         "region": "east",
@@ -514,6 +585,93 @@ def test_delete_plan_failed_logged(capsys: pytest.CaptureFixture[str]) -> None:
         "/api/v1/plan/1"
     )
     (record,) = events(capsys, "plan_delete_failed")
+    assert record["level"] == "warning"
+    assert record["reason"] == "plan_not_found"
+
+
+def test_rename_plan_returns_200() -> None:
+    reader = FakePlanReader(rename_result=PLAN_SUMMARY)
+    response = client(plan_reader=reader).patch("/api/v1/plan/1", json={"name": "Новое имя"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "plan_id": 1,
+        "name": "План №1",
+        "region": "east",
+        "engineer_set_id": 70,
+        "plan_date": "2026-08-17",
+        "algorithm": "or_tools",
+        "status": "done",
+        "created_at": "2026-08-17T09:00:00",
+        "parent_plan_id": None,
+        "failed_reason": None,
+    }
+    assert reader.rename_calls == [(1, "Новое имя")]
+
+
+@pytest.mark.parametrize("plan_id", ["0", "-1", "abc"])
+def test_rename_plan_invalid_id(plan_id: str) -> None:
+    reader = FakePlanReader()
+    response = client(plan_reader=reader).patch(f"/api/v1/plan/{plan_id}", json={"name": "Новое"})
+
+    assert response.status_code == 400
+    assert [f["name"] for f in response.json()["fields"]] == ["plan_id"]
+    assert reader.rename_calls == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"name": ""}, {"name": "x" * 101}, {"name": "Новое", "extra": 1}],
+)
+def test_rename_plan_rejects_malformed_body(body: dict[str, object]) -> None:
+    reader = FakePlanReader()
+    response = client(plan_reader=reader).patch("/api/v1/plan/1", json=body)
+
+    assert response.status_code == 400
+    assert reader.rename_calls == []
+
+
+def test_rename_plan_empty_after_trim() -> None:
+    error = InvalidInput("empty_name", fields=[("name", "Название не может быть пустым")])
+    reader = FakePlanReader(rename_error=error)
+    response = client(plan_reader=reader).patch("/api/v1/plan/1", json={"name": "   "})
+
+    assert response.status_code == 400
+    assert response.json() == {"fields": [{"name": "name", "message": "Название не может быть пустым"}]}
+
+
+def test_rename_plan_not_found() -> None:
+    reader = FakePlanReader(rename_error=NotFound("plan_not_found"))
+    response = client(plan_reader=reader).patch("/api/v1/plan/1", json={"name": "Новое"})
+
+    assert response.status_code == 404
+    assert response.content == b""
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (DependencyUnavailable(reason="db_unavailable"), 503),
+        (DatabaseFailure(reason="db_query_failed"), 500),
+    ],
+)
+def test_rename_plan_dependency_failure(error: Exception, status: int) -> None:
+    response = client(plan_reader=FakePlanReader(rename_error=error)).patch(
+        "/api/v1/plan/1", json={"name": "Новое"}
+    )
+
+    assert response.status_code == status
+    assert response.content == b""
+
+
+def test_rename_plan_failed_logged(capsys: pytest.CaptureFixture[str]) -> None:
+    from tests.log_records import events, json_logs
+
+    json_logs()
+    client(plan_reader=FakePlanReader(rename_error=NotFound("plan_not_found"))).patch(
+        "/api/v1/plan/1", json={"name": "Новое"}
+    )
+    (record,) = events(capsys, "plan_rename_failed")
     assert record["level"] == "warning"
     assert record["reason"] == "plan_not_found"
 

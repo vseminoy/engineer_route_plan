@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time
 from typing import Any
@@ -6,7 +7,7 @@ import pytest
 
 from src.domain import Engineer, Point, Skill, VehicleType
 from src.errors import Conflict, DatabaseFailure, DependencyUnavailable, InvalidInput, NotFound
-from src.repository.plans import AssignmentRow, PlanRow
+from src.repository.plans import AssignmentRow, PlanRow, PlanSummaryRow
 from src.service.plan_reader import EngineerRouteRead, PlanRead, PlanReader, UnassignedRead
 
 POINT = Point(lat=55.75, lon=37.6)
@@ -61,10 +62,20 @@ def _unassigned(ticket_id: int, reason: str = "no_skill") -> AssignmentRow:
     )
 
 
+class FakeConnection:
+    """A bare `conn` stand-in: the fakes below never read or write through it, but
+    `rename` calls `.transaction()` on it directly (not through an injected function),
+    so it needs one, unlike the plain `object()` every other method here gets away with."""
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        yield
+
+
 class FakeConnect:
     @asynccontextmanager
     async def __call__(self) -> Any:
-        yield object()
+        yield FakeConnection()
 
 
 class FakeRepo:
@@ -82,6 +93,8 @@ class FakeRepo:
         engineers_by_set: dict[int, list[Engineer]] | None = None,
         assignments_by_plan: dict[int, list[AssignmentRow]] | None = None,
         delete_error: Exception | None = None,
+        update_name_error: Exception | None = None,
+        summary: PlanSummaryRow | None = None,
     ) -> None:
         self.plan = plan
         self.engineers = engineers or []
@@ -91,8 +104,11 @@ class FakeRepo:
         self.engineers_by_set = engineers_by_set
         self.assignments_by_plan = assignments_by_plan
         self.delete_error = delete_error
+        self.update_name_error = update_name_error
+        self.summary = summary
         self.get_plan_calls: list[int] = []
         self.delete_calls: list[int] = []
+        self.update_name_calls: list[tuple[int, str]] = []
 
     async def get_plan(self, _conn: Any, plan_id: int) -> PlanRow | None:
         self.get_plan_calls.append(plan_id)
@@ -117,6 +133,14 @@ class FakeRepo:
         if self.delete_error:
             raise self.delete_error
 
+    async def update_plan_name(self, _conn: Any, plan_id: int, name: str) -> None:
+        self.update_name_calls.append((plan_id, name))
+        if self.update_name_error:
+            raise self.update_name_error
+
+    async def get_plan_summary(self, _conn: Any, plan_id: int) -> PlanSummaryRow | None:
+        return self.summary
+
 
 def _engineers(plan: PlanRead) -> tuple[EngineerRouteRead, ...]:
     assert plan.engineers is not None
@@ -135,6 +159,8 @@ def _reader(repo: FakeRepo) -> PlanReader:
         list_engineers=repo.list_engineers,
         list_plan_assignments=repo.list_plan_assignments,
         delete_plan=repo.delete_plan,
+        update_plan_name=repo.update_plan_name,
+        get_plan_summary=repo.get_plan_summary,
     )
 
 
@@ -663,3 +689,109 @@ async def test_compare_dependency_unavailable_propagates() -> None:
 
     with pytest.raises(DependencyUnavailable):
         await _reader(repo).compare(1, 2)
+
+
+# --- rename -----------------------------------------------------------------------------
+
+
+def _summary(name: str = "Новое") -> PlanSummaryRow:
+    return PlanSummaryRow(
+        id=1,
+        name=name,
+        region_code="east",
+        engineer_set_id=70,
+        plan_date=DAY,
+        algorithm="or_tools",
+        status="done",
+        failed_reason=None,
+        parent_plan_id=None,
+        created_at=datetime(2026, 9, 1, 9, 0),
+    )
+
+
+async def test_rename_success() -> None:
+    repo = FakeRepo(_plan_row("done"), summary=_summary("Новое"))
+
+    summary = await _reader(repo).rename(1, "Новое")
+
+    assert repo.update_name_calls == [(1, "Новое")]
+    assert summary == repo.summary
+
+
+async def test_rename_trims_whitespace() -> None:
+    repo = FakeRepo(_plan_row("done"), summary=_summary("Новое"))
+
+    await _reader(repo).rename(1, "  Новое  ")
+
+    assert repo.update_name_calls == [(1, "Новое")]
+
+
+async def test_rename_empty_after_trim_rejected() -> None:
+    repo = FakeRepo(_plan_row("done"))
+
+    with pytest.raises(InvalidInput) as e:
+        await _reader(repo).rename(1, "   ")
+
+    assert e.value.fields == [("name", "Название не может быть пустым")]
+    assert repo.update_name_calls == []
+    assert repo.get_plan_calls == []
+
+
+async def test_rename_not_found() -> None:
+    repo = FakeRepo(None)
+
+    with pytest.raises(NotFound) as e:
+        await _reader(repo).rename(1, "Новое")
+
+    assert e.value.reason == "plan_not_found"
+    assert repo.update_name_calls == []
+
+
+async def test_rename_deleted_concurrently_returns_not_found() -> None:
+    """get_plan finds the plan, but it is gone by get_plan_summary — a concurrent
+    DELETE /plan/{plan_id} landed in between. Answered as plan_not_found, not an
+    unhandled assertion (regression: the first version of this method asserted the
+    summary was never None)."""
+    repo = FakeRepo(_plan_row("done"))  # summary defaults to None
+
+    with pytest.raises(NotFound) as e:
+        await _reader(repo).rename(1, "Новое")
+
+    assert e.value.reason == "plan_not_found"
+    assert repo.update_name_calls == [(1, "Новое")]
+
+
+@pytest.mark.parametrize("status", ["running", "done", "failed"])
+async def test_rename_any_status_allowed(status: str) -> None:
+    repo = FakeRepo(_plan_row(status), summary=_summary())
+
+    await _reader(repo).rename(1, "Новое")
+
+    assert repo.update_name_calls == [(1, "Новое")]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [DependencyUnavailable(reason="db_unavailable"), DatabaseFailure(reason="db_query_failed")],
+)
+async def test_rename_get_dependency_failure(error: Exception) -> None:
+    repo = FakeRepo(error=error)
+
+    with pytest.raises(type(error)) as e:
+        await _reader(repo).rename(1, "Новое")
+
+    assert e.value is error
+    assert repo.update_name_calls == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [DependencyUnavailable(reason="db_unavailable"), DatabaseFailure(reason="db_query_failed")],
+)
+async def test_rename_update_dependency_failure(error: Exception) -> None:
+    repo = FakeRepo(_plan_row("done"), update_name_error=error)
+
+    with pytest.raises(type(error)) as e:
+        await _reader(repo).rename(1, "Новое")
+
+    assert e.value is error

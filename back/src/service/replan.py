@@ -41,7 +41,7 @@ ListPlanAssignments = Callable[[AsyncConnection[Any], int], Awaitable[list[Assig
 InsertTicket = Callable[[AsyncConnection[Any], int, TicketDraft], Awaitable[int]]
 InsertReplannedPlan = Callable[
     [AsyncConnection[Any], int, int, date, str, int, datetime, list[AssignmentWrite]],
-    Awaitable[int],
+    Awaitable[tuple[int, str]],
 ]
 
 # A ticket's server-assigned fields for `new_urgent_ticket`; on-site time is a fixed
@@ -290,7 +290,7 @@ class Replanner:
                 ticket_id = await self.insert_ticket(conn, plan.region_id, draft)
                 writes = _remap_ticket_id(writes, _PLACEHOLDER_TICKET_ID, ticket_id)
             diff = _diff(parent_rows, writes, reassigned_from_unavailable)
-            new_plan_id = await self.insert_replanned_plan(
+            new_plan_id, _ = await self.insert_replanned_plan(
                 conn,
                 plan.region_id,
                 plan.engineer_set_id,
