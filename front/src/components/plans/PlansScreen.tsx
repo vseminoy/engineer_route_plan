@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { AppNav } from '@/components/common/AppNav';
 import { RegionSelect } from '@/components/dataload/RegionSelect';
 import { PlanDeleteConfirm } from './PlanDeleteConfirm';
+import { PlanRenameModal } from './PlanRenameModal';
 import { usePlans } from '@/queries/usePlans';
 import { useUiStore } from '@/store/useUiStore';
 import { algorithmLabel, describeError, planStatusLabel } from '@/lib/labels';
@@ -15,6 +16,7 @@ export function PlansScreen() {
   const setSelectedRegion = useUiStore((s) => s.setSelectedRegion);
   const plansQuery = usePlans(selectedRegion);
   const [deletingPlan, setDeletingPlan] = useState<PlanSummary | null>(null);
+  const [renamingPlan, setRenamingPlan] = useState<PlanSummary | null>(null);
 
   return (
     <div style={{ maxWidth: 640, margin: '64px auto', padding: '0 16px', display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -49,7 +51,7 @@ export function PlansScreen() {
             <div key={plan.planId} className="unassigned-card" onClick={() => navigate(`/plan/${plan.planId}`)}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <span style={{ fontWeight: 600 }}>
-                  План №{plan.planId}
+                  {plan.name}
                   {plan.parentPlanId && (
                     <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}> · от плана №{plan.parentPlanId}</span>
                   )}
@@ -59,7 +61,25 @@ export function PlansScreen() {
               <div style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
                 {algorithmLabel[plan.algorithm]} · на {plan.planDate} · построен {formatDateTime(plan.createdAt)}
               </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{
+                    background: 'transparent',
+                    color: 'var(--color-text-primary)',
+                    border: '1px solid rgba(18,21,26,0.14)',
+                    padding: '6px 12px',
+                    minHeight: 32,
+                    fontSize: 13
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRenamingPlan(plan);
+                  }}
+                >
+                  Переименовать
+                </button>
                 <button
                   type="button"
                   className="btn-primary"
@@ -90,6 +110,15 @@ export function PlansScreen() {
           plan={deletingPlan}
           onDeleted={() => setDeletingPlan(null)}
           onCancel={() => setDeletingPlan(null)}
+        />
+      )}
+
+      {renamingPlan && selectedRegion && (
+        <PlanRenameModal
+          region={selectedRegion}
+          plan={renamingPlan}
+          onRenamed={() => setRenamingPlan(null)}
+          onCancel={() => setRenamingPlan(null)}
         />
       )}
     </div>

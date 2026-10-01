@@ -108,7 +108,8 @@ const endpointStatusMessage: Record<string, string> = {
   'DELETE /engineer-sets/{id} 404': 'Набор уже удалён',
   'DELETE /engineer-sets/{id} 409': 'Набор по умолчанию удалить нельзя',
   'DELETE /plan/{id} 404': 'План уже удалён',
-  'DELETE /plan/{id} 409': 'План ещё строится — подождите и попробуйте снова'
+  'DELETE /plan/{id} 409': 'План ещё строится — подождите и попробуйте снова',
+  'PATCH /plan/{id} 404': 'План уже удалён'
 };
 
 function textForStatus(endpoint: string, status: number): string {

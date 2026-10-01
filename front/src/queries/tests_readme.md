@@ -4,6 +4,7 @@
 
 - [`usePlan.ts` — интервал опроса растущего плана](#useplants--интервал-опроса-растущего-плана)
 - [`usePlanCompare.ts` — сравнение с baseline](#useplancomparets--сравнение-с-baseline)
+- [`useRenamePlan.ts` — обновление кэша по ответу переименования](#userenameplants--обновление-кэша-по-ответу-переименования)
 
 ---
 
@@ -37,3 +38,15 @@
 | `is false while either plan is still running or failed` | `main`/`baseline` статусы — не оба `done` | `false` |
 | `is false with no baseline plan selected yet` | `baselinePlanId` — `null` | `false` |
 | `is true once both the main and baseline plans are done` | Оба статуса — `done` | `true` |
+
+## `useRenamePlan.ts` — обновление кэша по ответу переименования
+
+Файл: `useRenamePlan.test.tsx` (`vitest`, `QueryClientProvider`).
+
+> `renamePlan` (`api/endpoints`) замокан.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `writes the renamed summary into every cached plans-list page of the region, without refetching` | Успешное переименование; `['plans', region, null]` уже закэширован списком с этим планом | Запись с этим `planId` в кэше заменена ответом мутации (новый `name`), `getPlans` не вызывается повторно |
+| `merges the new name into the cached single-plan entry, without refetching` | Тот же план также закэширован под `['plan', planId]` (открыт `PlanScreen`) | Кэш `['plan', planId]` — тот же объект с обновлённым `name`, остальные поля не тронуты, `getPlan` не вызывается повторно |
+| `leaves the single-plan cache untouched when that plan was never opened` | `['plan', planId]` не закэширован | Мутация не создаёт новую запись в кэше |

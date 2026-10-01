@@ -127,7 +127,7 @@ export function PlanScreen() {
       <div className="plan-screen__header">
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
           <h1 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
-            Диспетчер{selectedRegion ? ` · ${selectedRegion}` : ''}
+            {plan.name}{selectedRegion ? ` · ${selectedRegion}` : ''}
             {engineerSetName ? ` · ${engineerSetName}` : ''}
           </h1>
           <AppNav />

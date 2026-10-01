@@ -15,6 +15,8 @@ import type { UnassignedTicket } from './unassignedTicket';
 export interface Plan {
   /** Идентификатор плана на сервере */
   plan_id: number;
+  /** Название плана; выставляется автоматически при построении ("План №{plan_id}", у baseline-плана — с именем его набора бригад) и может быть изменено PATCH /plan/{plan_id} */
+  name: string;
   algorithm: PlanAlgorithm;
   status: PlanStatus;
   /** Регион плана, каким бы ни был status — клиент, открывший план по прямой ссылке (GET /plan/{id} без предварительного выбора региона), берёт регион отсюда */

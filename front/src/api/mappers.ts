@@ -134,6 +134,7 @@ function mapDiff(d: ApiPlanDiff): PlanDiff {
 export function mapPlan(api: GeneratedPlan): Plan {
   const base = {
     planId: api.plan_id,
+    name: api.name,
     algorithm: api.algorithm as Algorithm,
     status: api.status as PlanStatus,
     region: api.region as RegionCode,
@@ -178,6 +179,10 @@ export function mapPlanCompare(entries: PlanComparisonEntry[]): PlanCompare {
 export function mapPlanReplanResult(api: PlanReplanResult): Plan {
   return {
     planId: api.plan_id,
+    // The replan response itself carries no name (only GET /plan and POST /plan/build
+    // do) — this is the backend's own deterministic template for a replanned plan, and
+    // usePlan's next refetch overwrites it with the real value if it was ever renamed.
+    name: `План №${api.plan_id}`,
     algorithm: api.algorithm as Algorithm,
     status: 'done',
     region: api.region as RegionCode,
@@ -193,6 +198,7 @@ export function mapPlanReplanResult(api: PlanReplanResult): Plan {
 export function mapPlanSummary(api: ApiPlanSummary): PlanSummary {
   return {
     planId: api.plan_id,
+    name: api.name,
     region: api.region as RegionCode,
     engineerSetId: api.engineer_set_id,
     planDate: api.plan_date,

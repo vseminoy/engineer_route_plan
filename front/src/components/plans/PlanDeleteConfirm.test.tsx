@@ -13,6 +13,7 @@ vi.mock('@/api/endpoints', async (importOriginal) => {
 
 const plan: PlanSummary = {
   planId: 42,
+  name: 'План №42',
   region: 'east',
   engineerSetId: 70,
   planDate: '2026-08-17',

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createEngineerSet, deleteEngineerSet, getEngineerSets, replan, setTicketStatus } from './endpoints';
+import { createEngineerSet, deleteEngineerSet, getEngineerSets, renamePlan, replan, setTicketStatus } from './endpoints';
 import { ApiError } from './client';
 import type { Ticket } from './generated/schemas';
 import type { ReplanEvent } from '@/types/domain';
@@ -267,5 +267,69 @@ describe('deleteEngineerSet', () => {
 
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(409);
+  });
+});
+
+describe('renamePlan', () => {
+  it('maps the 200 response to the domain plan summary with its new name', async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify({
+          plan_id: 42,
+          name: 'Утренний обход',
+          region: 'east',
+          engineer_set_id: 1,
+          plan_date: '2026-08-17',
+          algorithm: 'or_tools',
+          status: 'done',
+          created_at: '2026-08-17T09:00:00',
+          parent_plan_id: null,
+          failed_reason: null
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    const summary = await renamePlan(42, 'Утренний обход');
+
+    expect(summary).toEqual({
+      planId: 42,
+      name: 'Утренний обход',
+      region: 'east',
+      engineerSetId: 1,
+      planDate: '2026-08-17',
+      algorithm: 'or_tools',
+      status: 'done',
+      createdAt: '2026-08-17T09:00:00',
+      parentPlanId: null,
+      failedReason: null
+    });
+  });
+
+  it('rejects an empty name with a 400 fields response', async () => {
+    stubFetch(
+      new Response(JSON.stringify({ fields: [{ name: 'name', message: 'Название не может быть пустым' }] }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+
+    const err = (await catchError(renamePlan(42, '  '))) as ApiError;
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(400);
+    expect(err.body && 'fields' in err.body ? err.body.fields : undefined).toEqual([
+      { name: 'name', message: 'Название не может быть пустым' }
+    ]);
+  });
+
+  it('rejects a missing plan with a bodyless 404', async () => {
+    stubFetch(new Response(null, { status: 404 }));
+
+    const err = (await catchError(renamePlan(999, 'Новое название'))) as ApiError;
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(404);
+    expect(err.body).toBeUndefined();
   });
 });

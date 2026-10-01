@@ -45,6 +45,7 @@ export * from './planFailedReason';
 export * from './planMetrics';
 export * from './planMetricsDistanceByEngineer';
 export * from './planMetricsIdleTimeByEngineerMin';
+export * from './planRenameRequest';
 export * from './planReplanResult';
 export * from './planReplanResultStatus';
 export * from './planStatus';

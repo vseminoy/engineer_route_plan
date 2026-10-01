@@ -47,7 +47,7 @@ afterEach(() => {
 describe('PlanScreen — running/done/failed transitions', () => {
   it('shows the waiting message while the build is still running (polling handled by usePlan itself)', () => {
     usePlanMock.mockReturnValue(
-      planQueryResult({ planId: 42, algorithm: 'or_tools', status: 'running', region: 'east', engineerSetId: 7 })
+      planQueryResult({ planId: 42, name: 'План №42', algorithm: 'or_tools', status: 'running', region: 'east', engineerSetId: 7 })
     );
 
     renderPlanScreen();
@@ -56,10 +56,11 @@ describe('PlanScreen — running/done/failed transitions', () => {
     expect(screen.queryByTestId('map-view')).not.toBeInTheDocument();
   });
 
-  it('renders the plan once the build is done', () => {
+  it('renders the plan once the build is done, with its name in the header instead of the static title', () => {
     usePlanMock.mockReturnValue(
       planQueryResult({
         planId: 42,
+        name: 'Утренний обход',
         algorithm: 'or_tools',
         status: 'done',
         region: 'east',
@@ -80,7 +81,8 @@ describe('PlanScreen — running/done/failed transitions', () => {
     renderPlanScreen();
 
     expect(screen.getByTestId('map-view')).toBeInTheDocument();
-    expect(screen.getByText(/Диспетчер/)).toBeInTheDocument();
+    expect(screen.getByText(/Утренний обход/)).toBeInTheDocument();
+    expect(screen.queryByText(/Диспетчер/)).not.toBeInTheDocument();
     expect(screen.queryByText('Подождите, идёт расчёт…')).not.toBeInTheDocument();
   });
 
@@ -88,6 +90,7 @@ describe('PlanScreen — running/done/failed transitions', () => {
     usePlanMock.mockReturnValue(
       planQueryResult({
         planId: 42,
+        name: 'План №42',
         algorithm: 'or_tools',
         status: 'failed',
         region: 'east',
@@ -115,6 +118,7 @@ describe('PlanScreen — running/done/failed transitions', () => {
     usePlanMock.mockReturnValue(
       planQueryResult({
         planId: 42,
+        name: 'План №42',
         algorithm: 'or_tools',
         status: 'failed',
         region: 'south_east',

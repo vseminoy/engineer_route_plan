@@ -16,6 +16,7 @@ vi.mock('@/api/endpoints', () => ({
 
 function plan(overrides: Partial<Plan> & { planId: number; engineerSetId: number }): Plan {
   return {
+    name: 'План №1',
     algorithm: 'or_tools',
     status: 'done',
     region: 'east',
@@ -25,6 +26,7 @@ function plan(overrides: Partial<Plan> & { planId: number; engineerSetId: number
 
 function summary(overrides: Partial<PlanSummary> & { planId: number; engineerSetId: number }): PlanSummary {
   return {
+    name: 'План №1',
     region: 'east',
     planDate: '2026-09-01',
     algorithm: 'baseline_fcfs',

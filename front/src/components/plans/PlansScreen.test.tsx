@@ -18,13 +18,16 @@ vi.mock('@/queries/useRegions', () => ({
 
 const getPlansMock = vi.fn();
 const deletePlanMock = vi.fn();
+const renamePlanMock = vi.fn();
 vi.mock('@/api/endpoints', () => ({
   getPlans: (...args: unknown[]) => getPlansMock(...args),
-  deletePlan: (...args: unknown[]) => deletePlanMock(...args)
+  deletePlan: (...args: unknown[]) => deletePlanMock(...args),
+  renamePlan: (...args: unknown[]) => renamePlanMock(...args)
 }));
 
 const DONE_PLAN: PlanSummary = {
   planId: 42,
+  name: 'План №42',
   region: 'east',
   engineerSetId: 70,
   planDate: '2026-08-17',
@@ -59,13 +62,14 @@ describe('PlansScreen', () => {
     expect(getPlansMock).not.toHaveBeenCalled();
   });
 
-  it('lists the region’s plans once loaded', async () => {
-    getPlansMock.mockResolvedValue([DONE_PLAN]);
+  it('lists the region’s plans once loaded, by their name', async () => {
+    getPlansMock.mockResolvedValue([{ ...DONE_PLAN, name: 'Утренний обход' }]);
     renderScreen();
 
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'east' } });
 
-    expect(await screen.findByText('План №42')).toBeInTheDocument();
+    expect(await screen.findByText('Утренний обход')).toBeInTheDocument();
+    expect(screen.queryByText('План №42')).not.toBeInTheDocument();
     expect(screen.getByText('Готов')).toBeInTheDocument();
     expect(getPlansMock).toHaveBeenCalledWith('east', null);
   });
@@ -113,5 +117,38 @@ describe('PlansScreen', () => {
 
     await waitFor(() => expect(screen.queryByText('План №42')).not.toBeInTheDocument());
     expect(deletePlanMock).toHaveBeenCalledWith(42);
+  });
+
+  it('opens the rename modal without navigating when its button is clicked, whatever the plan’s status or algorithm', async () => {
+    const runningBaselinePlan: PlanSummary = {
+      ...DONE_PLAN,
+      name: 'План №42 · 13 бригад',
+      status: 'running',
+      algorithm: 'baseline_fcfs'
+    };
+    getPlansMock.mockResolvedValue([runningBaselinePlan]);
+    renderScreen();
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'east' } });
+    await screen.findByText('План №42 · 13 бригад');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Переименовать' }));
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('shows the new name in the list right after a successful rename, without refetching', async () => {
+    getPlansMock.mockResolvedValue([DONE_PLAN]);
+    renamePlanMock.mockResolvedValue({ ...DONE_PLAN, name: 'Вечерний обход' });
+    renderScreen();
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'east' } });
+    await screen.findByText('План №42');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Переименовать' }));
+    fireEvent.change(within(screen.getByRole('dialog')).getByRole('textbox'), { target: { value: 'Вечерний обход' } });
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Переименовать' }));
+
+    expect(await screen.findByText('Вечерний обход')).toBeInTheDocument();
+    expect(getPlansMock).toHaveBeenCalledTimes(1);
   });
 });

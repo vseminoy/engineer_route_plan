@@ -7,9 +7,11 @@
 - [`src/api/mappers.ts` — `mapPlanCompare`](#srcapimappersts--mapplancompare)
 - [`src/api/mappers.ts` — `mapPlanReplanResult`](#srcapimappersts--mapplanreplanresult)
 - [`src/api/mappers.ts` — `mapEngineerSet`](#srcapimappersts--mapengineerset)
+- [`src/api/mappers.ts` — `mapPlanSummary`](#srcapimappersts--mapplansummary)
 - [`src/api/endpoints.ts` — `setTicketStatus`](#srcapiendpointsts--setticketstatus)
 - [`src/api/endpoints.ts` — `replan`](#srcapiendpointsts--replan)
 - [`src/api/endpoints.ts` — наборы бригад региона](#srcapiendpointsts--наборы-бригад-региона)
+- [`src/api/endpoints.ts` — `renamePlan`](#srcapiendpointsts--renameplan)
 
 ---
 
@@ -42,6 +44,7 @@
 | `maps a failed build to its reason, with no engineers/unassigned/metrics` | `mapPlan` на `{status: 'failed', failed_reason: 'osrm_unavailable'}` | `Plan` с `failedReason`, без `engineers`/`unassigned`/`metrics` |
 | `maps a failed build stopped by the server-shutdown sweep` | `mapPlan` на `{status: 'failed', failed_reason: 'shutdown'}` | `failedReason` равен `'shutdown'` |
 | `maps engineers/unassigned/metrics straight from the API response when done, keeping the naive arrival time as-is` | `mapPlan` на `{status: 'done', engineers: [...], unassigned: [...], metrics: {...}}` (сервер теперь всегда присылает `metrics`) | `metrics` — прямой camelCase-маппинг присланного объекта, без клиентского пересчёта; `plannedArrival` — та же строка без сдвига |
+| `carries the plan name straight through, whatever the status` | `mapPlan` на `{status: 'running', name: 'План №42'}` | `Plan.name` равен `'План №42'` |
 
 ## `src/api/mappers.ts` — `mapPlanCompare`
 
@@ -67,6 +70,14 @@
 | Test | Scenario | Expected result |
 |---|---|---|
 | `translates the generator parameters to camelCase, keeping the display description as-is` | `EngineerSet` из `GET /engineer-sets` с `morning_share`/`evening_share` и `description` | Доменный `EngineerSet` — camelCase-поля генератора, `description` без изменений |
+
+## `src/api/mappers.ts` — `mapPlanSummary`
+
+Файл: `mappers.test.ts` (`vitest`), там же, где остальные мапперы.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `maps a plan summary to the domain shape, name included` | `ApiPlanSummary` c `name: 'План №42 · 13 бригад'` | Доменный `PlanSummary` — camelCase-поля, `name` перенесён как есть |
 
 ## `src/api/endpoints.ts` — `setTicketStatus`
 
@@ -99,3 +110,13 @@
 | `rejects a duplicate name in the region with a bodyless 409` | `fetch` отвечает `409` без тела | `ApiError` со статусом `409` и `body === undefined` |
 | `resolves on a bodyless 204` | `fetch` отвечает `204` без тела | `deleteEngineerSet` резолвится в `undefined` |
 | `rejects deleting the default set with a bodyless 409` | `fetch` отвечает `409` без тела | `ApiError` со статусом `409` и `body === undefined` |
+
+## `src/api/endpoints.ts` — `renamePlan`
+
+Файл: `src/api/endpoints.test.ts` (`vitest`), тот же приём со стабом глобального `fetch` — `renamePlan` (сгенерированный клиент) ходит через него же.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `maps the 200 response to the domain plan summary with its new name` | `fetch` отвечает `200` с `PlanSummary` (новым `name`) | `renamePlan` возвращает `PlanSummary`, замапленную `mapPlanSummary` |
+| `rejects an empty name with a 400 fields response` | `fetch` отвечает `400` с `{"fields": [{"name": "name", ...}]}` | `ApiError.body.fields` — тот же массив |
+| `rejects a missing plan with a bodyless 404` | `fetch` отвечает `404` без тела | `ApiError` со статусом `404` и `body === undefined` |

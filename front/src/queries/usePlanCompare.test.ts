@@ -19,6 +19,7 @@ describe('planCompareReady', () => {
 
 function _summary(overrides: Partial<PlanSummary> & { planId: number }): PlanSummary {
   return {
+    name: 'План №1',
     region: 'east',
     engineerSetId: 70,
     planDate: '2026-09-01',

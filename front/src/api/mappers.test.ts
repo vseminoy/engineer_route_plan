@@ -6,6 +6,7 @@ import {
   mapPlan,
   mapPlanCompare,
   mapPlanReplanResult,
+  mapPlanSummary,
   mapTicketSummary
 } from './mappers';
 import type {
@@ -15,6 +16,7 @@ import type {
   Plan,
   PlanComparisonEntry,
   PlanReplanResult,
+  PlanSummary,
   Ticket
 } from './generated/schemas';
 
@@ -71,6 +73,36 @@ describe('mapEngineerSet', () => {
   });
 });
 
+describe('mapPlanSummary', () => {
+  it('maps a plan summary to the domain shape, name included', () => {
+    const api: PlanSummary = {
+      plan_id: 42,
+      name: 'План №42 · 13 бригад',
+      region: 'east',
+      engineer_set_id: 1,
+      plan_date: '2026-08-17',
+      algorithm: 'baseline_fcfs',
+      status: 'done',
+      created_at: '2026-08-17T09:00:00',
+      parent_plan_id: null,
+      failed_reason: null
+    };
+
+    expect(mapPlanSummary(api)).toEqual({
+      planId: 42,
+      name: 'План №42 · 13 бригад',
+      region: 'east',
+      engineerSetId: 1,
+      planDate: '2026-08-17',
+      algorithm: 'baseline_fcfs',
+      status: 'done',
+      createdAt: '2026-08-17T09:00:00',
+      parentPlanId: null,
+      failedReason: null
+    });
+  });
+});
+
 describe('mapTicketSummary', () => {
   it('carries the numeric priority rank and derives the window in minutes from the naive datetime', () => {
     const api: Ticket = {
@@ -110,10 +142,11 @@ describe('mapTicketSummary', () => {
 
 describe('mapPlan', () => {
   it('maps a running build to a status with no engineers/unassigned/metrics yet', () => {
-    const api: Plan = { plan_id: 42, algorithm: 'or_tools', status: 'running', region: 'east', engineer_set_id: 1 };
+    const api: Plan = { plan_id: 42, name: 'План №42', algorithm: 'or_tools', status: 'running', region: 'east', engineer_set_id: 1 };
 
     expect(mapPlan(api)).toEqual({
       planId: 42,
+      name: 'План №42',
       algorithm: 'or_tools',
       status: 'running',
       region: 'east',
@@ -121,9 +154,16 @@ describe('mapPlan', () => {
     });
   });
 
+  it('carries the plan name straight through, whatever the status', () => {
+    const api: Plan = { plan_id: 42, name: 'Утренний обход', algorithm: 'or_tools', status: 'running', region: 'east', engineer_set_id: 1 };
+
+    expect(mapPlan(api).name).toBe('Утренний обход');
+  });
+
   it('maps a failed build to its reason, with no engineers/unassigned/metrics', () => {
     const api: Plan = {
       plan_id: 42,
+      name: 'План №42',
       algorithm: 'or_tools',
       status: 'failed',
       region: 'east',
@@ -133,6 +173,7 @@ describe('mapPlan', () => {
 
     expect(mapPlan(api)).toEqual({
       planId: 42,
+      name: 'План №42',
       algorithm: 'or_tools',
       status: 'failed',
       region: 'east',
@@ -144,6 +185,7 @@ describe('mapPlan', () => {
   it('maps a failed build stopped by the server-shutdown sweep', () => {
     const api: Plan = {
       plan_id: 42,
+      name: 'План №42',
       algorithm: 'or_tools',
       status: 'failed',
       region: 'east',
@@ -157,6 +199,7 @@ describe('mapPlan', () => {
   it('maps engineers/unassigned/metrics straight from the API response when done, keeping the naive arrival time as-is', () => {
     const api: Plan = {
       plan_id: 42,
+      name: 'План №42',
       algorithm: 'or_tools',
       status: 'done',
       region: 'east',

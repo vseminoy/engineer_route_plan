@@ -442,6 +442,7 @@ export const listPlansResponseCreatedAtRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[
 
 export const ListPlansResponseItem = zod.strictObject({
   "plan_id": zod.int().describe('Идентификатор плана на сервере'),
+  "name": zod.string().describe('Название плана; выставляется автоматически при построении и может быть изменено PATCH /plan/{plan_id}'),
   "region": zod.string().min(1).max(listPlansResponseRegionMax).regex(listPlansResponseRegionRegExp).describe('Код региона — латиница в нижнем регистре, цифры и «_»; начинается с буквы'),
   "engineer_set_id": zod.int().describe('Набор бригад, для которого построен план'),
   "plan_date": zod.string().min(listPlansResponsePlanDateMin).max(listPlansResponsePlanDateMax).regex(listPlansResponsePlanDateRegExp).describe('Дата в местном времени региона, ISO-8601 без времени и часового пояса: 2026-08-17. Месяц 01–12, день 01–31; несуществующую дату (2026-02-30) отклоняет сервер ответом 400.'),
@@ -455,7 +456,9 @@ export const ListPlansResponse = zod.array(ListPlansResponseItem)
 
 
 /**
- * Ставит построение плана в очередь и отвечает не дожидаясь его конца: назначение открытых (не completed и не cancelled) заявок региона на дату plan_date бригадам региона — основным алгоритмом (RoutingModel, трёхфазная лексикографическая оптимизация) или независимым baseline (FCFS, для сравнения) — и атрибуция причин отказа идут в фоне после ответа. Клиент получает plan_id сразу и узнаёт результат, опрашивая `GET /plan/{plan_id}`, пока status не станет done или failed. Каждый вызов — новый план (новый plan_id); построение не заменяет и не удаляет более ранние планы того же региона и даты.
+ * Ставит построение плана в очередь и отвечает не дожидаясь его конца: назначение открытых (не completed и не cancelled) заявок региона на дату plan_date бригадам региона — основным алгоритмом (RoutingModel, трёхфазная лексикографическая оптимизация) или независимым baseline (FCFS, для сравнения) — и атрибуция причин отказа идут в фоне после ответа. Клиент получает plan_id сразу и узнаёт результат, опрашивая `GET /plan/{plan_id}`, пока status не станет done или failed.
+ *
+ * `algorithm=or_tools` — каждый вызов новый план (новый plan_id); построение не заменяет и не удаляет более ранние планы того же региона и даты. `algorithm=baseline_fcfs` строится не более одного раза на комбинацию (регион, plan_date, engineer_set_id): если для неё уже есть план в состоянии running или done, возвращается он сам, новое построение не ставится в очередь; если есть план в состоянии failed, он удаляется и строится заново (новый plan_id); иначе строится новый план, как для or_tools. Ответ в обоих случаях — 202 Plan, независимо от того, было ли фактически поставлено новое построение.
  *
  * Регион должен иметь загруженные данные (`POST /data/upload` или `POST /data/demo`) — иначе 400. Каждая открытая заявка региона должна приходиться на дату plan_date (окно заявки — из файла одной загрузки, все заявки на один день) — несовпадение хотя бы одной заявки отклоняет весь запрос 400, план не ставится в очередь.
  *
@@ -523,6 +526,7 @@ export const buildPlanResponseMetricsOneIdleTimeByEngineerMinMinOne = 0;
 
 export const BuildPlanResponse = zod.strictObject({
   "plan_id": zod.int().describe('Идентификатор плана на сервере'),
+  "name": zod.string().describe('Название плана; выставляется автоматически при построении ("План №{plan_id}", у baseline-плана — с именем его набора бригад) и может быть изменено PATCH /plan/{plan_id}'),
   "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Чем строится план: or_tools — основной алгоритм (RoutingModel, трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый план для сравнения (назначение по порядку поступления заявок)'),
   "status": zod.enum(['running', 'done', 'failed']).describe('running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет; done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не закончился (OSRM/БД недоступны, расчёт завис дольше отведённого времени или прерван остановкой сервера), см. failed_reason'),
   "region": zod.string().min(1).max(buildPlanResponseRegionMax).regex(buildPlanResponseRegionRegExp).describe('Регион плана, каким бы ни был status — клиент, открывший план по прямой ссылке (GET /plan/{id} без предварительного выбора региона), берёт регион отсюда'),
@@ -607,6 +611,7 @@ export const getPlanResponseMetricsOneIdleTimeByEngineerMinMinOne = 0;
 
 export const GetPlanResponse = zod.strictObject({
   "plan_id": zod.int().describe('Идентификатор плана на сервере'),
+  "name": zod.string().describe('Название плана; выставляется автоматически при построении ("План №{plan_id}", у baseline-плана — с именем его набора бригад) и может быть изменено PATCH /plan/{plan_id}'),
   "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Чем строится план: or_tools — основной алгоритм (RoutingModel, трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый план для сравнения (назначение по порядку поступления заявок)'),
   "status": zod.enum(['running', 'done', 'failed']).describe('running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет; done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не закончился (OSRM/БД недоступны, расчёт завис дольше отведённого времени или прерван остановкой сервера), см. failed_reason'),
   "region": zod.string().min(1).max(getPlanResponseRegionMax).regex(getPlanResponseRegionRegExp).describe('Регион плана, каким бы ни был status — клиент, открывший план по прямой ссылке (GET /plan/{id} без предварительного выбора региона), берёт регион отсюда'),
@@ -656,6 +661,56 @@ export const DeletePlanParams = zod.strictObject({
 })
 
 export const DeletePlanResponse = zod.void()
+
+
+/**
+ * Меняет название плана, каким бы ни был его status — построение или принадлежность к региону/набору бригад не затрагиваются. Название, выставленное автоматически при построении, заменяется полностью.
+ * @summary Переименовать план
+ */
+export const renamePlanPathPlanIdMax = 9223372036854776000;
+
+
+
+export const RenamePlanParams = zod.strictObject({
+  "plan_id": zod.int().min(1).max(renamePlanPathPlanIdMax).describe('Идентификатор плана на сервере')
+})
+
+export const renamePlanBodyNameMax = 100;
+
+
+
+export const RenamePlanBody = zod.strictObject({
+  "name": zod.string().min(1).max(renamePlanBodyNameMax).describe('Новое название плана; ведущие и замыкающие пробелы обрезаются, пустая после обрезки строка отклоняется')
+})
+
+export const renamePlanResponseRegionMax = 50;
+
+
+export const renamePlanResponseRegionRegExp = new RegExp('^[a-z][a-z0-9_]*$');
+export const renamePlanResponsePlanDateMin = 10;
+export const renamePlanResponsePlanDateMax = 10;
+
+
+export const renamePlanResponsePlanDateRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+export const renamePlanResponseCreatedAtMin = 19;
+export const renamePlanResponseCreatedAtMax = 19;
+
+
+export const renamePlanResponseCreatedAtRegExp = new RegExp('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$');
+
+
+export const RenamePlanResponse = zod.strictObject({
+  "plan_id": zod.int().describe('Идентификатор плана на сервере'),
+  "name": zod.string().describe('Название плана; выставляется автоматически при построении и может быть изменено PATCH /plan/{plan_id}'),
+  "region": zod.string().min(1).max(renamePlanResponseRegionMax).regex(renamePlanResponseRegionRegExp).describe('Код региона — латиница в нижнем регистре, цифры и «_»; начинается с буквы'),
+  "engineer_set_id": zod.int().describe('Набор бригад, для которого построен план'),
+  "plan_date": zod.string().min(renamePlanResponsePlanDateMin).max(renamePlanResponsePlanDateMax).regex(renamePlanResponsePlanDateRegExp).describe('Дата в местном времени региона, ISO-8601 без времени и часового пояса: 2026-08-17. Месяц 01–12, день 01–31; несуществующую дату (2026-02-30) отклоняет сервер ответом 400.'),
+  "algorithm": zod.enum(['or_tools', 'baseline_fcfs']).describe('Чем строится план: or_tools — основной алгоритм (RoutingModel, трёхфазная лексикографическая оптимизация), baseline_fcfs — независимый план для сравнения (назначение по порядку поступления заявок)'),
+  "status": zod.enum(['running', 'done', 'failed']).describe('running — план поставлен в очередь и считается фоновой задачей, маршрутов ещё нет; done — расчёт закончен успешно, engineers/unassigned заполнены; failed — расчёт не закончился (OSRM/БД недоступны, расчёт завис дольше отведённого времени или прерван остановкой сервера), см. failed_reason'),
+  "created_at": zod.string().min(renamePlanResponseCreatedAtMin).max(renamePlanResponseCreatedAtMax).regex(renamePlanResponseCreatedAtRegExp).describe('Дата и время в местном времени региона, ISO-8601 без часового пояса и долей секунды: 2026-09-23T13:20:00. Значение со смещением (+03:00) или Z отклоняется. Месяц 01–12, день 01–31, час 00–23; несуществующую дату (2026-02-30) отклоняет сервер ответом 400. Сервер хранит и возвращает время ровно в этом виде, ни во что не пересчитывая.'),
+  "parent_plan_id": zod.union([zod.int(),zod.null()]).describe('План, от которого этот получен перепланированием; null — план построен POST /plan/build напрямую'),
+  "failed_reason": zod.union([zod.enum(['osrm_unavailable', 'db_unavailable', 'build_error', 'timeout', 'shutdown']).describe('Причина отказа уже поставленного в очередь построения: osrm_unavailable — сервис маршрутов недоступен, db_unavailable — недоступна база данных при сохранении плана, build_error — непредусмотренная ошибка построения, timeout — расчёт не уложился в отведённое время и был принудительно прерван, shutdown — план остался в running на момент остановки сервера и был закрыт при следующем запуске'),zod.null()]).describe('Причина отказа; null, если status не failed')
+})
 
 
 /**

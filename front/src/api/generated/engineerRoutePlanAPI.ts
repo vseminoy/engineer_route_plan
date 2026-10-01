@@ -19,6 +19,7 @@ import type {
   Plan,
   PlanBuildRequest,
   PlanComparisonEntry,
+  PlanRenameRequest,
   PlanReplanResult,
   PlanSummary,
   Region,
@@ -834,7 +835,9 @@ export const getBuildPlanUrl = () => {
 }
 
 /**
- * Ставит построение плана в очередь и отвечает не дожидаясь его конца: назначение открытых (не completed и не cancelled) заявок региона на дату plan_date бригадам региона — основным алгоритмом (RoutingModel, трёхфазная лексикографическая оптимизация) или независимым baseline (FCFS, для сравнения) — и атрибуция причин отказа идут в фоне после ответа. Клиент получает plan_id сразу и узнаёт результат, опрашивая `GET /plan/{plan_id}`, пока status не станет done или failed. Каждый вызов — новый план (новый plan_id); построение не заменяет и не удаляет более ранние планы того же региона и даты.
+ * Ставит построение плана в очередь и отвечает не дожидаясь его конца: назначение открытых (не completed и не cancelled) заявок региона на дату plan_date бригадам региона — основным алгоритмом (RoutingModel, трёхфазная лексикографическая оптимизация) или независимым baseline (FCFS, для сравнения) — и атрибуция причин отказа идут в фоне после ответа. Клиент получает plan_id сразу и узнаёт результат, опрашивая `GET /plan/{plan_id}`, пока status не станет done или failed.
+ *
+ * `algorithm=or_tools` — каждый вызов новый план (новый plan_id); построение не заменяет и не удаляет более ранние планы того же региона и даты. `algorithm=baseline_fcfs` строится не более одного раза на комбинацию (регион, plan_date, engineer_set_id): если для неё уже есть план в состоянии running или done, возвращается он сам, новое построение не ставится в очередь; если есть план в состоянии failed, он удаляется и строится заново (новый plan_id); иначе строится новый план, как для or_tools. Ответ в обоих случаях — 202 Plan, независимо от того, было ли фактически поставлено новое построение.
  *
  * Регион должен иметь загруженные данные (`POST /data/upload` или `POST /data/demo`) — иначе 400. Каждая открытая заявка региона должна приходиться на дату plan_date (окно заявки — из файла одной загрузки, все заявки на один день) — несовпадение хотя бы одной заявки отклоняет весь запрос 400, план не ставится в очередь.
  *
@@ -1012,6 +1015,87 @@ export const deletePlan = async (planId: number, options?: RequestInit): Promise
 
   const data: deletePlanResponse['data'] = body ? JSON.parse(body) : undefined
   return { data, status: res.status, headers: res.headers } as deletePlanResponse
+}
+
+
+
+export type renamePlanResponse200 = {
+  data: PlanSummary
+  status: 200
+}
+
+export type renamePlanResponse400 = {
+  data: ValidationError
+  status: 400
+}
+
+export type renamePlanResponse404 = {
+  data: void
+  status: 404
+}
+
+export type renamePlanResponse500 = {
+  data: void
+  status: 500
+}
+
+export type renamePlanResponse503 = {
+  data: void
+  status: 503
+}
+
+export type renamePlanResponseSuccess = (renamePlanResponse200) & {
+  headers: Headers;
+};
+export type renamePlanResponseError = (renamePlanResponse400 | renamePlanResponse404 | renamePlanResponse500 | renamePlanResponse503) & {
+  headers: Headers;
+};
+
+export type renamePlanResponse = (renamePlanResponseSuccess | renamePlanResponseError)
+
+export const getRenamePlanUrl = (planId: number,) => {
+
+
+
+
+  return `/api/v1/plan/${planId}`
+}
+
+/**
+ * Меняет название плана, каким бы ни был его status — построение или принадлежность к региону/набору бригад не затрагиваются. Название, выставленное автоматически при построении, заменяется полностью.
+ * @summary Переименовать план
+ */
+export const renamePlan = async (planId: number,
+    planRenameRequest: PlanRenameRequest, options?: RequestInit): Promise<renamePlanResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getRenamePlanUrl(planId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(planRenameRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: renamePlanResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as renamePlanResponse
 }
 
 

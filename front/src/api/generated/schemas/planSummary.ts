@@ -14,6 +14,8 @@ import type { RegionCode } from './regionCode';
 export interface PlanSummary {
   /** Идентификатор плана на сервере */
   plan_id: number;
+  /** Название плана; выставляется автоматически при построении и может быть изменено PATCH /plan/{plan_id} */
+  name: string;
   region: RegionCode;
   /** Набор бригад, для которого построен план */
   engineer_set_id: number;

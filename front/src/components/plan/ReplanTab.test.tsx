@@ -23,6 +23,7 @@ const emptyMetrics = {
 function donePlanResult(planId: number): Plan {
   return {
     planId,
+    name: `План №${planId}`,
     algorithm: 'or_tools',
     status: 'done',
     region: 'east',

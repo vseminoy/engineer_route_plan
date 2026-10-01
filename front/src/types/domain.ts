@@ -114,6 +114,7 @@ export type PlanFailedReason = 'osrm_unavailable' | 'db_unavailable' | 'build_er
 // of just having been built.
 export interface PlanSummary {
   planId: number;
+  name: string;
   region: RegionCode;
   engineerSetId: number;
   planDate: string; // naive local date, ISO-8601 ('2026-08-17')
@@ -126,6 +127,7 @@ export interface PlanSummary {
 
 export interface Plan {
   planId: number;
+  name: string;
   algorithm: Algorithm;
   status: PlanStatus;
   region: RegionCode; // the plan's region, whatever its status — recovers state on a direct load of /plan/:id

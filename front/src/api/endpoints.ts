@@ -13,6 +13,7 @@ import {
   listRegions,
   listTickets,
   loadDemoData,
+  renamePlan as renamePlanRequest,
   replanPlan,
   uploadRegionData
 } from './generated/engineerRoutePlanAPI';
@@ -123,6 +124,10 @@ export function getPlans(region: RegionCode, engineerSetId?: number | null): Pro
 
 export function deletePlan(planId: number): Promise<void> {
   return unwrap<void>(deletePlanRequest(planId), 204);
+}
+
+export function renamePlan(planId: number, name: string): Promise<PlanSummary> {
+  return unwrap<ApiPlanSummary>(renamePlanRequest(planId, { name }), 200).then(mapPlanSummary);
 }
 
 // Both plans must already be status: 'done' — the backend rejects the

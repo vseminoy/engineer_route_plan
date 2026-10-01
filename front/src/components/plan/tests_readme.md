@@ -19,7 +19,7 @@
 | Test | Scenario | Expected result |
 |---|---|---|
 | `shows the waiting message while the build is still running (polling handled by usePlan itself)` | `usePlan` возвращает `{status: 'running'}` | Текст «Подождите, идёт расчёт…», карта не отрисована |
-| `renders the plan once the build is done` | `usePlan` возвращает `{status: 'done', engineers: [], unassigned: [], metrics: {...}}` | Карта отрисована, заголовок «Диспетчер», сообщение ожидания не показано |
+| `renders the plan once the build is done, with its name in the header instead of the static title` | `usePlan` возвращает `{status: 'done', name: 'Утренний обход', engineers: [], unassigned: [], metrics: {...}}` | Карта отрисована, заголовок содержит «Утренний обход» (не «Диспетчер»), сообщение ожидания не показано |
 | `shows the failure reason and a rebuild button when the build failed, and rebuilds on click` | `usePlan` возвращает `{status: 'failed', failedReason: 'osrm_unavailable', engineerSetId: 7}`, клик «Построить заново» | Текст «Сервис маршрутов недоступен: возможно, он ещё загружает карту дорог после запуска стенда. Подождите немного и попробуйте построить план ещё раз.», `buildPlan` вызван с тем же `engineerSetId`, переход на `/plan/{новый plan_id}` |
 
 ## `ReplanTab` — форма события перепланирования
