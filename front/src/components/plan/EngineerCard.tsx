@@ -34,7 +34,7 @@ export function EngineerCard({ engineer, roster, color, ticketById, diffTags, se
         {roster && <SkillIcons skills={roster.skills} />}
       </div>
       <div className="engineer-card__meta">
-        {stops.length} заявки · {formatMinutes(totalTimeMin)} · {formatKm(engineer.totalDistanceKm)}
+        заявок: {stops.length} · {formatMinutes(totalTimeMin)} · {formatKm(engineer.totalDistanceKm)}
       </div>
 
       {roster && (
