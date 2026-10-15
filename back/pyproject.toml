@@ -16,6 +16,9 @@ dependencies = [
     "python-multipart>=0.0.22,<0.1",
     # The routing solver: RoutingModel with time windows, allowed vehicles, disjunctions.
     "ortools>=9.15,<10",
+    # Transitive via ortools, never imported directly; pinned below 2.5 because that
+    # stub's `.pyi` uses PEP 695 `type` statements mypy rejects under python_version 3.11.
+    "numpy<2.5",
 ]
 
 [project.optional-dependencies]

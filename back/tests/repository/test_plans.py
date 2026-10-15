@@ -103,8 +103,16 @@ async def _plan_row(conn: AsyncConnection[Any], plan_id: int) -> tuple[Any, ...]
     return tuple(row)
 
 
+async def _insert(conn: AsyncConnection[Any], *args: Any, **kwargs: Any) -> tuple[int, str]:
+    """`insert_running_plan`, asserting the race it can lose (`ux_plans__active_baseline_per_set_date`)
+    did not happen — every caller here inserts a fresh, uncontended combination."""
+    result = await insert_running_plan(conn, *args, **kwargs)
+    assert result is not None
+    return result
+
+
 async def test_insert_running_plan(conn: AsyncConnection[Any]) -> None:
-    plan_id, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    plan_id, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await conn.commit()
 
     assert await _plan_row(conn, plan_id) == ("running", None)
@@ -124,7 +132,7 @@ async def test_get_plan_missing(conn: AsyncConnection[Any]) -> None:
 
 
 async def test_mark_plan_done_writes_assignments(conn: AsyncConnection[Any]) -> None:
-    plan_id, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    plan_id, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await conn.commit()
 
     await mark_plan_done(
@@ -168,7 +176,7 @@ async def test_mark_plan_done_writes_assignments(conn: AsyncConnection[Any]) -> 
 async def test_mark_plan_done_rolls_back_together(conn: AsyncConnection[Any]) -> None:
     """A row that violates a constraint rolls back the whole transaction: the plan stays
     `running`, not partially `done`."""
-    plan_id, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    plan_id, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await conn.commit()
 
     with pytest.raises(DatabaseFailure):
@@ -194,7 +202,7 @@ async def test_mark_plan_done_rolls_back_together(conn: AsyncConnection[Any]) ->
 
 
 async def test_mark_plan_failed(conn: AsyncConnection[Any]) -> None:
-    plan_id, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    plan_id, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await conn.commit()
 
     await mark_plan_failed(conn, plan_id, "osrm_unavailable")
@@ -230,13 +238,11 @@ async def test_sweep_running_plans_closes_all_regions(conn: AsyncConnection[Any]
     other_set_id = await get_default_engineer_set_id(conn, other.region_id)
     assert other_set_id is not None
 
-    running_east, _ = await insert_running_plan(
-        conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
-    )
-    running_other, _ = await insert_running_plan(
+    running_east, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    running_other, _ = await _insert(
         conn, other.region_id, other_set_id, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
     )
-    done, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    done, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await mark_plan_done(conn, done, [])
     await conn.commit()
 
@@ -250,7 +256,7 @@ async def test_sweep_running_plans_closes_all_regions(conn: AsyncConnection[Any]
 
 
 async def test_sweep_running_plans_no_running_plans(conn: AsyncConnection[Any]) -> None:
-    done, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    done, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await mark_plan_done(conn, done, [])
     await conn.commit()
 
@@ -272,10 +278,10 @@ async def test_sweep_running_plans_db_unavailable(
 
 
 async def test_list_plans_sorted_desc_all_statuses(conn: AsyncConnection[Any]) -> None:
-    p1, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 8, 0))
-    p2, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    p1, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 8, 0))
+    p2, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await mark_plan_done(conn, p2, [])
-    p3, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 10, 0))
+    p3, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 10, 0))
     await mark_plan_failed(conn, p3, "osrm_unavailable")
     await conn.commit()
 
@@ -298,7 +304,7 @@ async def test_list_plans_other_region_excluded(conn: AsyncConnection[Any]) -> N
     await conn.commit()
     other_set_id = await get_default_engineer_set_id(conn, other.region_id)
     assert other_set_id is not None
-    own, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    own, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await insert_running_plan(
         conn, other.region_id, other_set_id, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
     )
@@ -316,10 +322,8 @@ async def test_list_plans_empty_region(conn: AsyncConnection[Any]) -> None:
 async def test_list_plans_by_engineer_set(conn: AsyncConnection[Any]) -> None:
     other_set_id = await insert_generated_engineer_set(conn, 1, "second", 1, 0.25, 0.25, "seed2", [])
     await conn.commit()
-    default_plan, _ = await insert_running_plan(
-        conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
-    )
-    other_plan, _ = await insert_running_plan(
+    default_plan, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    other_plan, _ = await _insert(
         conn, 1, other_set_id, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0)
     )
     await conn.commit()
@@ -331,7 +335,7 @@ async def test_list_plans_by_engineer_set(conn: AsyncConnection[Any]) -> None:
 
 
 async def test_list_plans_row_shape(conn: AsyncConnection[Any]) -> None:
-    parent, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    parent, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await mark_plan_done(conn, parent, [])
     child, _ = await insert_replanned_plan(
         conn, 1, 1, PLAN_DATE, "or_tools", parent, datetime(2026, 8, 17, 10, 0), []
@@ -353,7 +357,7 @@ async def test_list_plans_row_shape(conn: AsyncConnection[Any]) -> None:
 
 
 async def test_delete_plan_removes_plan_and_assignments(conn: AsyncConnection[Any]) -> None:
-    plan_id, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    plan_id, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await mark_plan_done(
         conn,
         plan_id,
@@ -390,7 +394,7 @@ async def test_delete_plan_removes_plan_and_assignments(conn: AsyncConnection[An
 
 
 async def test_delete_plan_cascades_replan_chain(conn: AsyncConnection[Any]) -> None:
-    parent, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    parent, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await mark_plan_done(conn, parent, [])
     child, _ = await insert_replanned_plan(
         conn, 1, 1, PLAN_DATE, "or_tools", parent, datetime(2026, 8, 17, 10, 0), []
@@ -421,7 +425,7 @@ async def test_delete_plan_cascades_replan_chain(conn: AsyncConnection[Any]) -> 
 
 
 async def test_delete_plan_nonexistent_is_noop(conn: AsyncConnection[Any]) -> None:
-    other, _ = await insert_running_plan(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
+    other, _ = await _insert(conn, 1, 1, PLAN_DATE, "or_tools", datetime(2026, 8, 17, 9, 0))
     await conn.commit()
 
     await delete_plan(conn, 999)

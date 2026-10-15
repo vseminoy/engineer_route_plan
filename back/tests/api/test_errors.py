@@ -364,8 +364,12 @@ def test_validation_error_is_logged_without_values(capsys: pytest.CaptureFixture
     assert failed[0]["level"] == "warning"
     assert failed[0]["path"] == "/t/body"
     assert failed[0]["fields"] == ["limit", "region"]
-    assert "Секретный адрес" not in json.dumps(failed[0], ensure_ascii=False)
-    assert "-1" not in json.dumps(failed[0])
+    # Excludes `timestamp`: the current date/time can itself contain "-1" as a
+    # substring (any October/November/December, or any day 10-19) with nothing to do
+    # with the value under test, which is what this checks never leaked into the log.
+    without_timestamp = {k: v for k, v in failed[0].items() if k != "timestamp"}
+    assert "Секретный адрес" not in json.dumps(without_timestamp, ensure_ascii=False)
+    assert "-1" not in json.dumps(without_timestamp)
 
 
 # --- Starlette responses and unexpected errors ----------------------------------
