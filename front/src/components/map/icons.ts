@@ -13,6 +13,7 @@ interface TicketIconOptions {
   status: TicketStatus;
   diffHighlight?: boolean;
   selected?: boolean;
+  sequenceNo?: number; // this stop's position in its brigade's route — unset for unassigned tickets
 }
 
 // Small badge at the marker's bottom-right corner, on top of the body circle,
@@ -60,7 +61,16 @@ function buildStatusBadge(status: TicketStatus): string {
   );
 }
 
-export function buildTicketIcon({ color, urgent, emergency, unassigned, status, diffHighlight, selected }: TicketIconOptions) {
+export function buildTicketIcon({
+  color,
+  urgent,
+  emergency,
+  unassigned,
+  status,
+  diffHighlight,
+  selected,
+  sequenceNo
+}: TicketIconOptions) {
   // Selection scales the whole marker up (viewBox stays 32x32, the pixel
   // size grows) rather than adding another same-radius ring, so it never
   // collides with the diff/urgent rings and reads as "this one" at a glance.
@@ -77,15 +87,23 @@ export function buildTicketIcon({ color, urgent, emergency, unassigned, status, 
   const body = unassigned
     ? '<circle cx="16" cy="16" r="9" fill="#EEF1F5" stroke="#9AA0AA" stroke-width="2" stroke-dasharray="3,3"/><line x1="12" y1="16" x2="20" y2="16" stroke="#9AA0AA" stroke-width="2"/>'
     : `<circle cx="16" cy="16" r="9" fill="${color}" stroke="#FFFFFF" stroke-width="2"/>`;
-  const bolt =
+  // The body circle shows this stop's position in its brigade's route, so
+  // emergency gets a small corner badge (mirroring the status badge) instead
+  // of a center glyph that would collide with the number.
+  const sequenceLabel =
+    sequenceNo !== undefined
+      ? `<text x="16" y="16" text-anchor="middle" dominant-baseline="central" fill="#FFFFFF" font-size="10" font-weight="700">${sequenceNo}</text>`
+      : '';
+  const emergencyBadge =
     emergency && !unassigned
-      ? '<path d="M15,9 L11,17 L15,17 L14,23 L21,15 L17,15 L18,9 Z" fill="#FFFFFF" transform="translate(-2,-1) scale(0.6)"/>'
+      ? '<circle cx="8" cy="8" r="6.5" fill="#FFFFFF" stroke="#D03B3B" stroke-width="1.5"/>' +
+        '<path d="M9,2.5 L5.5,8.5 L8,8.5 L7,13.5 L12.5,7 L9.5,7 Z" fill="#D03B3B"><title>Экстренная</title></path>'
       : '';
   const statusBadge = buildStatusBadge(status);
 
   return L.divIcon({
     className: `ticket-marker${selected ? ' ticket-marker--selected' : ''}`,
-    html: `<svg width="${size}" height="${size}" viewBox="0 0 32 32">${pulse}${diffRing}${urgentRing}${body}${bolt}${statusBadge}</svg>`,
+    html: `<svg width="${size}" height="${size}" viewBox="0 0 32 32">${pulse}${diffRing}${urgentRing}${body}${sequenceLabel}${emergencyBadge}${statusBadge}</svg>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2]
   });

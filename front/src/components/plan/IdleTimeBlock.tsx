@@ -1,5 +1,5 @@
 import { getEngineerColor } from '@/lib/colors';
-import { minutesToTimeLabel } from '@/lib/format';
+import { formatKm, minutesToTimeLabel } from '@/lib/format';
 import { SkillIcons } from './SkillIcons';
 import { VehicleIcon } from './VehicleIcon';
 import type { EngineerRoster, EngineerRoute } from '@/types/domain';
@@ -9,75 +9,53 @@ interface Props {
   roster: EngineerRoster[];
 }
 
-// Idle time is displayed only, never compared to baseline and never given a
-// better/worse indicator — it is not part of the optimizer's objective.
+// Reference-only per-brigade figures (ticket count, mileage, idle time) — never
+// compared to baseline and never given a better/worse indicator, since they
+// are not part of the optimizer's objective.
 export function IdleTimeBlock({ engineers, roster }: Props) {
   const rosterById = new Map(roster.map((r) => [r.engineerId, r]));
-  const used = engineers.filter((e) => e.route.length > 0);
-  const idle = engineers.filter((e) => e.route.length === 0);
-  const maxIdle = Math.max(1, ...used.map((e) => e.idleTimeMin));
+  // Unused brigades sink to the bottom, greyed out — same as the earlier
+  // "Не задействованы" list, just folded into one table instead of a second one.
+  const sorted = [...engineers].sort((a, b) => Number(a.route.length === 0) - Number(b.route.length === 0));
 
   return (
-    <div>
-      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 8 }}>
-        Простой бригад (справочно, без сравнения)
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {used.map((e) => {
-          const color = getEngineerColor(e.engineerId);
-          const r = rosterById.get(e.engineerId);
-          return (
-            <div key={e.engineerId} className="bar-row bar-row--stacked">
-              <div className="bar-row__header">
-                <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                <span className="bar-row__label">{e.name}</span>
-                {r && <VehicleIcon vehicleType={r.vehicleType} />}
-                {r && <SkillIcons skills={r.skills} />}
-                {r && (
-                  <span className="bar-row__shift">
-                    {minutesToTimeLabel(r.shiftStartMin)}–{minutesToTimeLabel(r.shiftEndMin)}
+    <div style={{ overflowX: 'auto' }}>
+      <table className="brigade-table">
+        <thead>
+          <tr>
+            <th aria-label="Бригада" />
+            <th aria-label="Транспорт" />
+            <th aria-label="Навыки" />
+            <th>Смена</th>
+            <th>Заявки</th>
+            <th>Пробег</th>
+            <th>Простой</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((e) => {
+            const used = e.route.length > 0;
+            const color = used ? getEngineerColor(e.engineerId) : 'var(--color-border)';
+            const r = rosterById.get(e.engineerId);
+            return (
+              <tr key={e.engineerId} className={used ? undefined : 'brigade-table__row--idle'}>
+                <td>
+                  <span className="brigade-table__name">
+                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                    {e.name}
                   </span>
-                )}
-              </div>
-              <div className="bar-row__body">
-                <span className="bar-row__track">
-                  <span
-                    className="bar-row__fill"
-                    style={{ width: `${(e.idleTimeMin / maxIdle) * 100}%`, background: color, opacity: 0.55 }}
-                  />
-                </span>
-                <span className="bar-row__value">{e.idleTimeMin} мин</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {idle.length > 0 && (
-        <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 6 }}>
-            Не задействованы ({idle.length})
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {idle.map((e) => {
-              const r = rosterById.get(e.engineerId);
-              return (
-                <div key={e.engineerId} className="bar-row bar-row--idle">
-                  <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-border)', flexShrink: 0 }} />
-                  <span className="bar-row__label">{e.name}</span>
-                  {r && <VehicleIcon vehicleType={r.vehicleType} />}
-                  {r && <SkillIcons skills={r.skills} />}
-                  {r && (
-                    <span className="bar-row__shift">
-                      {minutesToTimeLabel(r.shiftStartMin)}–{minutesToTimeLabel(r.shiftEndMin)}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                </td>
+                <td className="brigade-table__vehicle">{r && <VehicleIcon vehicleType={r.vehicleType} />}</td>
+                <td>{r && <SkillIcons skills={r.skills} />}</td>
+                <td>{r && `${minutesToTimeLabel(r.shiftStartMin)}–${minutesToTimeLabel(r.shiftEndMin)}`}</td>
+                <td>{e.route.length}</td>
+                <td>{formatKm(e.totalDistanceKm)}</td>
+                <td>{e.idleTimeMin} мин</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

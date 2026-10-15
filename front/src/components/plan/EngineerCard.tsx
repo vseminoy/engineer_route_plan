@@ -61,6 +61,9 @@ export function EngineerCard({ engineer, roster, color, ticketById, diffTags, se
               }}
             >
               <div className="stop-row__main">
+                <span className="stop-row__number" style={{ background: color }}>
+                  {stop.sequenceNo}
+                </span>
                 <span className="stop-row__eta">
                   {ticket
                     ? (() => {

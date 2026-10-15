@@ -21,8 +21,11 @@ export function MetricsTab({ plan, roster, engineerSetName }: Props) {
       {engineerSetName && (
         <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Сравнение в пределах набора «{engineerSetName}»</div>
       )}
+      <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+        Заявок в плане: {formatCount(plan.metrics.assignedCount + plan.metrics.unassignedCount)}
+      </div>
       {compare ? (
-        <>
+        <div className="metrics-compare">
           <MetricComparisonCard
             label="Задействовано исполнителей"
             mainValue={formatCount(compare.engineersUsed.main)}
@@ -44,7 +47,7 @@ export function MetricsTab({ plan, roster, engineerSetName }: Props) {
             deltaLabel={formatSignedDelta(compare.unassignedCount.delta, formatCount)}
             good={compare.unassignedCount.delta <= 0}
           />
-        </>
+        </div>
       ) : compareQuery.isError ? (
         <div style={{ fontSize: 13, color: 'var(--color-danger-text)' }}>
           {describeError(compareQuery.error, 'GET /plan/{id}/compare')}

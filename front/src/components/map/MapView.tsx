@@ -102,6 +102,7 @@ export function MapView({ plan, roster, tickets }: Props) {
             diffHighlight={diffTicketIds.has(stop.ticketId)}
             selected={selected}
             opacity={selected ? 1 : dimmed ? 0.3 : 1}
+            sequenceNo={stop.sequenceNo}
             onClick={() => openTicket(stop.ticketId)}
           />
         );

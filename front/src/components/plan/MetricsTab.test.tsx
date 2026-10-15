@@ -18,8 +18,8 @@ const plan: DonePlan = {
     engineersUsed: 0,
     totalDistanceKm: 0,
     distanceByEngineer: {},
-    assignedCount: 0,
-    unassignedCount: 0,
+    assignedCount: 43,
+    unassignedCount: 2,
     idleTimeByEngineerMin: {}
   }
 };
@@ -36,11 +36,18 @@ describe('MetricsTab', () => {
       baselineUnavailable: false
     });
 
-    render(<MetricsTab plan={plan} roster={[]} />);
+    const { container } = render(<MetricsTab plan={plan} roster={[]} engineerSetName="13 бригад" />);
 
+    expect(screen.getByText('Сравнение в пределах набора «13 бригад»')).toBeInTheDocument();
+    expect(screen.getByText('Заявок в плане: 45')).toBeInTheDocument();
     expect(screen.getByText('Неназначено заявок')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
     expect(screen.getByText('baseline: 6')).toBeInTheDocument();
+
+    // "Заявок в плане" belongs under the engineer-set line, not inside the unassigned-count row.
+    const rows = container.querySelectorAll('.metric-row');
+    const unassignedRow = Array.from(rows).find((r) => r.textContent?.includes('Неназначено заявок'));
+    expect(unassignedRow?.textContent).not.toContain('Заявок в плане');
   });
 
   it('marks a higher unassigned count than the baseline as a regression, not an improvement', () => {
@@ -56,9 +63,9 @@ describe('MetricsTab', () => {
 
     const { container } = render(<MetricsTab plan={plan} roster={[]} />);
 
-    const cards = container.querySelectorAll('.metric-card');
-    const unassignedCard = Array.from(cards).find((c) => c.textContent?.includes('Неназначено заявок'));
-    expect(unassignedCard?.querySelector('.metric-delta--bad')).not.toBeNull();
-    expect(unassignedCard?.querySelector('.metric-delta--good')).toBeNull();
+    const rows = container.querySelectorAll('.metric-row');
+    const unassignedRow = Array.from(rows).find((r) => r.textContent?.includes('Неназначено заявок'));
+    expect(unassignedRow?.querySelector('.metric-delta--bad')).not.toBeNull();
+    expect(unassignedRow?.querySelector('.metric-delta--good')).toBeNull();
   });
 });

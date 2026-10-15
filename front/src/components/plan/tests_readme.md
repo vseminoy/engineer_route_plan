@@ -5,6 +5,7 @@
 - [`PlanScreen` — переходы `running`/`done`/`failed`](#planscreen--переходы-runningdonefailed)
 - [`ReplanTab` — форма события перепланирования](#replantab--форма-события-перепланирования)
 - [`MetricsTab` — карточка сравнения `unassignedCount`](#metricstab--карточка-сравнения-unassignedcount)
+- [`IdleTimeBlock` — таблица по бригадам (справочно, без сравнения)](#idletimeblock--таблица-по-бригадам-справочно-без-сравнения)
 
 ---
 
@@ -50,5 +51,20 @@
 
 | Test | Scenario | Expected result |
 |---|---|---|
-| `renders a third card for unassignedCount, alongside the two mandatory metrics` | `usePlanCompare` вернул `data` с `unassignedCount: {main: 2, baseline: 6, delta: -4}` | Карточка «Неназначено заявок» с `main=2`, `baseline: 6` |
+| `renders a third card for unassignedCount, alongside the two mandatory metrics` | `usePlanCompare` вернул `data` с `unassignedCount: {main: 2, baseline: 6, delta: -4}`, `plan.metrics` — `assignedCount: 43, unassignedCount: 2`, `engineerSetName="13 бригад"` | Строка «Заявок в плане: 45» идёт сразу под «Сравнение в пределах набора «13 бригад»» (из `plan.metrics`, не из `compare`), а не внутри карточки «Неназначено заявок»; карточка — `main=2`, `baseline: 6` |
 | `marks a higher unassigned count than the baseline as a regression, not an improvement` | `unassignedCount: {main: 6, baseline: 2, delta: 4}` | У карточки «Неназначено заявок» класс `metric-delta--bad`, не `metric-delta--good` |
+
+## `IdleTimeBlock` — таблица по бригадам (справочно, без сравнения)
+
+Файл: `IdleTimeBlock.test.tsx` (`vitest` + `@testing-library/react`).
+
+> Чистый компонент без моков: рендерит то, что передано в `engineers`/`roster`. Без заголовка
+> раздела — безрамочная `<table>` с одной строкой на бригаду. Колонки «Бригада»/«Транспорт»/
+> «Навыки» без видимых подписей (только `aria-label` для скринридеров), остальные — «Смена»,
+> «Заявки», «Пробег», «Простой» — подписаны. Незанятые бригады идут в конце списка и серые
+> (`brigade-table__row--idle`), независимо от порядка во входном `engineers`.
+
+| Test | Scenario | Expected result |
+|---|---|---|
+| `renders a borderless table with one row per brigade, used and unused alike, with no label for the name/vehicle/skills columns` | Бригада с `route` из 2 остановок (`totalDistanceKm: 12.5`, `idleTimeMin: 35`) и бригада с пустым `route` (`idleTimeMin: 480`) | Видимых подписей «Бригада»/«Транспорт»/«Навыки» нет; «Смена»/«Заявки»/«Пробег»/«Простой» присутствуют; строка первой бригады содержит «2», «12,5 км», «35 мин»; строка второй — «0,0 км», «480 мин» |
+| `sinks unused brigades to the bottom of the list and greys them out, regardless of input order` | `engineers={[unused, used]}` (незанятая бригада первой на входе) | Строки отрендерены в порядке «Бригада 1» (занята), затем «Бригада 2» (не занята); только вторая строка имеет класс `brigade-table__row--idle` |
